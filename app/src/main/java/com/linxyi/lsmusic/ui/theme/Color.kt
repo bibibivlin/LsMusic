@@ -2,10 +2,14 @@ package com.linxyi.lsmusic.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-val Purple80 = Color(0xFFD0BCFF)
-val PurpleGrey80 = Color(0xFFCCC2DC)
-val Pink80 = Color(0xFFEFB8C8)
+val ElectricLavender = Color(0xFFB7A8FF)
+val MistLavender = Color(0xFFE4DFFF)
+val NightInk = Color(0xFF111018)
+val DeepPlum = Color(0xFF221C31)
+val RosePulse = Color(0xFFFF8AB4)
+val MintSignal = Color(0xFF7DE7C4)
 
-val Purple40 = Color(0xFF6650a4)
-val PurpleGrey40 = Color(0xFF625b71)
-val Pink40 = Color(0xFF7D5260)
+val Indigo = Color(0xFF5B45C8)
+val Plum = Color(0xFF6A5877)
+val Berry = Color(0xFF9A3F6B)
+val WarmCanvas = Color(0xFFFFF8FC)
