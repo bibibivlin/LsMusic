@@ -7,6 +7,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.net.Uri
+import android.os.SystemClock
+import android.util.Log
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
@@ -24,6 +26,15 @@ import com.linxyi.lsmusic.dlna.MediaEntry
 import com.linxyi.lsmusic.dlna.RemotePlaybackState
 import com.linxyi.lsmusic.playback.LocalPlaybackService
 import com.linxyi.lsmusic.playback.RemotePlaybackService
+import com.linxyi.lsmusic.listenbrainz.ListenBrainzClient
+import com.linxyi.lsmusic.listenbrainz.ListenBrainzPlaybackObservation
+import com.linxyi.lsmusic.listenbrainz.ListenBrainzPlaybackReport
+import com.linxyi.lsmusic.listenbrainz.ListenBrainzPlaybackTracker
+import com.linxyi.lsmusic.listenbrainz.describeListenBrainzValidationFailure
+import com.linxyi.lsmusic.listenbrainz.shouldSubmitListen
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -35,6 +46,14 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 enum class AppDestination { LIBRARY, QUEUE, NOW_PLAYING, SETTINGS }
+
+enum class ListenBrainzTokenValidationStatus { IDLE, CHECKING, VALID, INVALID, ERROR }
+
+data class ListenBrainzTokenValidationUiState(
+    val status: ListenBrainzTokenValidationStatus = ListenBrainzTokenValidationStatus.IDLE,
+    val message: String? = null,
+    val checkedToken: String? = null,
+)
 
 data class BrowseLocation(val id: String, val title: String)
 
@@ -54,6 +73,30 @@ private data class RemoteMediaSessionSnapshot(
     val durationMs: Long,
 )
 
+private data class ListenBrainzStateSnapshot(
+    val track: MediaEntry?,
+    val playbackGeneration: Long,
+    val playbackState: RemotePlaybackState,
+    val positionMs: Long,
+    val durationMs: Long,
+    val preferences: AppPreferences,
+)
+
+private sealed interface ListenBrainzSubmission {
+    val token: String
+
+    data class NowPlaying(
+        override val token: String,
+        val track: MediaEntry,
+        val durationMs: Long,
+    ) : ListenBrainzSubmission
+
+    data class Listen(
+        override val token: String,
+        val report: ListenBrainzPlaybackReport.Finished,
+    ) : ListenBrainzSubmission
+}
+
 data class LsMusicUiState(
     val servers: List<DlnaDevice> = emptyList(),
     val renderers: List<DlnaDevice> = emptyList(),
@@ -63,11 +106,13 @@ data class LsMusicUiState(
     val path: List<BrowseLocation> = listOf(BrowseLocation("0", "音乐库")),
     val queue: List<MediaEntry> = emptyList(),
     val currentQueueIndex: Int = -1,
+    val playbackGeneration: Long = 0L,
     val playbackState: RemotePlaybackState = RemotePlaybackState.STOPPED,
     val positionMs: Long = 0L,
     val durationMs: Long = 0L,
     val bufferedPositionMs: Long = 0L,
     val preferences: AppPreferences = AppPreferences(),
+    val listenBrainzTokenValidation: ListenBrainzTokenValidationUiState = ListenBrainzTokenValidationUiState(),
     val destination: AppDestination = AppDestination.LIBRARY,
     val isSearching: Boolean = true,
     val isBrowsing: Boolean = false,
@@ -80,6 +125,9 @@ data class LsMusicUiState(
 class LsMusicViewModel(application: Application) : AndroidViewModel(application) {
     private val dlna = DlnaController(application)
     private val preferenceStore = AppPreferencesStore(application)
+    private val listenBrainzClient = ListenBrainzClient()
+    private val listenBrainzPlaybackTracker = ListenBrainzPlaybackTracker()
+    private val listenBrainzSubmissions = Channel<ListenBrainzSubmission>(Channel.BUFFERED)
     private val _uiState = MutableStateFlow(LsMusicUiState(preferences = preferenceStore.load()))
     val uiState: StateFlow<LsMusicUiState> = _uiState.asStateFlow()
     private val controllerFuture = MediaController.Builder(
@@ -93,6 +141,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     private var userSelectedServer = false
     private var userSelectedRenderer = false
     private var remoteSessionServiceStarted = false
+    private var listenBrainzTokenValidationJob: Job? = null
 
     private val remoteMediaCommandReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -111,7 +160,19 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             val index = _uiState.value.queue.indexOfFirst { it.id == mediaItem?.mediaId }
-            if (index >= 0) _uiState.update { it.copy(currentQueueIndex = index, positionMs = 0L) }
+            if (index >= 0) {
+                _uiState.update {
+                    it.copy(
+                        currentQueueIndex = index,
+                        playbackGeneration = if (index != it.currentQueueIndex) {
+                            it.playbackGeneration + 1L
+                        } else {
+                            it.playbackGeneration
+                        },
+                        positionMs = 0L,
+                    )
+                }
+            }
             updateLocalPlaybackState()
         }
 
@@ -217,6 +278,45 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
                 )
             }.distinctUntilChanged().collect(::publishRemoteMediaSession)
         }
+
+        viewModelScope.launch {
+            for (submission in listenBrainzSubmissions) {
+                runCatching {
+                    when (submission) {
+                        is ListenBrainzSubmission.NowPlaying -> listenBrainzClient.submitNowPlaying(
+                            submission.token,
+                            submission.track,
+                            submission.durationMs,
+                        )
+                        is ListenBrainzSubmission.Listen -> submission.report.let { report ->
+                            listenBrainzClient.submitListen(
+                                submission.token,
+                                report.track,
+                                report.startedAtEpochSeconds,
+                                report.durationMs,
+                                report.listenedMs,
+                            )
+                        }
+                    }
+                }.onFailure {
+                    Log.w(TAG, "ListenBrainz submission failed", it)
+                    showError("ListenBrainz 上报失败：${it.localizedMessage ?: "网络请求失败"}")
+                }
+            }
+        }
+
+        viewModelScope.launch {
+            uiState.map { state ->
+                ListenBrainzStateSnapshot(
+                    track = state.currentTrack,
+                    playbackGeneration = state.playbackGeneration,
+                    playbackState = state.playbackState,
+                    positionMs = state.positionMs,
+                    durationMs = state.durationMs,
+                    preferences = state.preferences,
+                )
+            }.distinctUntilChanged().collect(::trackListenBrainzPlayback)
+        }
     }
 
     fun refreshDevices() = dlna.refresh()
@@ -276,6 +376,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
             it.copy(
                 queue = queue,
                 currentQueueIndex = index,
+                playbackGeneration = it.playbackGeneration + 1L,
                 playbackState = RemotePlaybackState.PLAYING,
                 positionMs = 0L,
                 durationMs = parseTimeMs(track.duration),
@@ -302,6 +403,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
             it.copy(
                 queue = playable,
                 currentQueueIndex = 0,
+                playbackGeneration = it.playbackGeneration + 1L,
                 playbackState = RemotePlaybackState.PLAYING,
                 positionMs = 0L,
                 durationMs = parseTimeMs(first.duration),
@@ -355,6 +457,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         _uiState.update {
             it.copy(
                 currentQueueIndex = index,
+                playbackGeneration = it.playbackGeneration + 1L,
                 playbackState = RemotePlaybackState.PLAYING,
                 positionMs = 0L,
                 durationMs = parseTimeMs(track.duration),
@@ -443,6 +546,82 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
 
     fun setDynamicColor(enabled: Boolean) = updatePreferences { it.copy(useDynamicColor = enabled) }
 
+    fun setListenBrainzEnabled(enabled: Boolean) = updatePreferences { it.copy(listenBrainzEnabled = enabled) }
+
+    fun validateAndSaveListenBrainzToken(token: String) {
+        listenBrainzTokenValidationJob?.cancel()
+        val normalized = token.trim()
+        if (normalized.isEmpty()) {
+            updatePreferences { it.copy(listenBrainzToken = "") }
+            _uiState.update {
+                it.copy(listenBrainzTokenValidation = ListenBrainzTokenValidationUiState())
+            }
+            return
+        }
+
+        val hadSavedToken = _uiState.value.preferences.listenBrainzToken.isNotBlank()
+        _uiState.update {
+            it.copy(
+                listenBrainzTokenValidation = ListenBrainzTokenValidationUiState(
+                    status = ListenBrainzTokenValidationStatus.CHECKING,
+                    message = "正在连接 ListenBrainz 并校验令牌…",
+                    checkedToken = normalized,
+                ),
+            )
+        }
+        listenBrainzTokenValidationJob = viewModelScope.launch {
+            runCatching { listenBrainzClient.validateToken(normalized) }
+                .onSuccess { result ->
+                    if (result.valid) {
+                        updatePreferences { it.copy(listenBrainzToken = normalized) }
+                        _uiState.update {
+                            it.copy(
+                                listenBrainzTokenValidation = ListenBrainzTokenValidationUiState(
+                                    status = ListenBrainzTokenValidationStatus.VALID,
+                                    message = result.userName?.let { userName ->
+                                        "校验成功，网络连接正常；账户：$userName"
+                                    } ?: "校验成功，网络连接正常。",
+                                    checkedToken = normalized,
+                                ),
+                            )
+                        }
+                    } else {
+                        _uiState.update {
+                            it.copy(
+                                listenBrainzTokenValidation = ListenBrainzTokenValidationUiState(
+                                    status = ListenBrainzTokenValidationStatus.INVALID,
+                                    message = "已连接 ListenBrainz，但令牌无效" +
+                                        if (hadSavedToken) "；仍保留原令牌。" else "；未保存。",
+                                    checkedToken = normalized,
+                                ),
+                            )
+                        }
+                    }
+                }
+                .onFailure { error ->
+                    if (error is CancellationException) throw error
+                    _uiState.update {
+                        it.copy(
+                            listenBrainzTokenValidation = ListenBrainzTokenValidationUiState(
+                                status = ListenBrainzTokenValidationStatus.ERROR,
+                                message = describeListenBrainzValidationFailure(error) +
+                                    if (hadSavedToken) "；仍保留原令牌。" else "；未保存。",
+                                checkedToken = normalized,
+                            ),
+                        )
+                    }
+                }
+        }
+    }
+
+    fun setListenBrainzMinimumSeconds(seconds: Int) = updatePreferences {
+        it.copy(listenBrainzMinimumSeconds = seconds.coerceIn(30, 600))
+    }
+
+    fun setListenBrainzMinimumPercent(percent: Int) = updatePreferences {
+        it.copy(listenBrainzMinimumPercent = percent.coerceIn(10, 100))
+    }
+
     fun consumeError() = _uiState.update { it.copy(error = null) }
 
     private fun updatePreferences(transform: (AppPreferences) -> AppPreferences) {
@@ -462,6 +641,48 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun showError(message: String) = _uiState.update { it.copy(error = message) }
+
+    private fun trackListenBrainzPlayback(snapshot: ListenBrainzStateSnapshot) {
+        val preferences = snapshot.preferences
+        val configured = preferences.listenBrainzEnabled && preferences.listenBrainzToken.isNotBlank()
+        listenBrainzPlaybackTracker.observe(
+            observation = ListenBrainzPlaybackObservation(
+                track = snapshot.track,
+                playbackGeneration = snapshot.playbackGeneration,
+                playbackState = snapshot.playbackState,
+                positionMs = snapshot.positionMs,
+                durationMs = snapshot.durationMs,
+                reportingEnabled = configured,
+            ),
+            elapsedRealtimeMs = SystemClock.elapsedRealtime(),
+            epochSeconds = System.currentTimeMillis() / 1_000L,
+        ).forEach { report ->
+            when (report) {
+                is ListenBrainzPlaybackReport.NowPlaying -> listenBrainzSubmissions.trySend(
+                    ListenBrainzSubmission.NowPlaying(
+                        token = preferences.listenBrainzToken,
+                        track = report.track,
+                        durationMs = report.durationMs,
+                    ),
+                )
+                is ListenBrainzPlaybackReport.Finished -> if (
+                    shouldSubmitListen(
+                        listenedMs = report.listenedMs,
+                        durationMs = report.durationMs,
+                        minimumSeconds = preferences.listenBrainzMinimumSeconds,
+                        minimumPercent = preferences.listenBrainzMinimumPercent,
+                    )
+                ) {
+                    listenBrainzSubmissions.trySend(
+                        ListenBrainzSubmission.Listen(
+                            token = preferences.listenBrainzToken,
+                            report = report,
+                        ),
+                    )
+                }
+            }
+        }
+    }
 
     private fun playOnRenderer(rendererId: String, track: MediaEntry) {
         if (rendererId == LOCAL_RENDERER_ID) {
@@ -628,6 +849,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     override fun onCleared() {
+        listenBrainzSubmissions.close()
         getApplication<Application>().unregisterReceiver(remoteMediaCommandReceiver)
         getApplication<Application>().startService(
             Intent(getApplication(), RemotePlaybackService::class.java).setAction(RemotePlaybackService.ACTION_STOP_SERVICE),
@@ -637,6 +859,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     companion object {
+        private const val TAG = "LsMusicViewModel"
         const val LOCAL_RENDERER_ID = "local-renderer"
         private val LOCAL_RENDERER = DlnaDevice(
             id = LOCAL_RENDERER_ID,

@@ -11,6 +11,7 @@ import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import com.linxyi.lsmusic.listenbrainz.MusicBrainzMetadataParser
 import org.jupnp.android.AndroidUpnpService
 import org.jupnp.controlpoint.ActionCallback
 import org.jupnp.model.action.ActionInvocation
@@ -166,6 +167,7 @@ class DlnaController(context: Context) : AutoCloseable {
                         ?: runCatching { DIDLParser().generate(DIDLContent().apply { addItem(item) }) }
                             .onFailure { Log.w(TAG, "Unable to preserve source DIDL metadata for ${item.id}", it) }
                             .getOrNull()
+                    val musicBrainzIds = MusicBrainzMetadataParser.parse(originalDidlMetadata)
                     MediaEntry(
                         id = item.id,
                         parentId = item.parentID,
@@ -184,6 +186,9 @@ class DlnaController(context: Context) : AutoCloseable {
                         mimeType = selectedResource.protocolInfo?.contentFormat,
                         protocolInfo = selectedResource.protocolInfo?.toString(),
                         didlMetadata = originalDidlMetadata,
+                        recordingMbid = musicBrainzIds.recordingMbid,
+                        releaseMbid = musicBrainzIds.releaseMbid,
+                        artistMbids = musicBrainzIds.artistMbids,
                         isContainer = false,
                     )
                 }

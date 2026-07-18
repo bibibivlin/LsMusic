@@ -108,6 +108,7 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
@@ -122,6 +123,7 @@ import com.linxyi.lsmusic.dlna.RemotePlaybackState
 import com.linxyi.lsmusic.dlna.DlnaDeviceKind
 import com.linxyi.lsmusic.ui.theme.LsMusicTheme
 import coil3.compose.AsyncImage
+import kotlin.math.roundToInt
 
 private data class DestinationItem(
     val destination: AppDestination,
@@ -186,6 +188,10 @@ fun LsMusicApp(viewModel: LsMusicViewModel) {
             onDefaultGridLayout = viewModel::setDefaultGridLayout,
             onThemeMode = viewModel::setThemeMode,
             onDynamicColor = viewModel::setDynamicColor,
+            onListenBrainzEnabled = viewModel::setListenBrainzEnabled,
+            onListenBrainzToken = viewModel::validateAndSaveListenBrainzToken,
+            onListenBrainzMinimumSeconds = viewModel::setListenBrainzMinimumSeconds,
+            onListenBrainzMinimumPercent = viewModel::setListenBrainzMinimumPercent,
         )
     }
 }
@@ -215,6 +221,10 @@ private fun LsMusicContent(
     onDefaultGridLayout: (Boolean) -> Unit,
     onThemeMode: (ThemeMode) -> Unit,
     onDynamicColor: (Boolean) -> Unit,
+    onListenBrainzEnabled: (Boolean) -> Unit,
+    onListenBrainzToken: (String) -> Unit,
+    onListenBrainzMinimumSeconds: (Int) -> Unit,
+    onListenBrainzMinimumPercent: (Int) -> Unit,
 ) {
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val expanded = maxWidth >= 720.dp
@@ -280,6 +290,10 @@ private fun LsMusicContent(
                             onDefaultGridLayout = onDefaultGridLayout,
                             onThemeMode = onThemeMode,
                             onDynamicColor = onDynamicColor,
+                            onListenBrainzEnabled = onListenBrainzEnabled,
+                            onListenBrainzToken = onListenBrainzToken,
+                            onListenBrainzMinimumSeconds = onListenBrainzMinimumSeconds,
+                            onListenBrainzMinimumPercent = onListenBrainzMinimumPercent,
                         )
                     }
                 }
@@ -795,7 +809,24 @@ private fun SettingsScreen(
     onDefaultGridLayout: (Boolean) -> Unit,
     onThemeMode: (ThemeMode) -> Unit,
     onDynamicColor: (Boolean) -> Unit,
+    onListenBrainzEnabled: (Boolean) -> Unit,
+    onListenBrainzToken: (String) -> Unit,
+    onListenBrainzMinimumSeconds: (Int) -> Unit,
+    onListenBrainzMinimumPercent: (Int) -> Unit,
 ) {
+    var listenBrainzTokenDraft by rememberSaveable(preferences.listenBrainzToken) {
+        mutableStateOf(preferences.listenBrainzToken)
+    }
+    val normalizedTokenDraft = listenBrainzTokenDraft.trim()
+    val tokenValidation = state.listenBrainzTokenValidation
+    val validationAppliesToDraft = tokenValidation.checkedToken == normalizedTokenDraft &&
+        normalizedTokenDraft.isNotEmpty()
+    val tokenValidationStatus = if (validationAppliesToDraft) {
+        tokenValidation.status
+    } else {
+        ListenBrainzTokenValidationStatus.IDLE
+    }
+    val isCheckingToken = tokenValidationStatus == ListenBrainzTokenValidationStatus.CHECKING
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(20.dp, 24.dp, 20.dp, 32.dp),
@@ -881,13 +912,126 @@ private fun SettingsScreen(
             }
         }
         item {
+            Text("网络", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+        }
+        item {
+            SwitchSettingCard(
+                title = "ListenBrainz 播放记录",
+                description = if (preferences.listenBrainzEnabled) {
+                    if (preferences.listenBrainzToken.isBlank()) "请填写 API 令牌后开始上报。" else "上报正在播放和满足规则的播放记录。"
+                } else {
+                    "关闭时不会向 ListenBrainz 发送任何播放信息。"
+                },
+                checked = preferences.listenBrainzEnabled,
+                onCheckedChange = onListenBrainzEnabled,
+            )
+        }
+        item {
+            SettingCard(
+                title = "ListenBrainz API",
+                description = "令牌仅保存在本机且不会进入系统备份。可在 ListenBrainz 账户设置中获取。",
+            ) {
+                OutlinedTextField(
+                    value = listenBrainzTokenDraft,
+                    onValueChange = { listenBrainzTokenDraft = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("用户令牌（API Token）") },
+                    singleLine = true,
+                    enabled = !isCheckingToken,
+                    visualTransformation = PasswordVisualTransformation(),
+                )
+                Spacer(Modifier.height(10.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (isCheckingToken) {
+                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(8.dp))
+                    }
+                    Text(
+                        text = when {
+                            validationAppliesToDraft -> tokenValidation.message.orEmpty()
+                            normalizedTokenDraft.isEmpty() && preferences.listenBrainzToken.isNotBlank() ->
+                                "保存后将清除当前令牌。"
+                            normalizedTokenDraft == preferences.listenBrainzToken && normalizedTokenDraft.isNotEmpty() ->
+                                "当前令牌已保存；可重新校验令牌和网络连接。"
+                            normalizedTokenDraft.isNotEmpty() -> "此令牌尚未校验，校验成功后才会保存。"
+                            else -> "请输入 ListenBrainz 用户令牌。"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = when (tokenValidationStatus) {
+                            ListenBrainzTokenValidationStatus.VALID -> MaterialTheme.colorScheme.primary
+                            ListenBrainzTokenValidationStatus.INVALID,
+                            ListenBrainzTokenValidationStatus.ERROR -> MaterialTheme.colorScheme.error
+                            else -> MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
+                }
+                Spacer(Modifier.height(10.dp))
+                FilledTonalButton(
+                    onClick = { onListenBrainzToken(normalizedTokenDraft) },
+                    enabled = !isCheckingToken && (
+                        normalizedTokenDraft.isNotEmpty() || preferences.listenBrainzToken.isNotBlank()
+                    ),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        when {
+                            isCheckingToken -> "正在校验…"
+                            normalizedTokenDraft.isEmpty() -> "清除令牌"
+                            normalizedTokenDraft == preferences.listenBrainzToken -> "重新校验令牌"
+                            else -> "校验并保存"
+                        },
+                    )
+                }
+            }
+        }
+        item {
+            SettingCard(
+                title = "上传规则",
+                description = "播放时长或播放百分比任一达到设定值，曲目结束后即正式记录。",
+            ) {
+                Text("最小播放时长：${formatRuleDuration(preferences.listenBrainzMinimumSeconds)}")
+                Slider(
+                    value = preferences.listenBrainzMinimumSeconds.toFloat(),
+                    onValueChange = { onListenBrainzMinimumSeconds((it / 30f).roundToInt() * 30) },
+                    valueRange = 30f..600f,
+                    steps = 18,
+                )
+                Spacer(Modifier.height(8.dp))
+                Text("最小播放百分比：${preferences.listenBrainzMinimumPercent}%")
+                Slider(
+                    value = preferences.listenBrainzMinimumPercent.toFloat(),
+                    onValueChange = { onListenBrainzMinimumPercent((it / 5f).roundToInt() * 5) },
+                    valueRange = 10f..100f,
+                    steps = 17,
+                )
+                Text(
+                    "当前规则：播放 ${formatRuleDuration(preferences.listenBrainzMinimumSeconds)}，或达到曲目时长的 ${preferences.listenBrainzMinimumPercent}%。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        item {
             Text(
-                "L's Music 仅浏览和播放音乐媒体。",
+                "播放记录仅在启用 ListenBrainz 并填写令牌后上报。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(start = 4.dp, top = 8.dp, end = 4.dp),
             )
         }
+    }
+}
+
+private fun formatRuleDuration(seconds: Int): String {
+    val minutes = seconds / 60
+    val remainingSeconds = seconds % 60
+    return when {
+        minutes == 0 -> "${remainingSeconds} 秒"
+        remainingSeconds == 0 -> "${minutes} 分钟"
+        else -> "${minutes} 分 ${remainingSeconds} 秒"
     }
 }
 
@@ -1378,6 +1522,10 @@ private fun LibraryPreview() {
             onDefaultGridLayout = {},
             onThemeMode = {},
             onDynamicColor = {},
+            onListenBrainzEnabled = {},
+            onListenBrainzToken = {},
+            onListenBrainzMinimumSeconds = {},
+            onListenBrainzMinimumPercent = {},
         )
     }
 }

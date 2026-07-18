@@ -24,6 +24,9 @@ data class MediaEntry(
     val mimeType: String? = null,
     val protocolInfo: String? = null,
     val didlMetadata: String? = null,
+    val recordingMbid: String? = null,
+    val releaseMbid: String? = null,
+    val artistMbids: List<String> = emptyList(),
     val isContainer: Boolean,
     val childCount: Int? = null,
 )
