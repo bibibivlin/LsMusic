@@ -116,6 +116,7 @@ data class LsMusicUiState(
     val browseViewState: BrowseViewState = BrowseViewState(),
     val queue: List<MediaEntry> = emptyList(),
     val currentQueueIndex: Int = -1,
+    val playbackOrder: PlaybackOrder = PlaybackOrder(),
     val playbackGeneration: Long = 0L,
     val playbackState: RemotePlaybackState = RemotePlaybackState.STOPPED,
     val positionMs: Long = 0L,
@@ -147,11 +148,16 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     ).buildAsync()
     private var localController: MediaController? = null
     private var pendingLocalPlayback: Pair<List<MediaEntry>, Int>? = null
+    private var localPlaybackReadyTrackId: String? = null
     private var initialServerSelectionResolved = false
     private var initialRendererSelectionResolved = false
     private var userSelectedServer = false
     private var userSelectedRenderer = false
     private var remoteSessionServiceStarted = false
+    private var remotePlaybackObservedPlaying = false
+    private var remotePlaybackObservedProgress = false
+    private var remoteLastObservedPositionMs: Long? = null
+    private var remoteTrackCommandedAtMs = 0L
     private var listenBrainzTokenValidationJob: Job? = null
 
     private val remoteMediaCommandReceiver = object : BroadcastReceiver() {
@@ -170,6 +176,21 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         override fun onPlaybackStateChanged(playbackState: Int) = updateLocalPlaybackState()
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+            if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT) {
+                val currentTrackId = _uiState.value.currentTrack?.id
+                if (
+                    isConfirmedLocalRepeatTransition(
+                        currentTrackId = currentTrackId,
+                        playbackReadyTrackId = localPlaybackReadyTrackId,
+                        transitionedTrackId = mediaItem?.mediaId,
+                    )
+                ) {
+                    localPlaybackReadyTrackId = null
+                    handleAutomaticTrackEnd()
+                }
+                updateLocalPlaybackState()
+                return
+            }
             val index = _uiState.value.queue.indexOfFirst { it.id == mediaItem?.mediaId }
             if (index >= 0) {
                 _uiState.update {
@@ -359,6 +380,9 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         val state = _uiState.value
         if (state.selectedRendererId == id) return
         userSelectedRenderer = true
+        remotePlaybackObservedPlaying = false
+        remotePlaybackObservedProgress = false
+        remoteLastObservedPositionMs = null
         preferenceStore.saveLastRendererId(id)
         if (state.playbackState != RemotePlaybackState.STOPPED) stopRenderer(state.selectedRendererId)
         _uiState.update {
@@ -420,6 +444,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
             it.copy(
                 queue = queue,
                 currentQueueIndex = index,
+                playbackOrder = it.playbackOrder.markPlayed(track.id),
                 playbackGeneration = it.playbackGeneration + 1L,
                 playbackState = RemotePlaybackState.PLAYING,
                 positionMs = 0L,
@@ -447,6 +472,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
             it.copy(
                 queue = playable,
                 currentQueueIndex = 0,
+                playbackOrder = it.playbackOrder.resetForQueue(first.id),
                 playbackGeneration = it.playbackGeneration + 1L,
                 playbackState = RemotePlaybackState.PLAYING,
                 positionMs = 0L,
@@ -455,6 +481,11 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
             )
         }
         playOnRenderer(rendererId, first)
+    }
+
+    /** Replaces the queue with the supplied tracks in a one-time random order. */
+    fun shufflePlay(tracks: List<MediaEntry>) {
+        playAll(tracks.shuffled())
     }
 
     /** Appends every playable track, preserving the existing queue and playback. */
@@ -491,16 +522,66 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun next() = playAt(_uiState.value.currentQueueIndex + 1)
+    fun next() = advanceToNext(automatic = false)
 
     fun previous() = playAt(_uiState.value.currentQueueIndex - 1)
 
-    private fun playAt(index: Int) {
-        val track = _uiState.value.queue.getOrNull(index) ?: return
-        val rendererId = _uiState.value.selectedRendererId ?: return showError("请先选择播放设备")
+    private fun advanceToNext(automatic: Boolean) {
+        val state = _uiState.value
+        val selection = selectNextTrack(
+            queue = state.queue,
+            currentIndex = state.currentQueueIndex,
+            order = state.playbackOrder,
+            automatic = automatic,
+        )
+        if (selection == null) {
+            if (automatic) finishPlayback()
+            return
+        }
+        if (automatic && selection.index == state.currentQueueIndex) {
+            _uiState.update {
+                it.copy(
+                    playbackOrder = selection.order,
+                    playbackGeneration = it.playbackGeneration + 1L,
+                    playbackState = RemotePlaybackState.PLAYING,
+                    positionMs = 0L,
+                    bufferedPositionMs = 0L,
+                )
+            }
+            if (state.selectedRendererId != LOCAL_RENDERER_ID) {
+                state.selectedRendererId?.let { playOnRenderer(it, state.queue[selection.index]) }
+            }
+            return
+        }
+        playAt(selection.index, selection.order)
+    }
+
+    private fun handleAutomaticTrackEnd() {
+        advanceToNext(automatic = true)
+    }
+
+    private fun finishPlayback() {
+        val state = _uiState.value
+        if (state.selectedRendererId == LOCAL_RENDERER_ID) {
+            localController?.stop()
+        }
+        _uiState.update {
+            it.copy(
+                playbackState = RemotePlaybackState.STOPPED,
+                positionMs = it.durationMs,
+                bufferedPositionMs = 0L,
+            )
+        }
+    }
+
+    private fun playAt(index: Int, playbackOrder: PlaybackOrder? = null) {
+        val state = _uiState.value
+        val track = state.queue.getOrNull(index) ?: return
+        val rendererId = state.selectedRendererId ?: return showError("请先选择播放设备")
         _uiState.update {
             it.copy(
                 currentQueueIndex = index,
+                playbackOrder = (playbackOrder ?: it.playbackOrder).markPlayed(track.id),
                 playbackGeneration = it.playbackGeneration + 1L,
                 playbackState = RemotePlaybackState.PLAYING,
                 positionMs = 0L,
@@ -527,6 +608,9 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
             state.copy(
                 queue = queue,
                 currentQueueIndex = current,
+                playbackOrder = state.playbackOrder.copy(
+                    shuffledTrackIds = state.playbackOrder.shuffledTrackIds.intersect(queue.mapTo(mutableSetOf()) { it.id }),
+                ),
                 playbackState = if (queue.isEmpty()) RemotePlaybackState.STOPPED else state.playbackState,
             )
         }
@@ -561,6 +645,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
             it.copy(
                 queue = emptyList(),
                 currentQueueIndex = -1,
+                playbackOrder = it.playbackOrder.resetForQueue(null),
                 playbackState = RemotePlaybackState.STOPPED,
                 positionMs = 0L,
                 durationMs = 0L,
@@ -581,6 +666,22 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun setDestination(destination: AppDestination) = _uiState.update { it.copy(destination = destination) }
+
+    fun cycleRepeatMode() = _uiState.update { state ->
+        state.copy(
+            playbackOrder = state.playbackOrder.copy(
+                repeatMode = when (state.playbackOrder.repeatMode) {
+                    RepeatMode.NONE -> RepeatMode.ONE
+                    RepeatMode.ONE -> RepeatMode.ALL
+                    RepeatMode.ALL -> RepeatMode.NONE
+                },
+            ),
+        )
+    }
+
+    fun toggleShuffle() = _uiState.update { state ->
+        state.copy(playbackOrder = state.playbackOrder.toggleShuffle(state.currentTrack?.id))
+    }
 
     fun setAlbumSort(sort: AlbumSort) = _uiState.update { it.copy(albumSort = sort) }
 
@@ -809,6 +910,10 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
                 playLocally(controller, state.queue, state.currentQueueIndex)
             }
         } else {
+            remotePlaybackObservedPlaying = false
+            remotePlaybackObservedProgress = false
+            remoteLastObservedPositionMs = null
+            remoteTrackCommandedAtMs = SystemClock.elapsedRealtime()
             dlna.setTrack(
                 rendererId,
                 track,
@@ -822,10 +927,14 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun stopRenderer(rendererId: String?) {
+        remotePlaybackObservedPlaying = false
+        remotePlaybackObservedProgress = false
+        remoteLastObservedPositionMs = null
         when (rendererId) {
             null -> Unit
             LOCAL_RENDERER_ID -> {
                 pendingLocalPlayback = null
+                localPlaybackReadyTrackId = null
                 localController?.stop()
                 localController?.clearMediaItems()
             }
@@ -852,6 +961,9 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
                 dlna.pause(rendererId, onError = ::showError)
             }
             RemotePlaybackService.COMMAND_STOP -> {
+                remotePlaybackObservedPlaying = false
+                remotePlaybackObservedProgress = false
+                remoteLastObservedPositionMs = null
                 _uiState.update { it.copy(playbackState = RemotePlaybackState.STOPPED, positionMs = 0L) }
                 dlna.stop(rendererId, onError = ::showError)
             }
@@ -896,8 +1008,14 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
 
     private fun playLocally(controller: MediaController, queue: List<MediaEntry>, index: Int) {
         pendingLocalPlayback = null
+        localPlaybackReadyTrackId = null
         if (index !in queue.indices) return
         controller.setMediaItems(queue.map { it.toMediaItem() }, index, 0L)
+        // Repeating the current Media3 item gives the ViewModel one transition point at every
+        // track boundary. The app then applies its own repeat/shuffle rules for both local and
+        // DLNA playback instead of allowing the two playback paths to diverge.
+        controller.repeatMode = Player.REPEAT_MODE_ONE
+        controller.shuffleModeEnabled = false
         controller.prepare()
         controller.play()
     }
@@ -921,6 +1039,12 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     private fun updateLocalPlaybackState() {
         val controller = localController ?: return
         if (_uiState.value.selectedRendererId != LOCAL_RENDERER_ID) return
+        if (
+            controller.isPlaying &&
+            controller.currentMediaItem?.mediaId == _uiState.value.currentTrack?.id
+        ) {
+            localPlaybackReadyTrackId = controller.currentMediaItem?.mediaId
+        }
         _uiState.update {
             it.copy(
                 playbackState = when {
@@ -939,13 +1063,46 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         val rendererId = state.selectedRendererId ?: return
         if (rendererId == LOCAL_RENDERER_ID) {
             localController?.let(::refreshLocalProgress)
-        } else if (state.currentTrack != null) {
+        } else {
+            val requestedTrackId = state.currentTrack?.id ?: return
             dlna.getPositionInfo(rendererId, onResult = { position, duration ->
-                _uiState.update {
-                    it.copy(
-                        positionMs = parseTimeMs(position),
-                        durationMs = parseTimeMs(duration).takeIf { value -> value > 0L } ?: it.durationMs,
-                    )
+                viewModelScope.launch {
+                    val positionMs = parseTimeMs(position)
+                    _uiState.update {
+                        if (it.selectedRendererId == rendererId && it.currentTrack?.id == requestedTrackId) {
+                            remoteLastObservedPositionMs?.let { previousPositionMs ->
+                                if (positionMs > previousPositionMs) remotePlaybackObservedProgress = true
+                            }
+                            remoteLastObservedPositionMs = positionMs
+                            it.copy(
+                                positionMs = positionMs,
+                                durationMs = parseTimeMs(duration).takeIf { value -> value > 0L } ?: it.durationMs,
+                            )
+                        } else {
+                            it
+                        }
+                    }
+                }
+            })
+            dlna.getTransportInfo(rendererId, onResult = { transportState ->
+                viewModelScope.launch {
+                    val current = _uiState.value
+                    if (
+                        current.selectedRendererId != rendererId ||
+                        current.currentTrack?.id != requestedTrackId
+                    ) return@launch
+                    when (transportState?.uppercase()) {
+                        "PLAYING" -> remotePlaybackObservedPlaying = true
+                        "STOPPED", "NO_MEDIA_PRESENT" -> if (
+                            remotePlaybackObservedPlaying &&
+                            remotePlaybackObservedProgress &&
+                            current.playbackState == RemotePlaybackState.PLAYING &&
+                            SystemClock.elapsedRealtime() - remoteTrackCommandedAtMs >= REMOTE_END_GUARD_MS
+                        ) {
+                            remotePlaybackObservedPlaying = false
+                            handleAutomaticTrackEnd()
+                        }
+                    }
                 }
             })
         }
@@ -976,6 +1133,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     companion object {
         private const val TAG = "LsMusicViewModel"
         private const val ROOT_OBJECT_ID = "0"
+        private const val REMOTE_END_GUARD_MS = 3_000L
         const val LOCAL_RENDERER_ID = "local-renderer"
         private val LOCAL_RENDERER = DlnaDevice(
             id = LOCAL_RENDERER_ID,

@@ -499,6 +499,43 @@ class DlnaController(context: Context) : AutoCloseable {
         })
     }
 
+    fun getTransportInfo(
+        rendererId: String,
+        onResult: (state: String?) -> Unit,
+        onError: (String) -> Unit = {},
+    ) {
+        val renderer = devices[rendererId]
+        val avTransport = renderer?.findService(AV_TRANSPORT)
+        if (renderer != null && avTransport != null && isAkConnectRenderer(renderer)) {
+            getAkConnectTransportInfo(
+                rendererId = rendererId,
+                controlUri = avTransport.controlURI,
+                descriptorUri = renderer.identity.descriptorURL.toURI(),
+                onResult = onResult,
+                onError = onError,
+            )
+            return
+        }
+        val upnp = service ?: return onError("DLNA 服务尚未就绪")
+        val remoteService = renderer?.findService(AV_TRANSPORT)
+            ?: return onError("播放设备不支持 AVTransport")
+        val action = remoteService.getAction("GetTransportInfo")
+            ?: return onError("播放设备不支持状态查询")
+        val invocation = ActionInvocation(action)
+        invocation.setInput("InstanceID", 0)
+        upnp.controlPoint.execute(object : ActionCallback(invocation) {
+            override fun success(invocation: ActionInvocation<*>) {
+                onResult(invocation.getOutput("CurrentTransportState")?.value?.toString())
+            }
+
+            override fun failure(
+                invocation: ActionInvocation<*>,
+                operation: UpnpResponse?,
+                defaultMsg: String,
+            ) = onError(defaultMsg)
+        })
+    }
+
     private fun getAkConnectPositionInfo(
         rendererId: String,
         controlUri: URI,
@@ -546,6 +583,51 @@ class DlnaController(context: Context) : AutoCloseable {
             }.onFailure { failure ->
                 val error = "进度查询失败：${failure.localizedMessage ?: "无法连接播放设备"}"
                 Log.w(TAG, "Raw GetPositionInfo failed on $rendererId: $error", failure)
+                onError(error)
+            }
+        }
+    }
+
+    private fun getAkConnectTransportInfo(
+        rendererId: String,
+        controlUri: URI,
+        descriptorUri: URI,
+        onResult: (state: String?) -> Unit,
+        onError: (String) -> Unit,
+    ) {
+        val endpoint = if (controlUri.isAbsolute) controlUri else descriptorUri.resolve(controlUri)
+        commandExecutor.execute {
+            runCatching {
+                val payload = akConnectActionEnvelope("GetTransportInfo", mapOf("InstanceID" to "0"))
+                    .toByteArray(Charsets.UTF_8)
+                val connection = (URL(endpoint.toString()).openConnection() as HttpURLConnection)
+                try {
+                    connection.requestMethod = "POST"
+                    connection.connectTimeout = HTTP_TIMEOUT_MS
+                    connection.readTimeout = HTTP_TIMEOUT_MS
+                    connection.doOutput = true
+                    connection.setRequestProperty("Content-Type", "text/xml; charset=\"utf-8\"")
+                    connection.setRequestProperty(
+                        "SOAPACTION",
+                        "\"urn:schemas-upnp-org:service:AVTransport:1#GetTransportInfo\"",
+                    )
+                    connection.setFixedLengthStreamingMode(payload.size)
+                    connection.outputStream.use { it.write(payload) }
+                    val responseCode = connection.responseCode
+                    val response = (if (responseCode in 200..299) connection.inputStream else connection.errorStream)
+                        ?.bufferedReader(Charsets.UTF_8)
+                        ?.use { it.readText() }
+                        .orEmpty()
+                    if (responseCode !in 200..299) {
+                        error("HTTP $responseCode${response.takeIf { it.isNotBlank() }?.let { ": $it" }.orEmpty()}")
+                    }
+                    soapValue(response, "CurrentTransportState")
+                } finally {
+                    connection.disconnect()
+                }
+            }.onSuccess(onResult).onFailure { failure ->
+                val error = "状态查询失败：${failure.localizedMessage ?: "无法连接播放设备"}"
+                Log.w(TAG, "Raw GetTransportInfo failed on $rendererId: $error", failure)
                 onError(error)
             }
         }

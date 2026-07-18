@@ -52,6 +52,7 @@ import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Devices
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Folder
+import androidx.compose.material.icons.rounded.FormatListNumbered
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.GridView
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
@@ -62,11 +63,15 @@ import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Repeat
+import androidx.compose.material.icons.rounded.RepeatOne
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.SkipPrevious
 import androidx.compose.material.icons.rounded.Speaker
+import androidx.compose.material.icons.rounded.SyncDisabled
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -327,12 +332,15 @@ fun LsMusicApp(viewModel: LsMusicViewModel) {
             onPlay = viewModel::playNow,
             onQueue = viewModel::addToQueue,
             onPlayAll = viewModel::playAll,
+            onShufflePlay = viewModel::shufflePlay,
             onQueueAll = viewModel::addAllToQueue,
             onAlbumSort = viewModel::setAlbumSort,
             onSaveBrowseViewState = viewModel::saveBrowseViewState,
             onTogglePlayback = viewModel::togglePlayback,
             onPrevious = viewModel::previous,
             onNext = viewModel::next,
+            onCycleRepeat = viewModel::cycleRepeatMode,
+            onToggleShuffle = viewModel::toggleShuffle,
             onSeek = viewModel::seekTo,
             onRemoveQueue = viewModel::removeFromQueue,
             onMoveQueue = viewModel::moveQueueItem,
@@ -362,12 +370,15 @@ private fun LsMusicContent(
     onPlay: (MediaEntry) -> Unit,
     onQueue: (MediaEntry) -> Unit,
     onPlayAll: (List<MediaEntry>) -> Unit,
+    onShufflePlay: (List<MediaEntry>) -> Unit,
     onQueueAll: (List<MediaEntry>) -> Unit,
     onAlbumSort: (AlbumSort) -> Unit,
     onSaveBrowseViewState: (BrowsePageKey, BrowseViewState) -> Unit,
     onTogglePlayback: () -> Unit,
     onPrevious: () -> Unit,
     onNext: () -> Unit,
+    onCycleRepeat: () -> Unit,
+    onToggleShuffle: () -> Unit,
     onSeek: (Long) -> Unit,
     onRemoveQueue: (Int) -> Unit,
     onMoveQueue: (Int, Int) -> Unit,
@@ -445,6 +456,7 @@ private fun LsMusicContent(
                             onPlay,
                             onQueue,
                             onPlayAll,
+                            onShufflePlay,
                             onQueueAll,
                             onAlbumSort,
                             onSaveBrowseViewState,
@@ -462,6 +474,8 @@ private fun LsMusicContent(
                             onTogglePlayback,
                             onPrevious,
                             onNext,
+                            onCycleRepeat,
+                            onToggleShuffle,
                             onSeek,
                         )
                         AppDestination.SETTINGS -> SettingsScreen(
@@ -557,6 +571,7 @@ private fun LibraryScreen(
     onPlay: (MediaEntry) -> Unit,
     onQueue: (MediaEntry) -> Unit,
     onPlayAll: (List<MediaEntry>) -> Unit,
+    onShufflePlay: (List<MediaEntry>) -> Unit,
     onQueueAll: (List<MediaEntry>) -> Unit,
     onAlbumSort: (AlbumSort) -> Unit,
     onSaveBrowseViewState: (BrowsePageKey, BrowseViewState) -> Unit,
@@ -574,6 +589,7 @@ private fun LibraryScreen(
                 onPlay = onPlay,
                 onQueue = onQueue,
                 onPlayAll = onPlayAll,
+                onShufflePlay = onShufflePlay,
                 onQueueAll = onQueueAll,
             )
             LibraryPageKind.RESOLVING -> ResolvingLibraryPage(
@@ -589,6 +605,7 @@ private fun LibraryScreen(
                 onPlay = onPlay,
                 onQueue = onQueue,
                 onPlayAll = onPlayAll,
+                onShufflePlay = onShufflePlay,
                 onQueueAll = onQueueAll,
                 onAlbumSort = onAlbumSort,
                 onSaveBrowseViewState = onSaveBrowseViewState,
@@ -638,6 +655,7 @@ private fun LibraryDirectoryScreen(
     onPlay: (MediaEntry) -> Unit,
     onQueue: (MediaEntry) -> Unit,
     onPlayAll: (List<MediaEntry>) -> Unit,
+    onShufflePlay: (List<MediaEntry>) -> Unit,
     onQueueAll: (List<MediaEntry>) -> Unit,
     onAlbumSort: (AlbumSort) -> Unit,
     onSaveBrowseViewState: (BrowsePageKey, BrowseViewState) -> Unit,
@@ -956,6 +974,7 @@ private fun AlbumDetailScreen(
     onPlay: (MediaEntry) -> Unit,
     onQueue: (MediaEntry) -> Unit,
     onPlayAll: (List<MediaEntry>) -> Unit,
+    onShufflePlay: (List<MediaEntry>) -> Unit,
     onQueueAll: (List<MediaEntry>) -> Unit,
 ) {
     val tracks = remember(state.entries) { state.entries.filterNot { it.isContainer } }
@@ -1050,21 +1069,38 @@ private fun AlbumDetailScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Spacer(Modifier.height(14.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
                     FilledTonalButton(
                         onClick = { onPlayAll(tracks) },
                         enabled = !state.isBrowsing && trackCount > 0,
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(horizontal = 6.dp),
                     ) {
                         Icon(Icons.Rounded.PlayArrow, null)
-                        Spacer(Modifier.width(8.dp))
+                        Spacer(Modifier.width(4.dp))
                         Text("播放全部")
+                    }
+                    OutlinedButton(
+                        onClick = { onShufflePlay(tracks) },
+                        enabled = !state.isBrowsing && trackCount > 0,
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(horizontal = 6.dp),
+                    ) {
+                        Icon(Icons.Rounded.Shuffle, null)
+                        Spacer(Modifier.width(4.dp))
+                        Text("随机播放")
                     }
                     OutlinedButton(
                         onClick = { onQueueAll(tracks) },
                         enabled = !state.isBrowsing && trackCount > 0,
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(horizontal = 6.dp),
                     ) {
                         Icon(Icons.Rounded.Add, null)
-                        Spacer(Modifier.width(8.dp))
+                        Spacer(Modifier.width(4.dp))
                         Text("加入队列")
                     }
                 }
@@ -1724,6 +1760,8 @@ private fun NowPlayingScreen(
     onTogglePlayback: () -> Unit,
     onPrevious: () -> Unit,
     onNext: () -> Unit,
+    onCycleRepeat: () -> Unit,
+    onToggleShuffle: () -> Unit,
     onSeek: (Long) -> Unit,
 ) {
     val track = state.currentTrack
@@ -1815,8 +1853,27 @@ private fun NowPlayingScreen(
             Spacer(Modifier.height(if (compact) 6.dp else 12.dp))
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(if (compact) 16.dp else 22.dp),
+                horizontalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 14.dp),
             ) {
+                IconButton(onClick = onToggleShuffle) {
+                    Icon(
+                        if (state.playbackOrder.shuffleEnabled) {
+                            Icons.Rounded.Shuffle
+                        } else {
+                            Icons.Rounded.FormatListNumbered
+                        },
+                        if (state.playbackOrder.shuffleEnabled) {
+                            "随机播放，点击切换到顺序播放"
+                        } else {
+                            "顺序播放，点击切换到随机播放"
+                        },
+                        tint = if (state.playbackOrder.shuffleEnabled) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
+                }
                 FilledTonalIconButton(
                     onClick = onPrevious,
                     enabled = state.currentQueueIndex > 0,
@@ -1835,9 +1892,28 @@ private fun NowPlayingScreen(
                 }
                 FilledTonalIconButton(
                     onClick = onNext,
-                    enabled = state.currentQueueIndex < state.queue.lastIndex,
+                    enabled = canSelectNextTrack(state.queue, state.currentQueueIndex, state.playbackOrder),
                     modifier = Modifier.size(secondaryControlSize),
                 ) { Icon(Icons.Rounded.SkipNext, "下一首", Modifier.size(controlIconSize)) }
+                IconButton(onClick = onCycleRepeat) {
+                    Icon(
+                        when (state.playbackOrder.repeatMode) {
+                            RepeatMode.NONE -> Icons.Rounded.SyncDisabled
+                            RepeatMode.ONE -> Icons.Rounded.RepeatOne
+                            RepeatMode.ALL -> Icons.Rounded.Repeat
+                        },
+                        when (state.playbackOrder.repeatMode) {
+                            RepeatMode.NONE -> "循环关闭，点击切换到单曲循环"
+                            RepeatMode.ONE -> "单曲循环，点击切换到列表循环"
+                            RepeatMode.ALL -> "列表循环，点击关闭循环"
+                        },
+                        tint = if (state.playbackOrder.repeatMode == RepeatMode.NONE) {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        } else {
+                            MaterialTheme.colorScheme.primary
+                        },
+                    )
+                }
             }
         }
     }
@@ -1904,7 +1980,10 @@ private fun MiniPlayer(
             IconButton(onClick = onTogglePlayback) {
                 Icon(if (state.playbackState == RemotePlaybackState.PLAYING) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, "播放或暂停")
             }
-            IconButton(onClick = onNext, enabled = state.currentQueueIndex < state.queue.lastIndex) {
+            IconButton(
+                onClick = onNext,
+                enabled = canSelectNextTrack(state.queue, state.currentQueueIndex, state.playbackOrder),
+            ) {
                 Icon(Icons.Rounded.SkipNext, "下一首")
             }
         }
@@ -2103,12 +2182,15 @@ private fun LibraryPreview() {
             onPlay = {},
             onQueue = {},
             onPlayAll = {},
+            onShufflePlay = {},
             onQueueAll = {},
             onAlbumSort = {},
             onSaveBrowseViewState = { _, _ -> },
             onTogglePlayback = {},
             onPrevious = {},
             onNext = {},
+            onCycleRepeat = {},
+            onToggleShuffle = {},
             onSeek = {},
             onRemoveQueue = {},
             onMoveQueue = { _, _ -> },
