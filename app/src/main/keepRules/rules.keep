@@ -10,3 +10,11 @@
 #-keepclassmembers class fqcn.of.javascript.interface.for.webview {
 #   public *;
 #}
+
+# jUPnP builds its service/action model dynamically from device XML and uses that model while
+# serializing SOAP requests. Its bundled consumer rules only cover annotated local services and
+# header constructors. With full R8 optimization, the remaining control/XML pipeline can be
+# merged and rewritten (including Browse and SOAPActionProcessorImpl), which breaks Browse request
+# serialization on Android even though SSDP discovery still works. Allow R8 to discard unreachable
+# desktop/OSGi adapters, but do not optimize or rename the jUPnP classes that the Android app uses.
+-keep,allowshrinking class org.jupnp.** { *; }
