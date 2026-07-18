@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -37,9 +38,11 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.rounded.PlaylistPlay
+import androidx.compose.material.icons.automirrored.rounded.Sort
 import androidx.compose.material.icons.automirrored.rounded.ViewList
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Album
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ClearAll
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteOutline
@@ -177,6 +180,7 @@ fun LsMusicApp(viewModel: LsMusicViewModel) {
             onQueue = viewModel::addToQueue,
             onPlayAll = viewModel::playAll,
             onQueueAll = viewModel::addAllToQueue,
+            onAlbumSort = viewModel::setAlbumSort,
             onTogglePlayback = viewModel::togglePlayback,
             onPrevious = viewModel::previous,
             onNext = viewModel::next,
@@ -210,6 +214,7 @@ private fun LsMusicContent(
     onQueue: (MediaEntry) -> Unit,
     onPlayAll: (List<MediaEntry>) -> Unit,
     onQueueAll: (List<MediaEntry>) -> Unit,
+    onAlbumSort: (AlbumSort) -> Unit,
     onTogglePlayback: () -> Unit,
     onPrevious: () -> Unit,
     onNext: () -> Unit,
@@ -264,6 +269,7 @@ private fun LsMusicContent(
                             onQueue,
                             onPlayAll,
                             onQueueAll,
+                            onAlbumSort,
                             onOpenSettings = { onDestination(AppDestination.SETTINGS) },
                         )
                         AppDestination.QUEUE -> QueueScreen(
@@ -374,17 +380,24 @@ private fun LibraryScreen(
     onQueue: (MediaEntry) -> Unit,
     onPlayAll: (List<MediaEntry>) -> Unit,
     onQueueAll: (List<MediaEntry>) -> Unit,
+    onAlbumSort: (AlbumSort) -> Unit,
     onOpenSettings: () -> Unit,
 ) {
     var query by rememberSaveable { mutableStateOf("") }
     var useGrid by rememberSaveable(state.preferences.useGridByDefault) {
         mutableStateOf(state.preferences.useGridByDefault)
     }
-    val visibleEntries = remember(state.entries, query) {
-        if (query.isBlank()) state.entries
+    val isAlbumCollection = state.entries.isNotEmpty() &&
+        state.entries.all { it.isContainer } &&
+        state.entries.any { it.isAlbum }
+    val visibleEntries = remember(state.entries, query, state.albumSort, isAlbumCollection) {
+        val filtered = if (query.isBlank()) state.entries
         else state.entries.filter {
-            it.title.contains(query, ignoreCase = true) || it.creator.contains(query, ignoreCase = true)
+            it.title.contains(query, ignoreCase = true) ||
+                it.creator.contains(query, ignoreCase = true) ||
+                it.albumArtist.contains(query, ignoreCase = true)
         }
+        if (isAlbumCollection) filtered.sortedAlbums(state.albumSort) else filtered
     }
     val isTrackCollection = state.entries.isNotEmpty() && state.entries.all { !it.isContainer }
 
@@ -427,20 +440,41 @@ private fun LibraryScreen(
             )
         }
         item(span = { GridItemSpan(maxLineSpan) }) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (state.path.size > 1) {
-                    FilledTonalIconButton(onClick = { onNavigateTo(state.path.lastIndex - 1) }) {
-                        Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回上一级")
+            if (isAlbumCollection) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (state.path.size > 1) {
+                            FilledTonalIconButton(onClick = { onNavigateTo(state.path.lastIndex - 1) }) {
+                                Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回上一级")
+                            }
+                            Spacer(Modifier.width(8.dp))
+                        }
+                        Breadcrumbs(state.path, onNavigateTo, Modifier.weight(1f))
                     }
-                    Spacer(Modifier.width(8.dp))
-                }
-                Breadcrumbs(state.path, onNavigateTo, Modifier.weight(1f))
-                Spacer(Modifier.width(8.dp))
-                FilledTonalIconButton(onClick = { useGrid = !useGrid }) {
-                    Icon(
-                        if (useGrid) Icons.AutoMirrored.Rounded.ViewList else Icons.Rounded.GridView,
-                        if (useGrid) "切换到列表" else "切换到封面网格",
+                    AlbumCollectionToolbar(
+                        albumCount = visibleEntries.size,
+                        sort = state.albumSort,
+                        useGrid = useGrid,
+                        onSort = onAlbumSort,
+                        onToggleLayout = { useGrid = !useGrid },
                     )
+                }
+            } else {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (state.path.size > 1) {
+                        FilledTonalIconButton(onClick = { onNavigateTo(state.path.lastIndex - 1) }) {
+                            Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回上一级")
+                        }
+                        Spacer(Modifier.width(8.dp))
+                    }
+                    Breadcrumbs(state.path, onNavigateTo, Modifier.weight(1f))
+                    Spacer(Modifier.width(8.dp))
+                    FilledTonalIconButton(onClick = { useGrid = !useGrid }) {
+                        Icon(
+                            if (useGrid) Icons.AutoMirrored.Rounded.ViewList else Icons.Rounded.GridView,
+                            if (useGrid) "切换到列表" else "切换到封面网格",
+                        )
+                    }
                 }
             }
         }
@@ -486,6 +520,114 @@ private fun LibraryScreen(
         }
     }
 }
+
+@Composable
+private fun AlbumCollectionToolbar(
+    albumCount: Int,
+    sort: AlbumSort,
+    useGrid: Boolean,
+    onSort: (AlbumSort) -> Unit,
+    onToggleLayout: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(24.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 18.dp, top = 8.dp, end = 8.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "$albumCount 张专辑",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    "浏览与排序",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            AlbumSortPicker(sort, onSort)
+            Spacer(Modifier.width(6.dp))
+            FilledTonalIconButton(onClick = onToggleLayout) {
+                Icon(
+                    if (useGrid) Icons.AutoMirrored.Rounded.ViewList else Icons.Rounded.GridView,
+                    if (useGrid) "切换到列表" else "切换到封面网格",
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AlbumSortPicker(
+    selected: AlbumSort,
+    onSelected: (AlbumSort) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        AssistChip(
+            onClick = { expanded = true },
+            label = { Text(selected.shortLabel) },
+            leadingIcon = { Icon(Icons.AutoMirrored.Rounded.Sort, null, Modifier.size(18.dp)) },
+            trailingIcon = { Icon(Icons.Rounded.ExpandMore, null, Modifier.size(18.dp)) },
+        )
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            AlbumSort.entries.forEach { option ->
+                DropdownMenuItem(
+                    text = {
+                        Column {
+                            Text(option.menuLabel)
+                            option.explanation?.let {
+                                Text(
+                                    it,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    },
+                    leadingIcon = {
+                        if (option == selected) Icon(Icons.Rounded.Check, null)
+                        else Spacer(Modifier.size(24.dp))
+                    },
+                    onClick = {
+                        onSelected(option)
+                        expanded = false
+                    },
+                )
+            }
+        }
+    }
+}
+
+private val AlbumSort.shortLabel: String
+    get() = when (this) {
+        AlbumSort.SERVER_DEFAULT -> "服务器默认"
+        AlbumSort.YEAR_ASCENDING -> "年份 ↑"
+        AlbumSort.YEAR_DESCENDING -> "年份 ↓"
+        AlbumSort.ALBUM_ARTIST -> "专辑艺术家"
+        AlbumSort.TITLE -> "标题"
+    }
+
+private val AlbumSort.menuLabel: String
+    get() = when (this) {
+        AlbumSort.SERVER_DEFAULT -> "服务器默认排序"
+        AlbumSort.YEAR_ASCENDING -> "年份：从早到晚"
+        AlbumSort.YEAR_DESCENDING -> "年份：从新到旧"
+        AlbumSort.ALBUM_ARTIST -> "专辑艺术家"
+        AlbumSort.TITLE -> "标题"
+    }
+
+private val AlbumSort.explanation: String?
+    get() = when (this) {
+        AlbumSort.SERVER_DEFAULT -> "沿用媒体服务器返回的次序"
+        AlbumSort.TITLE -> "数字和符号 → 英文 → 中文拼音 → 其他语言"
+        else -> null
+    }
 
 @Composable
 private fun TrackCollectionScreen(
@@ -726,33 +868,49 @@ private fun MediaGridCard(
                 modifier = Modifier.fillMaxWidth().aspectRatio(1f),
             )
         }
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(start = 14.dp, top = 12.dp, end = 8.dp, bottom = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    entry.title,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Text(
-                    when {
-                        entry.isContainer && entry.childCount != null -> "${entry.childCount} 项"
-                        entry.creator.isNotBlank() -> entry.creator
-                        entry.album.isNotBlank() -> entry.album
-                        entry.isContainer -> "文件夹"
-                        else -> entry.duration ?: "音频"
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            if (!entry.isContainer) {
-                IconButton(onClick = onQueue) { Icon(Icons.Rounded.Add, "加入播放列表") }
+        BoxWithConstraints {
+            val isCompactCard = maxWidth < 144.dp
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(
+                    start = 14.dp,
+                    top = 12.dp,
+                    end = if (entry.isContainer) 14.dp else 8.dp,
+                    bottom = 12.dp,
+                ),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        entry.title,
+                        modifier = Modifier.heightIn(min = 48.dp),
+                        style = if (isCompactCard) {
+                            MaterialTheme.typography.bodyLarge
+                        } else {
+                            MaterialTheme.typography.titleMedium
+                        },
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        when {
+                            entry.isAlbum -> albumDetails(entry)
+                            entry.isContainer && entry.childCount != null -> "${entry.childCount} 项"
+                            entry.creator.isNotBlank() -> entry.creator
+                            entry.album.isNotBlank() -> entry.album
+                            entry.isContainer -> "文件夹"
+                            else -> entry.duration ?: "音频"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                if (!entry.isContainer) {
+                    IconButton(onClick = onQueue) { Icon(Icons.Rounded.Add, "加入播放列表") }
+                }
             }
         }
     }
@@ -779,6 +937,7 @@ private fun MediaEntryRow(
             Column(Modifier.weight(1f)) {
                 Text(entry.title, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 val details = when {
+                    entry.isAlbum -> albumDetails(entry)
                     entry.isContainer && entry.childCount != null -> "${entry.childCount} 项"
                     entry.creator.isNotBlank() && !entry.duration.isNullOrBlank() -> "${entry.creator} · ${entry.duration}"
                     entry.creator.isNotBlank() -> entry.creator
@@ -797,6 +956,12 @@ private fun MediaEntryRow(
         }
     }
 }
+
+private fun albumDetails(entry: MediaEntry): String = listOfNotNull(
+    entry.albumArtist.takeIf { it.isNotBlank() },
+    entry.year?.toString(),
+    entry.childCount?.let { "$it 项" },
+).joinToString(" · ").ifBlank { "专辑" }
 
 @Composable
 private fun SettingsScreen(
@@ -1511,6 +1676,7 @@ private fun LibraryPreview() {
             onQueue = {},
             onPlayAll = {},
             onQueueAll = {},
+            onAlbumSort = {},
             onTogglePlayback = {},
             onPrevious = {},
             onNext = {},

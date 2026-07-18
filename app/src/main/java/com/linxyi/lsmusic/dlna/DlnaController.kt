@@ -140,15 +140,27 @@ class DlnaController(context: Context) : AutoCloseable {
             override fun received(actionInvocation: ActionInvocation<*>, didl: DIDLContent) {
                 val rawDidl = actionInvocation.getOutput("Result")?.value?.toString()
                 val folders = didl.containers.map { container ->
+                    val artists = container.getPropertyValues(DIDLObject.Property.UPNP.ARTIST::class.java)
+                    val albumArtist = artists.firstOrNull {
+                        it.role.equals("AlbumArtist", ignoreCase = true)
+                    }?.name.orEmpty().ifBlank {
+                        artists.firstOrNull()?.name.orEmpty().ifBlank { container.creator.orEmpty() }
+                    }
+                    val mediaClass = container.clazz?.value.orEmpty()
                     MediaEntry(
                         id = container.id,
                         parentId = container.parentID,
                         title = container.title.orEmpty(),
                         creator = container.creator.orEmpty(),
+                        albumArtist = albumArtist,
+                        year = parseAlbumYear(
+                            container.getFirstPropertyValue(DIDLObject.Property.DC.DATE::class.java),
+                        ),
                         artworkUri = resolveServerUri(
                             container.getFirstPropertyValue(DIDLObject.Property.UPNP.ALBUM_ART_URI::class.java),
                         ),
                         isContainer = true,
+                        isAlbum = mediaClass.startsWith("object.container.album"),
                         childCount = container.childCount,
                     )
                 }
@@ -192,7 +204,9 @@ class DlnaController(context: Context) : AutoCloseable {
                         isContainer = false,
                     )
                 }
-                onResult(folders.sortedBy { it.title.lowercase() } + tracks)
+                // A null SortCriteria asks the ContentDirectory to use its own default order.
+                // Preserve that order so the UI can offer it alongside client-side album sorting.
+                onResult(folders + tracks)
             }
 
             override fun updateStatus(status: Status) = Unit

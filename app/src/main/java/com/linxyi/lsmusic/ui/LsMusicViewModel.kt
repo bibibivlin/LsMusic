@@ -103,6 +103,7 @@ data class LsMusicUiState(
     val selectedServerId: String? = null,
     val selectedRendererId: String? = null,
     val entries: List<MediaEntry> = emptyList(),
+    val albumSort: AlbumSort = AlbumSort.SERVER_DEFAULT,
     val path: List<BrowseLocation> = listOf(BrowseLocation("0", "音乐库")),
     val queue: List<MediaEntry> = emptyList(),
     val currentQueueIndex: Int = -1,
@@ -537,6 +538,8 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun setDestination(destination: AppDestination) = _uiState.update { it.copy(destination = destination) }
+
+    fun setAlbumSort(sort: AlbumSort) = _uiState.update { it.copy(albumSort = sort) }
 
     fun setGallerySize(size: GallerySize) = updatePreferences { it.copy(gallerySize = size) }
 

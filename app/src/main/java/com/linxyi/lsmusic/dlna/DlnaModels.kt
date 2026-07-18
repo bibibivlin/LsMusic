@@ -16,6 +16,8 @@ data class MediaEntry(
     val title: String,
     val creator: String = "",
     val album: String = "",
+    val albumArtist: String = "",
+    val year: Int? = null,
     val genre: String = "",
     val trackNumber: Int? = null,
     val artworkUri: String? = null,
@@ -28,6 +30,7 @@ data class MediaEntry(
     val releaseMbid: String? = null,
     val artistMbids: List<String> = emptyList(),
     val isContainer: Boolean,
+    val isAlbum: Boolean = false,
     val childCount: Int? = null,
 )
 
@@ -39,3 +42,10 @@ data class DlnaSnapshot(
     val isSearching: Boolean = false,
     val error: String? = null,
 )
+
+private val albumYearPattern = Regex("(?<!\\d)[12]\\d{3}(?!\\d)")
+
+internal fun parseAlbumYear(date: String?): Int? = albumYearPattern.find(date.orEmpty())
+    ?.value
+    ?.toIntOrNull()
+    ?.takeIf { it in 1000..2999 }
