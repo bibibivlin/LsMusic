@@ -109,6 +109,8 @@ data class LsMusicUiState(
     val renderers: List<DlnaDevice> = emptyList(),
     val selectedServerId: String? = null,
     val selectedRendererId: String? = null,
+    val rememberedServer: DlnaDevice? = null,
+    val rememberedRenderer: DlnaDevice? = null,
     val entries: List<MediaEntry> = emptyList(),
     val albumSort: AlbumSort = AlbumSort.SERVER_DEFAULT,
     val path: List<BrowseLocation> = listOf(BrowseLocation("0", "音乐库")),
@@ -126,11 +128,14 @@ data class LsMusicUiState(
     val listenBrainzTokenValidation: ListenBrainzTokenValidationUiState = ListenBrainzTokenValidationUiState(),
     val destination: AppDestination = AppDestination.LIBRARY,
     val isSearching: Boolean = true,
-    val isBrowsing: Boolean = false,
+    val browseLoadStatus: BrowseLoadStatus = BrowseLoadStatus.WAITING_FOR_DEVICE,
     val error: String? = null,
 ) {
     val currentTrack: MediaEntry?
         get() = queue.getOrNull(currentQueueIndex)
+
+    val isBrowsing: Boolean
+        get() = browseLoadStatus == BrowseLoadStatus.LOADING
 }
 
 class LsMusicViewModel(application: Application) : AndroidViewModel(application) {
@@ -140,7 +145,20 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     private val listenBrainzPlaybackTracker = ListenBrainzPlaybackTracker()
     private val listenBrainzSubmissions = Channel<ListenBrainzSubmission>(Channel.BUFFERED)
     private val libraryBrowseStore = LibraryBrowseStore()
-    private val _uiState = MutableStateFlow(LsMusicUiState(preferences = preferenceStore.load()))
+    private val rememberedServer = preferenceStore.lastServer()
+    private val rememberedRenderer = preferenceStore.lastRenderer()?.let {
+        if (it.id == LOCAL_RENDERER_ID) LOCAL_RENDERER else it
+    }
+    private val _uiState = MutableStateFlow(
+        LsMusicUiState(
+            selectedServerId = rememberedServer?.id,
+            selectedRendererId = rememberedRenderer?.id ?: LOCAL_RENDERER_ID,
+            rememberedServer = rememberedServer,
+            rememberedRenderer = rememberedRenderer ?: LOCAL_RENDERER,
+            browsePageKey = rememberedServer?.id?.let { BrowsePageKey(it, ROOT_OBJECT_ID) },
+            preferences = preferenceStore.load(),
+        ),
+    )
     val uiState: StateFlow<LsMusicUiState> = _uiState.asStateFlow()
     private val controllerFuture = MediaController.Builder(
         application,
@@ -241,40 +259,65 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
             dlna.snapshot.collect { snapshot ->
                 val old = _uiState.value
                 val renderers = listOf(LOCAL_RENDERER) + snapshot.renderers
-                val currentServerId = old.selectedServerId?.takeIf { id -> snapshot.servers.any { it.id == id } }
-                val currentRendererId = old.selectedRendererId?.takeIf { id -> renderers.any { it.id == id } }
-                val shouldRestoreServer = !initialServerSelectionResolved && !userSelectedServer && !snapshot.isSearching
-                val shouldRestoreRenderer = !initialRendererSelectionResolved && !userSelectedRenderer && !snapshot.isSearching
-                val serverId = when {
-                    shouldRestoreServer -> preferenceStore.lastServerId()
-                        ?.takeIf { id -> snapshot.servers.any { it.id == id } }
-                        ?: currentServerId
-                        ?: snapshot.servers.firstOrNull()?.id
-                    else -> currentServerId ?: snapshot.servers.firstOrNull()?.id
-                }
-                val rendererId = when {
-                    shouldRestoreRenderer -> preferenceStore.lastRendererId()
-                        ?.takeIf { id -> renderers.any { it.id == id } }
-                        ?: currentRendererId
-                        ?: LOCAL_RENDERER_ID
-                    else -> currentRendererId ?: LOCAL_RENDERER_ID
-                }
+                val serverId = restoreDeviceSelection(
+                    currentId = old.selectedServerId,
+                    rememberedId = rememberedServer?.id,
+                    fallbackId = snapshot.servers.firstOrNull()?.id,
+                    isSearching = snapshot.isSearching,
+                    initialSelectionResolved = initialServerSelectionResolved,
+                    userSelectedDevice = userSelectedServer,
+                )
+                val rendererId = restoreDeviceSelection(
+                    currentId = old.selectedRendererId,
+                    rememberedId = rememberedRenderer?.id,
+                    fallbackId = LOCAL_RENDERER_ID,
+                    isSearching = snapshot.isSearching,
+                    initialSelectionResolved = initialRendererSelectionResolved,
+                    userSelectedDevice = userSelectedRenderer,
+                )
+                val liveServer = snapshot.servers.firstOrNull { it.id == serverId }
+                val liveRenderer = renderers.firstOrNull { it.id == rendererId }
+                val serverWasAvailable = old.servers.any { it.id == serverId }
+                val serverIsAvailable = liveServer != null
                 val serverChanged = serverId != old.selectedServerId
-                if (serverChanged) libraryBrowseStore.clear()
+                val serverAvailabilityChanged = serverWasAvailable != serverIsAvailable
+                val shouldBrowseRoot = (serverChanged || !serverWasAvailable) && liveServer != null
+                if (serverChanged || serverAvailabilityChanged) libraryBrowseStore.clear()
+                if (liveServer != null && liveServer != old.rememberedServer) {
+                    preferenceStore.saveLastServer(liveServer)
+                }
+                if (liveRenderer != null && liveRenderer != old.rememberedRenderer) {
+                    preferenceStore.saveLastRenderer(liveRenderer)
+                }
                 _uiState.update {
                     it.copy(
                         servers = snapshot.servers,
                         renderers = renderers,
                         selectedServerId = serverId,
                         selectedRendererId = rendererId,
-                        entries = if (serverChanged) emptyList() else it.entries,
-                        path = if (serverChanged) listOf(BrowseLocation(ROOT_OBJECT_ID, "音乐库")) else it.path,
-                        browsePageKey = if (serverChanged) {
+                        rememberedServer = liveServer ?: it.rememberedServer,
+                        rememberedRenderer = liveRenderer ?: it.rememberedRenderer,
+                        entries = if (serverChanged || !serverIsAvailable) emptyList() else it.entries,
+                        path = if (serverChanged || !serverIsAvailable) {
+                            listOf(BrowseLocation(ROOT_OBJECT_ID, "音乐库"))
+                        } else {
+                            it.path
+                        },
+                        browsePageKey = if (serverChanged || serverAvailabilityChanged) {
                             serverId?.let { BrowsePageKey(it, ROOT_OBJECT_ID) }
                         } else {
                             it.browsePageKey
                         },
-                        browseViewState = if (serverChanged) BrowseViewState() else it.browseViewState,
+                        browseViewState = if (serverChanged || serverAvailabilityChanged) {
+                            BrowseViewState()
+                        } else {
+                            it.browseViewState
+                        },
+                        browseLoadStatus = when {
+                            shouldBrowseRoot -> BrowseLoadStatus.LOADING
+                            serverChanged || serverAvailabilityChanged -> BrowseLoadStatus.WAITING_FOR_DEVICE
+                            else -> it.browseLoadStatus
+                        },
                         isSearching = snapshot.isSearching,
                         error = snapshot.error ?: it.error,
                     )
@@ -283,7 +326,9 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
                     initialServerSelectionResolved = true
                     initialRendererSelectionResolved = true
                 }
-                if (serverChanged && serverId != null) browse(serverId, ROOT_OBJECT_ID)
+                if (shouldBrowseRoot) {
+                    browse(liveServer.id, ROOT_OBJECT_ID)
+                }
             }
         }
 
@@ -361,16 +406,19 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     fun refreshDevices() = dlna.refresh()
 
     fun selectServer(id: String) {
+        val device = _uiState.value.servers.firstOrNull { it.id == id } ?: return
         userSelectedServer = true
-        preferenceStore.saveLastServerId(id)
+        preferenceStore.saveLastServer(device)
         libraryBrowseStore.clear()
         _uiState.update {
             it.copy(
                 selectedServerId = id,
+                rememberedServer = device,
                 entries = emptyList(),
                 path = listOf(BrowseLocation(ROOT_OBJECT_ID, "音乐库")),
                 browsePageKey = BrowsePageKey(id, ROOT_OBJECT_ID),
                 browseViewState = BrowseViewState(),
+                browseLoadStatus = BrowseLoadStatus.LOADING,
             )
         }
         browse(id, ROOT_OBJECT_ID)
@@ -379,15 +427,17 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     fun selectRenderer(id: String) {
         val state = _uiState.value
         if (state.selectedRendererId == id) return
+        val device = state.renderers.firstOrNull { it.id == id } ?: return
         userSelectedRenderer = true
         remotePlaybackObservedPlaying = false
         remotePlaybackObservedProgress = false
         remoteLastObservedPositionMs = null
-        preferenceStore.saveLastRendererId(id)
+        preferenceStore.saveLastRenderer(device)
         if (state.playbackState != RemotePlaybackState.STOPPED) stopRenderer(state.selectedRendererId)
         _uiState.update {
             it.copy(
                 selectedRendererId = id,
+                rememberedRenderer = device,
                 playbackState = RemotePlaybackState.STOPPED,
                 positionMs = 0L,
                 durationMs = parseTimeMs(it.currentTrack?.duration),
@@ -787,7 +837,11 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
                 browsePageKey = key,
                 browseViewState = cachedPage?.viewState ?: BrowseViewState(),
                 entries = cachedEntries.orEmpty(),
-                isBrowsing = cachedEntries == null,
+                browseLoadStatus = if (cachedEntries == null) {
+                    BrowseLoadStatus.LOADING
+                } else {
+                    BrowseLoadStatus.LOADED
+                },
             )
         }
         trimBrowseCache(resolvedPath, key.serverId)
@@ -804,7 +858,9 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
 
     private fun cacheCurrentBrowsePage(state: LsMusicUiState) {
         val key = state.browsePageKey ?: return
-        if (!state.isBrowsing) libraryBrowseStore.storeEntries(key, state.entries)
+        if (state.browseLoadStatus == BrowseLoadStatus.LOADED) {
+            libraryBrowseStore.storeEntries(key, state.entries)
+        }
     }
 
     private fun trimBrowseCache(path: List<BrowseLocation>, serverId: String) {
@@ -815,7 +871,11 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         val key = BrowsePageKey(serverId, objectId)
         val generation = libraryBrowseStore.beginRequest(key)
         _uiState.update {
-            if (it.browsePageKey == key) it.copy(isBrowsing = true) else it
+            if (it.browsePageKey == key) {
+                it.copy(browseLoadStatus = BrowseLoadStatus.LOADING)
+            } else {
+                it
+            }
         }
         dlna.browse(
             serverId = serverId,
@@ -829,7 +889,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
                             it.copy(
                                 path = it.path.withResolvedLastLocation(entries),
                                 entries = entries,
-                                isBrowsing = false,
+                                browseLoadStatus = BrowseLoadStatus.LOADED,
                             )
                         } else {
                             it
@@ -844,7 +904,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
                         if (it.browsePageKey == key) {
                             it.copy(
                                 path = it.path.withResolvedLastLocation(emptyList()),
-                                isBrowsing = false,
+                                browseLoadStatus = BrowseLoadStatus.FAILED,
                                 error = message,
                             )
                         } else {

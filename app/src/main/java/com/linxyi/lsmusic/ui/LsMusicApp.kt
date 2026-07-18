@@ -167,10 +167,14 @@ private data class LibraryUiState(
     val preferences: AppPreferences,
     val isSearching: Boolean,
     val servers: List<DlnaDevice>,
-    val isBrowsing: Boolean,
+    val selectedServerId: String?,
+    val browseLoadStatus: BrowseLoadStatus,
     val currentTrackId: String?,
     val playbackState: RemotePlaybackState,
-)
+) {
+    val isBrowsing: Boolean
+        get() = browseLoadStatus == BrowseLoadStatus.LOADING
+}
 
 private const val MEDIA_ENTRY_KEY_PREFIX = "media:"
 private const val LIBRARY_GRID_HEADER_COUNT = 3
@@ -401,7 +405,8 @@ private fun LsMusicContent(
         state.preferences,
         state.isSearching,
         state.servers,
-        state.isBrowsing,
+        state.selectedServerId,
+        state.browseLoadStatus,
         state.currentTrack?.id,
         state.playbackState,
     ) {
@@ -414,7 +419,8 @@ private fun LsMusicContent(
             preferences = state.preferences,
             isSearching = state.isSearching,
             servers = state.servers,
-            isBrowsing = state.isBrowsing,
+            selectedServerId = state.selectedServerId,
+            browseLoadStatus = state.browseLoadStatus,
             currentTrackId = state.currentTrack?.id,
             playbackState = state.playbackState,
         )
@@ -689,6 +695,13 @@ private fun LibraryDirectoryScreen(
     )
     val currentQuery by rememberUpdatedState(query)
     val currentUseGrid by rememberUpdatedState(useGrid)
+    val contentStatus = resolveLibraryContentStatus(
+        browseLoadStatus = state.browseLoadStatus,
+        isSearching = state.isSearching,
+        hasSelectedServer = state.selectedServerId != null,
+        selectedServerAvailable = state.servers.any { it.id == state.selectedServerId },
+        visibleEntriesEmpty = visibleEntries.isEmpty(),
+    )
 
     DisposableEffect(pageKey, gridState) {
         onDispose {
@@ -795,14 +808,14 @@ private fun LibraryDirectoryScreen(
                 }
             }
 
-            when {
-                state.isSearching && state.servers.isEmpty() -> item(
+            when (contentStatus) {
+                LibraryContentStatus.LOADING -> item(
                     span = { GridItemSpan(maxLineSpan) },
                     contentType = "library-status",
                 ) {
-                    LoadingPanel("正在扫描局域网中的 DLNA 设备…")
+                    LoadingPanel("正在加载音乐库…")
                 }
-                state.servers.isEmpty() -> item(
+                LibraryContentStatus.NO_SERVER -> item(
                     span = { GridItemSpan(maxLineSpan) },
                     contentType = "library-status",
                 ) {
@@ -814,11 +827,31 @@ private fun LibraryDirectoryScreen(
                         onAction = onOpenSettings,
                     )
                 }
-                state.isBrowsing -> item(
+                LibraryContentStatus.SERVER_UNAVAILABLE -> item(
                     span = { GridItemSpan(maxLineSpan) },
                     contentType = "library-status",
-                ) { LoadingPanel("正在读取音乐目录…") }
-                visibleEntries.isEmpty() -> item(
+                ) {
+                    EmptyPanel(
+                        icon = Icons.Rounded.Devices,
+                        title = "上次使用的媒体库当前不可用",
+                        body = "确认媒体库已开机并连接到同一局域网，或选择其他媒体库。",
+                        action = "打开设备设置",
+                        onAction = onOpenSettings,
+                    )
+                }
+                LibraryContentStatus.LOAD_FAILED -> item(
+                    span = { GridItemSpan(maxLineSpan) },
+                    contentType = "library-status",
+                ) {
+                    EmptyPanel(
+                        icon = Icons.Rounded.MusicNote,
+                        title = "无法读取音乐目录",
+                        body = "请确认媒体库连接正常，然后重新选择或扫描设备。",
+                        action = "打开设备设置",
+                        onAction = onOpenSettings,
+                    )
+                }
+                LibraryContentStatus.EMPTY -> item(
                     span = { GridItemSpan(maxLineSpan) },
                     contentType = "library-status",
                 ) {
@@ -828,7 +861,7 @@ private fun LibraryDirectoryScreen(
                         body = if (query.isBlank()) "返回上一级看看其他唱片或播放列表。" else "换一个关键词试试。",
                     )
                 }
-                else -> gridItemsIndexed(
+                LibraryContentStatus.CONTENT -> gridItemsIndexed(
                     items = visibleEntries,
                     key = { _, it -> mediaEntryKey(it) },
                     contentType = { _, _ -> if (useGrid) "media-grid-card" else "media-list-row" },
@@ -1192,6 +1225,9 @@ private fun DeviceStrip(
                 icon = Icons.Rounded.LibraryMusic,
                 devices = state.servers,
                 selectedId = state.selectedServerId,
+                rememberedDevice = state.rememberedServer,
+                rememberedLabel = "上次使用的媒体库",
+                isSearching = state.isSearching,
                 emptyLabel = "未发现媒体库",
                 onSelected = onSelectServer,
             )
@@ -1201,6 +1237,9 @@ private fun DeviceStrip(
                 icon = Icons.Rounded.Speaker,
                 devices = state.renderers,
                 selectedId = state.selectedRendererId,
+                rememberedDevice = state.rememberedRenderer,
+                rememberedLabel = "上次使用的播放设备",
+                isSearching = state.isSearching,
                 emptyLabel = "选择播放器",
                 onSelected = onSelectRenderer,
             )
@@ -1214,12 +1253,24 @@ private fun DevicePicker(
     icon: ImageVector,
     devices: List<DlnaDevice>,
     selectedId: String?,
+    rememberedDevice: DlnaDevice?,
+    rememberedLabel: String,
+    isSearching: Boolean,
     emptyLabel: String,
     onSelected: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var expanded by remember { mutableStateOf(false) }
     val selected = devices.firstOrNull { it.id == selectedId }
+    val rememberedSelection = rememberedDevice?.takeIf { it.id == selectedId }
+    val selectedName = selected?.name?.takeIf { it.isNotBlank() }
+        ?: rememberedSelection?.name?.takeIf { it.isNotBlank() }
+        ?: if (rememberedSelection != null) rememberedLabel else emptyLabel
+    val connectionStatus = when {
+        selected != null || rememberedSelection == null -> null
+        isSearching -> "正在连接"
+        else -> "当前不可用"
+    }
     Box(modifier) {
         Surface(
             modifier = Modifier.fillMaxWidth().clickable(enabled = devices.isNotEmpty()) { expanded = true },
@@ -1235,7 +1286,7 @@ private fun DevicePicker(
                 Spacer(Modifier.height(4.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        selected?.name ?: emptyLabel,
+                        listOfNotNull(selectedName, connectionStatus).joinToString(" · "),
                         modifier = Modifier.weight(1f),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
@@ -2171,6 +2222,7 @@ private fun LibraryPreview() {
                 currentQueueIndex = 0,
                 playbackState = RemotePlaybackState.PLAYING,
                 isSearching = false,
+                browseLoadStatus = BrowseLoadStatus.LOADED,
             ),
             snackbar = remember { SnackbarHostState() },
             onDestination = {},

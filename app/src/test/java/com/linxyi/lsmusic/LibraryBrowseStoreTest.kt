@@ -2,10 +2,13 @@ package com.linxyi.lsmusic
 
 import com.linxyi.lsmusic.dlna.MediaEntry
 import com.linxyi.lsmusic.ui.BrowsePageKey
+import com.linxyi.lsmusic.ui.BrowseLoadStatus
 import com.linxyi.lsmusic.ui.BrowseViewState
 import com.linxyi.lsmusic.ui.LibraryBrowseStore
+import com.linxyi.lsmusic.ui.LibraryContentStatus
 import com.linxyi.lsmusic.ui.LibraryPageKind
 import com.linxyi.lsmusic.ui.directionalPrefetchRange
+import com.linxyi.lsmusic.ui.resolveLibraryContentStatus
 import com.linxyi.lsmusic.ui.resolveLibraryPageKind
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -14,6 +17,68 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LibraryBrowseStoreTest {
+    @Test
+    fun libraryContentStatus_keepsColdStartPhasesInOneLoadingState() {
+        assertEquals(
+            LibraryContentStatus.LOADING,
+            resolveLibraryContentStatus(
+                browseLoadStatus = BrowseLoadStatus.WAITING_FOR_DEVICE,
+                isSearching = true,
+                hasSelectedServer = true,
+                selectedServerAvailable = false,
+                visibleEntriesEmpty = true,
+            ),
+        )
+        assertEquals(
+            LibraryContentStatus.LOADING,
+            resolveLibraryContentStatus(
+                browseLoadStatus = BrowseLoadStatus.LOADING,
+                isSearching = true,
+                hasSelectedServer = true,
+                selectedServerAvailable = true,
+                visibleEntriesEmpty = true,
+            ),
+        )
+    }
+
+    @Test
+    fun libraryContentStatus_showsEmptyOnlyAfterSuccessfulEmptyBrowse() {
+        assertEquals(
+            LibraryContentStatus.EMPTY,
+            resolveLibraryContentStatus(
+                browseLoadStatus = BrowseLoadStatus.LOADED,
+                isSearching = false,
+                hasSelectedServer = true,
+                selectedServerAvailable = true,
+                visibleEntriesEmpty = true,
+            ),
+        )
+    }
+
+    @Test
+    fun libraryContentStatus_distinguishesUnavailableServerAndBrowseFailure() {
+        assertEquals(
+            LibraryContentStatus.SERVER_UNAVAILABLE,
+            resolveLibraryContentStatus(
+                browseLoadStatus = BrowseLoadStatus.WAITING_FOR_DEVICE,
+                isSearching = false,
+                hasSelectedServer = true,
+                selectedServerAvailable = false,
+                visibleEntriesEmpty = true,
+            ),
+        )
+        assertEquals(
+            LibraryContentStatus.LOAD_FAILED,
+            resolveLibraryContentStatus(
+                browseLoadStatus = BrowseLoadStatus.FAILED,
+                isSearching = false,
+                hasSelectedServer = true,
+                selectedServerAvailable = true,
+                visibleEntriesEmpty = true,
+            ),
+        )
+    }
+
     @Test
     fun pageKind_keepsKnownAlbumWhileItsTracksAreLoading() {
         assertEquals(

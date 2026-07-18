@@ -13,6 +13,46 @@ enum class LibraryPageKind {
     RESOLVING,
 }
 
+enum class BrowseLoadStatus {
+    WAITING_FOR_DEVICE,
+    LOADING,
+    LOADED,
+    FAILED,
+}
+
+internal enum class LibraryContentStatus {
+    LOADING,
+    NO_SERVER,
+    SERVER_UNAVAILABLE,
+    LOAD_FAILED,
+    EMPTY,
+    CONTENT,
+}
+
+internal fun resolveLibraryContentStatus(
+    browseLoadStatus: BrowseLoadStatus,
+    isSearching: Boolean,
+    hasSelectedServer: Boolean,
+    selectedServerAvailable: Boolean,
+    visibleEntriesEmpty: Boolean,
+): LibraryContentStatus {
+    if (browseLoadStatus == BrowseLoadStatus.LOADING) return LibraryContentStatus.LOADING
+    if (!hasSelectedServer) {
+        return if (isSearching) LibraryContentStatus.LOADING else LibraryContentStatus.NO_SERVER
+    }
+    if (!selectedServerAvailable) {
+        return if (isSearching) LibraryContentStatus.LOADING else LibraryContentStatus.SERVER_UNAVAILABLE
+    }
+    return when (browseLoadStatus) {
+        BrowseLoadStatus.WAITING_FOR_DEVICE,
+        BrowseLoadStatus.LOADING -> LibraryContentStatus.LOADING
+        BrowseLoadStatus.FAILED -> LibraryContentStatus.LOAD_FAILED
+        BrowseLoadStatus.LOADED -> {
+            if (visibleEntriesEmpty) LibraryContentStatus.EMPTY else LibraryContentStatus.CONTENT
+        }
+    }
+}
+
 internal fun resolveLibraryPageKind(
     hint: LibraryPageKind,
     entries: List<MediaEntry>?,
