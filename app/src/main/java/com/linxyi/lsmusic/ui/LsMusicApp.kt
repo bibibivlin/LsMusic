@@ -4,11 +4,6 @@ package com.linxyi.lsmusic.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -28,7 +23,6 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
@@ -233,11 +227,9 @@ private fun LsMusicContent(
                 snackbarHost = { SnackbarHost(snackbar) },
                 bottomBar = {
                     Column {
-                        AnimatedVisibility(
-                            visible = state.currentTrack != null && state.destination != AppDestination.NOW_PLAYING,
-                            enter = fadeIn() + scaleIn(initialScale = .96f),
-                            exit = fadeOut() + scaleOut(targetScale = .96f),
-                        ) {
+                        // The player must leave immediately: an exit animation changes Scaffold's
+                        // content height and makes the adaptive now-playing artwork resize mid-entry.
+                        if (state.currentTrack != null && state.destination != AppDestination.NOW_PLAYING) {
                             MiniPlayer(
                                 state = state,
                                 onOpen = { onDestination(AppDestination.NOW_PLAYING) },
@@ -249,12 +241,11 @@ private fun LsMusicContent(
                     }
                 },
             ) { padding ->
-                AnimatedContent(
-                    targetState = state.destination,
-                    label = "main destination",
-                    modifier = Modifier.fillMaxSize().padding(padding),
-                ) { destination ->
-                    when (destination) {
+                // The now-playing page measures its artwork from the final available height.
+                // Avoid AnimatedContent's intermediate size constraints, which make it visibly resize
+                // once while navigating from another destination on large and foldable screens.
+                Box(Modifier.fillMaxSize().padding(padding)) {
+                    when (state.destination) {
                         AppDestination.LIBRARY -> LibraryScreen(
                             state,
                             onOpen,
@@ -337,16 +328,24 @@ private fun SystemNavigationBarAppearance() {
 
 @Composable
 private fun AppNavigationRail(selected: AppDestination, onDestination: (AppDestination) -> Unit) {
-    NavigationRail(Modifier.fillMaxHeight().width(92.dp)) {
+    NavigationRail(Modifier.fillMaxHeight().width(132.dp)) {
         Spacer(Modifier.height(24.dp))
         AlbumMark(54.dp)
         Spacer(Modifier.height(28.dp))
         destinations.forEach { item ->
             NavigationRailItem(
+                modifier = Modifier.width(116.dp),
                 selected = selected == item.destination,
                 onClick = { onDestination(item.destination) },
                 icon = { Icon(item.icon, null) },
-                label = { Text(item.label) },
+                label = {
+                    Text(
+                        item.label,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                },
             )
         }
     }
@@ -1044,72 +1043,99 @@ private fun NowPlayingScreen(
         }
         return
     }
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(24.dp, 28.dp, 24.dp, 40.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        item {
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val compact = maxHeight < 620.dp
+        val wide = maxWidth >= 720.dp
+        val verticalPadding = if (compact) 16.dp else 28.dp
+        val horizontalPadding = if (wide) 40.dp else 24.dp
+        val titleStyle = if (compact) MaterialTheme.typography.headlineLarge else MaterialTheme.typography.displaySmall
+        val subtitleStyle = if (compact) MaterialTheme.typography.bodyLarge else MaterialTheme.typography.titleLarge
+        val primaryControlSize = if (compact) 68.dp else 82.dp
+        val secondaryControlSize = if (compact) 50.dp else 58.dp
+        val controlIconSize = if (compact) 28.dp else 30.dp
+        val primaryIconSize = if (compact) 36.dp else 42.dp
+
+        Column(
+            modifier = Modifier.fillMaxSize().padding(horizontalPadding, verticalPadding),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
             Text(
                 "正在播放",
                 modifier = Modifier.fillMaxWidth(),
                 style = MaterialTheme.typography.headlineLarge,
             )
-            Spacer(Modifier.height(34.dp))
-        }
-        item {
-                HeroArtwork(track)
-                Spacer(Modifier.height(30.dp))
+            Spacer(Modifier.height(if (compact) 8.dp else 16.dp))
+            BoxWithConstraints(
+                modifier = Modifier.fillMaxWidth().weight(1f),
+                contentAlignment = Alignment.Center,
+            ) {
+                val maximumArtwork = if (wide) 440.dp else 360.dp
+                val artworkSize = minOf(
+                    maxWidth * if (wide) .68f else .84f,
+                    maxHeight * .96f,
+                    maximumArtwork,
+                )
+                HeroArtwork(track, artworkSize)
+            }
+            Spacer(Modifier.height(if (compact) 8.dp else 16.dp))
+            Text(
+                track.title,
+                modifier = Modifier.fillMaxWidth(),
+                style = titleStyle,
+                textAlign = TextAlign.Center,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                listOf(track.creator, track.album).filter { it.isNotBlank() }.joinToString(" · ").ifBlank { "来自 DLNA 媒体库" },
+                modifier = Modifier.fillMaxWidth(),
+                style = subtitleStyle,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.height(if (compact) 8.dp else 16.dp))
+            PlaybackSlider(
+                positionMs = state.positionMs,
+                durationMs = state.durationMs,
+                onSeek = onSeek,
+            )
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text(formatPlaybackTime(state.positionMs), style = MaterialTheme.typography.labelMedium)
                 Text(
-                    track.title,
-                    style = MaterialTheme.typography.displaySmall,
-                    textAlign = TextAlign.Center,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
+                    if (state.durationMs > 0L) formatPlaybackTime(state.durationMs) else track.duration ?: "--:--",
+                    style = MaterialTheme.typography.labelMedium,
                 )
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    listOf(track.creator, track.album).filter { it.isNotBlank() }.joinToString(" · ").ifBlank { "来自 DLNA 媒体库" },
-                    style = MaterialTheme.typography.titleLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center,
-                )
-                Spacer(Modifier.height(26.dp))
-                PlaybackSlider(
-                    positionMs = state.positionMs,
-                    durationMs = state.durationMs,
-                    onSeek = onSeek,
-                )
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text(formatPlaybackTime(state.positionMs), style = MaterialTheme.typography.labelMedium)
-                    Text(
-                        if (state.durationMs > 0L) formatPlaybackTime(state.durationMs) else track.duration ?: "--:--",
-                        style = MaterialTheme.typography.labelMedium,
-                    )
-                }
-                Spacer(Modifier.height(16.dp))
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(22.dp),
+            }
+            Spacer(Modifier.height(if (compact) 6.dp else 12.dp))
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(if (compact) 16.dp else 22.dp),
+            ) {
+                FilledTonalIconButton(
+                    onClick = onPrevious,
+                    enabled = state.currentQueueIndex > 0,
+                    modifier = Modifier.size(secondaryControlSize),
                 ) {
-                    FilledTonalIconButton(onClick = onPrevious, enabled = state.currentQueueIndex > 0, modifier = Modifier.size(58.dp)) {
-                        Icon(Icons.Rounded.SkipPrevious, "上一首", Modifier.size(30.dp))
-                    }
-                    FilledIconButton(onClick = onTogglePlayback, modifier = Modifier.size(82.dp)) {
-                        AnimatedContent(state.playbackState, label = "play pause") { playback ->
-                            Icon(
-                                if (playback == RemotePlaybackState.PLAYING) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                                if (playback == RemotePlaybackState.PLAYING) "暂停" else "播放",
-                                Modifier.size(42.dp),
-                            )
-                        }
-                    }
-                    FilledTonalIconButton(
-                        onClick = onNext,
-                        enabled = state.currentQueueIndex < state.queue.lastIndex,
-                        modifier = Modifier.size(58.dp),
-                    ) { Icon(Icons.Rounded.SkipNext, "下一首", Modifier.size(30.dp)) }
+                    Icon(Icons.Rounded.SkipPrevious, "上一首", Modifier.size(controlIconSize))
                 }
+                FilledIconButton(onClick = onTogglePlayback, modifier = Modifier.size(primaryControlSize)) {
+                    AnimatedContent(state.playbackState, label = "play pause") { playback ->
+                        Icon(
+                            if (playback == RemotePlaybackState.PLAYING) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                            if (playback == RemotePlaybackState.PLAYING) "暂停" else "播放",
+                            Modifier.size(primaryIconSize),
+                        )
+                    }
+                }
+                FilledTonalIconButton(
+                    onClick = onNext,
+                    enabled = state.currentQueueIndex < state.queue.lastIndex,
+                    modifier = Modifier.size(secondaryControlSize),
+                ) { Icon(Icons.Rounded.SkipNext, "下一首", Modifier.size(controlIconSize)) }
+            }
         }
     }
 }
@@ -1220,11 +1246,11 @@ private fun ArtworkTile(
 }
 
 @Composable
-private fun HeroArtwork(track: MediaEntry) {
+private fun HeroArtwork(track: MediaEntry, size: androidx.compose.ui.unit.Dp) {
     val colors = if (track.title.hashCode() % 2 == 0) listOf(Color(0xFF6147D7), Color(0xFFFF78A9), Color(0xFFFFC857))
     else listOf(Color(0xFF167D8D), Color(0xFF6957DE), Color(0xFFEC6B9D))
     Box(
-        modifier = Modifier.fillMaxWidth(.78f).widthIn(max = 420.dp).aspectRatio(1f)
+        modifier = Modifier.size(size)
             .clip(RoundedCornerShape(56.dp)).background(Brush.radialGradient(colors)),
         contentAlignment = Alignment.Center,
     ) {
