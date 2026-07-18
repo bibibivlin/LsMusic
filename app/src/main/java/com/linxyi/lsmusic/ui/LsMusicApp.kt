@@ -25,9 +25,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.grid.itemsIndexed as gridItemsIndexed
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
@@ -95,18 +98,24 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
@@ -117,6 +126,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -126,6 +137,13 @@ import com.linxyi.lsmusic.dlna.RemotePlaybackState
 import com.linxyi.lsmusic.dlna.DlnaDeviceKind
 import com.linxyi.lsmusic.ui.theme.LsMusicTheme
 import coil3.compose.AsyncImage
+import coil3.SingletonImageLoader
+import coil3.request.Disposable
+import coil3.request.ImageRequest
+import coil3.size.Precision
+import coil3.size.Scale
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlin.math.roundToInt
 
 private data class DestinationItem(
@@ -133,6 +151,136 @@ private data class DestinationItem(
     val label: String,
     val icon: ImageVector,
 )
+
+@Immutable
+private data class LibraryUiState(
+    val entries: List<MediaEntry>,
+    val albumSort: AlbumSort,
+    val path: List<BrowseLocation>,
+    val browsePageKey: BrowsePageKey?,
+    val browseViewState: BrowseViewState,
+    val preferences: AppPreferences,
+    val isSearching: Boolean,
+    val servers: List<DlnaDevice>,
+    val isBrowsing: Boolean,
+    val currentTrackId: String?,
+    val playbackState: RemotePlaybackState,
+)
+
+private const val MEDIA_ENTRY_KEY_PREFIX = "media:"
+private const val LIBRARY_GRID_HEADER_COUNT = 3
+private const val TRACK_COLLECTION_HEADER_COUNT = 2
+private const val ALBUM_ART_PREFETCH_SCREENS = 2
+private const val MAX_ACTIVE_ART_PREFETCHES = 32
+
+private val artworkPalettes = listOf(
+    listOf(Color(0xFF7454E8), Color(0xFFE263A9)),
+    listOf(Color(0xFF1A9A8A), Color(0xFF8CC85A)),
+    listOf(Color(0xFFE27A45), Color(0xFFF0B85A)),
+    listOf(Color(0xFF376DCC), Color(0xFF6B54E8)),
+)
+
+private fun mediaEntryKey(entry: MediaEntry): String =
+    "$MEDIA_ENTRY_KEY_PREFIX${entry.parentId}:${entry.id}"
+
+private fun initialBrowseItemIndex(
+    entries: List<MediaEntry>,
+    viewState: BrowseViewState,
+    headerCount: Int,
+): Int {
+    val anchorIndex = viewState.anchorEntryKey?.let { anchorKey ->
+        entries.indexOfFirst { mediaEntryKey(it) == anchorKey }
+            .takeIf { it >= 0 }
+            ?.plus(headerCount)
+    }
+    val maximumIndex = (headerCount + entries.lastIndex).coerceAtLeast(0)
+    return (anchorIndex ?: viewState.fallbackItemIndex).coerceIn(0, maximumIndex)
+}
+
+private fun albumArtworkRequest(
+    context: android.content.Context,
+    artworkUri: String,
+    sizePx: Int,
+): ImageRequest = ImageRequest.Builder(context)
+    .data(artworkUri)
+    .memoryCacheKey(albumArtworkThumbnailMemoryCacheKey(artworkUri))
+    .size(sizePx.coerceAtLeast(1))
+    .scale(Scale.FILL)
+    .precision(Precision.INEXACT)
+    .build()
+
+private fun albumArtworkThumbnailMemoryCacheKey(artworkUri: String): String =
+    "album-thumbnail:$artworkUri"
+
+@Composable
+private fun AlbumArtworkPrefetchEffect(
+    pageKey: BrowsePageKey,
+    entries: List<MediaEntry>,
+    gridState: LazyGridState,
+    requestSizePx: Int,
+    enabled: Boolean,
+) {
+    val context = LocalContext.current
+    val imageLoader = remember(context) { SingletonImageLoader.get(context) }
+
+    LaunchedEffect(pageKey, entries, gridState, requestSizePx, enabled) {
+        if (!enabled) return@LaunchedEffect
+        val requests = LinkedHashMap<String, Disposable>()
+        var previousFirstEntryIndex = -1
+        try {
+            snapshotFlow {
+                val visibleEntryIndices = gridState.layoutInfo.visibleItemsInfo
+                    .asSequence()
+                    .map { it.index - LIBRARY_GRID_HEADER_COUNT }
+                    .filter { it in entries.indices }
+                    .toList()
+                visibleEntryIndices.firstOrNull()?.let { first -> first to visibleEntryIndices.last() }
+            }.distinctUntilChanged().collect { visibleRange ->
+                val (firstVisible, lastVisible) = visibleRange ?: return@collect
+                val scrollingForward = previousFirstEntryIndex < 0 || firstVisible >= previousFirstEntryIndex
+                previousFirstEntryIndex = firstVisible
+                val visibleCount = (lastVisible - firstVisible + 1).coerceAtLeast(1)
+                val prefetchCount = (visibleCount * ALBUM_ART_PREFETCH_SCREENS).coerceIn(6, 24)
+                val prefetchIndices = directionalPrefetchRange(
+                    firstVisibleIndex = firstVisible,
+                    lastVisibleIndex = lastVisible,
+                    lastEntryIndex = entries.lastIndex,
+                    prefetchCount = prefetchCount,
+                    forward = scrollingForward,
+                )
+                val visibleUris = entries.subList(firstVisible, lastVisible + 1)
+                    .mapNotNull { it.artworkUri?.takeIf(String::isNotBlank) }
+                    .toSet()
+                val prefetchUris = prefetchIndices
+                    .mapNotNull { index -> entries.getOrNull(index)?.artworkUri?.takeIf(String::isNotBlank) }
+                    .toSet()
+                val retainedUris = visibleUris + prefetchUris
+
+                val iterator = requests.iterator()
+                while (iterator.hasNext()) {
+                    val request = iterator.next()
+                    if (request.value.isDisposed || request.key !in retainedUris) {
+                        if (!request.value.isDisposed) request.value.dispose()
+                        iterator.remove()
+                    }
+                }
+
+                prefetchUris.forEach { uri ->
+                    if (uri !in requests) {
+                        requests[uri] = imageLoader.enqueue(albumArtworkRequest(context, uri, requestSizePx))
+                    }
+                }
+                while (requests.size > MAX_ACTIVE_ART_PREFETCHES) {
+                    val eldest = requests.entries.iterator().next()
+                    if (!eldest.value.isDisposed) eldest.value.dispose()
+                    requests.remove(eldest.key)
+                }
+            }
+        } finally {
+            requests.values.forEach { if (!it.isDisposed) it.dispose() }
+        }
+    }
+}
 
 private val destinations = listOf(
     DestinationItem(AppDestination.LIBRARY, "媒体库", Icons.Rounded.LibraryMusic),
@@ -181,6 +329,7 @@ fun LsMusicApp(viewModel: LsMusicViewModel) {
             onPlayAll = viewModel::playAll,
             onQueueAll = viewModel::addAllToQueue,
             onAlbumSort = viewModel::setAlbumSort,
+            onSaveBrowseViewState = viewModel::saveBrowseViewState,
             onTogglePlayback = viewModel::togglePlayback,
             onPrevious = viewModel::previous,
             onNext = viewModel::next,
@@ -215,6 +364,7 @@ private fun LsMusicContent(
     onPlayAll: (List<MediaEntry>) -> Unit,
     onQueueAll: (List<MediaEntry>) -> Unit,
     onAlbumSort: (AlbumSort) -> Unit,
+    onSaveBrowseViewState: (BrowsePageKey, BrowseViewState) -> Unit,
     onTogglePlayback: () -> Unit,
     onPrevious: () -> Unit,
     onNext: () -> Unit,
@@ -231,6 +381,33 @@ private fun LsMusicContent(
     onListenBrainzMinimumSeconds: (Int) -> Unit,
     onListenBrainzMinimumPercent: (Int) -> Unit,
 ) {
+    val libraryState = remember(
+        state.entries,
+        state.albumSort,
+        state.path,
+        state.browsePageKey,
+        state.browseViewState,
+        state.preferences,
+        state.isSearching,
+        state.servers,
+        state.isBrowsing,
+        state.currentTrack?.id,
+        state.playbackState,
+    ) {
+        LibraryUiState(
+            entries = state.entries,
+            albumSort = state.albumSort,
+            path = state.path,
+            browsePageKey = state.browsePageKey,
+            browseViewState = state.browseViewState,
+            preferences = state.preferences,
+            isSearching = state.isSearching,
+            servers = state.servers,
+            isBrowsing = state.isBrowsing,
+            currentTrackId = state.currentTrack?.id,
+            playbackState = state.playbackState,
+        )
+    }
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val expanded = maxWidth >= 720.dp
         Row(Modifier.fillMaxSize()) {
@@ -262,7 +439,7 @@ private fun LsMusicContent(
                 Box(Modifier.fillMaxSize().padding(padding)) {
                     when (state.destination) {
                         AppDestination.LIBRARY -> LibraryScreen(
-                            state,
+                            libraryState,
                             onOpen,
                             onNavigateTo,
                             onPlay,
@@ -270,6 +447,7 @@ private fun LsMusicContent(
                             onPlayAll,
                             onQueueAll,
                             onAlbumSort,
+                            onSaveBrowseViewState,
                             onOpenSettings = { onDestination(AppDestination.SETTINGS) },
                         )
                         AppDestination.QUEUE -> QueueScreen(
@@ -373,7 +551,7 @@ private fun AppNavigationRail(selected: AppDestination, onDestination: (AppDesti
 
 @Composable
 private fun LibraryScreen(
-    state: LsMusicUiState,
+    state: LibraryUiState,
     onOpen: (MediaEntry) -> Unit,
     onNavigateTo: (Int) -> Unit,
     onPlay: (MediaEntry) -> Unit,
@@ -381,15 +559,52 @@ private fun LibraryScreen(
     onPlayAll: (List<MediaEntry>) -> Unit,
     onQueueAll: (List<MediaEntry>) -> Unit,
     onAlbumSort: (AlbumSort) -> Unit,
+    onSaveBrowseViewState: (BrowsePageKey, BrowseViewState) -> Unit,
     onOpenSettings: () -> Unit,
 ) {
-    var query by rememberSaveable { mutableStateOf("") }
-    var useGrid by rememberSaveable(state.preferences.useGridByDefault) {
-        mutableStateOf(state.preferences.useGridByDefault)
+    val pageKey = state.browsePageKey ?: BrowsePageKey("", state.path.lastOrNull()?.id.orEmpty())
+    key(pageKey) {
+        LibraryDirectoryScreen(
+            state = state,
+            pageKey = pageKey,
+            initialViewState = state.browseViewState,
+            onOpen = onOpen,
+            onNavigateTo = onNavigateTo,
+            onPlay = onPlay,
+            onQueue = onQueue,
+            onPlayAll = onPlayAll,
+            onQueueAll = onQueueAll,
+            onAlbumSort = onAlbumSort,
+            onSaveBrowseViewState = onSaveBrowseViewState,
+            onOpenSettings = onOpenSettings,
+        )
     }
-    val isAlbumCollection = state.entries.isNotEmpty() &&
-        state.entries.all { it.isContainer } &&
-        state.entries.any { it.isAlbum }
+}
+
+@Composable
+private fun LibraryDirectoryScreen(
+    state: LibraryUiState,
+    pageKey: BrowsePageKey,
+    initialViewState: BrowseViewState,
+    onOpen: (MediaEntry) -> Unit,
+    onNavigateTo: (Int) -> Unit,
+    onPlay: (MediaEntry) -> Unit,
+    onQueue: (MediaEntry) -> Unit,
+    onPlayAll: (List<MediaEntry>) -> Unit,
+    onQueueAll: (List<MediaEntry>) -> Unit,
+    onAlbumSort: (AlbumSort) -> Unit,
+    onSaveBrowseViewState: (BrowsePageKey, BrowseViewState) -> Unit,
+    onOpenSettings: () -> Unit,
+) {
+    var query by remember { mutableStateOf(initialViewState.query) }
+    var useGrid by remember {
+        mutableStateOf(initialViewState.useGrid ?: state.preferences.useGridByDefault)
+    }
+    val isAlbumCollection = remember(state.entries) {
+        state.entries.isNotEmpty() &&
+            state.entries.all { it.isContainer } &&
+            state.entries.any { it.isAlbum }
+    }
     val visibleEntries = remember(state.entries, query, state.albumSort, isAlbumCollection) {
         val filtered = if (query.isBlank()) state.entries
         else state.entries.filter {
@@ -399,11 +614,16 @@ private fun LibraryScreen(
         }
         if (isAlbumCollection) filtered.sortedAlbums(state.albumSort) else filtered
     }
-    val isTrackCollection = state.entries.isNotEmpty() && state.entries.all { !it.isContainer }
+    val isTrackCollection = remember(state.entries) {
+        state.entries.isNotEmpty() && state.entries.all { !it.isContainer }
+    }
 
     if (isTrackCollection && !state.isBrowsing) {
         TrackCollectionScreen(
             state = state,
+            pageKey = pageKey,
+            initialViewState = initialViewState,
+            onSaveBrowseViewState = onSaveBrowseViewState,
             onNavigateTo = onNavigateTo,
             onPlay = onPlay,
             onQueue = onQueue,
@@ -413,35 +633,103 @@ private fun LibraryScreen(
         return
     }
 
-    LazyVerticalGrid(
-        columns = if (useGrid) GridCells.Adaptive(state.preferences.gallerySize.minCellSize.dp) else GridCells.Fixed(1),
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 24.dp, bottom = 32.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        item(span = { GridItemSpan(maxLineSpan) }) {
-            Text("L's Music", style = MaterialTheme.typography.headlineLarge)
-        }
-        item(span = { GridItemSpan(maxLineSpan) }) {
-            OutlinedTextField(
-                value = query,
-                onValueChange = { query = it },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                shape = RoundedCornerShape(24.dp),
-                leadingIcon = { Icon(Icons.Rounded.Search, null) },
-                trailingIcon = {
-                    if (query.isNotBlank()) IconButton(onClick = { query = "" }) {
-                        Icon(Icons.Rounded.Close, "清空搜索")
-                    }
-                },
-                placeholder = { Text("搜索当前目录") },
+    val gridState = rememberLazyGridState(
+        initialFirstVisibleItemIndex = initialBrowseItemIndex(
+            entries = visibleEntries,
+            viewState = initialViewState,
+            headerCount = LIBRARY_GRID_HEADER_COUNT,
+        ),
+        initialFirstVisibleItemScrollOffset = initialViewState.scrollOffset.coerceAtLeast(0),
+    )
+    val currentQuery by rememberUpdatedState(query)
+    val currentUseGrid by rememberUpdatedState(useGrid)
+
+    DisposableEffect(pageKey, gridState) {
+        onDispose {
+            val anchorKey = gridState.layoutInfo.visibleItemsInfo
+                .firstOrNull { it.index == gridState.firstVisibleItemIndex }
+                ?.key as? String
+            onSaveBrowseViewState(
+                pageKey,
+                BrowseViewState(
+                    query = currentQuery,
+                    useGrid = currentUseGrid,
+                    anchorEntryKey = anchorKey?.takeIf { it.startsWith(MEDIA_ENTRY_KEY_PREFIX) },
+                    fallbackItemIndex = gridState.firstVisibleItemIndex,
+                    scrollOffset = gridState.firstVisibleItemScrollOffset,
+                ),
             )
         }
-        item(span = { GridItemSpan(maxLineSpan) }) {
-            if (isAlbumCollection) {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    }
+
+    BoxWithConstraints {
+        val gridSpacing = 12.dp
+        val availableWidth = (maxWidth - 40.dp).coerceAtLeast(1.dp)
+        val minimumCellWidth = state.preferences.gallerySize.minCellSize.dp
+        val columnCount = if (useGrid) {
+            ((availableWidth + gridSpacing) / (minimumCellWidth + gridSpacing)).toInt().coerceAtLeast(1)
+        } else {
+            1
+        }
+        val artworkWidth = (availableWidth - gridSpacing * (columnCount - 1)) / columnCount
+        val artworkRequestSizePx = with(LocalDensity.current) { artworkWidth.roundToPx() }
+
+        AlbumArtworkPrefetchEffect(
+            pageKey = pageKey,
+            entries = visibleEntries,
+            gridState = gridState,
+            requestSizePx = artworkRequestSizePx,
+            enabled = useGrid && isAlbumCollection && !state.isBrowsing && visibleEntries.isNotEmpty(),
+        )
+
+        LazyVerticalGrid(
+            columns = if (useGrid) GridCells.Adaptive(minimumCellWidth) else GridCells.Fixed(1),
+            state = gridState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 24.dp, bottom = 32.dp),
+            verticalArrangement = Arrangement.spacedBy(gridSpacing),
+            horizontalArrangement = Arrangement.spacedBy(gridSpacing),
+        ) {
+            item(span = { GridItemSpan(maxLineSpan) }, contentType = "library-header") {
+                Text("L's Music", style = MaterialTheme.typography.headlineLarge)
+            }
+            item(span = { GridItemSpan(maxLineSpan) }, contentType = "library-header") {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    shape = RoundedCornerShape(24.dp),
+                    leadingIcon = { Icon(Icons.Rounded.Search, null) },
+                    trailingIcon = {
+                        if (query.isNotBlank()) IconButton(onClick = { query = "" }) {
+                            Icon(Icons.Rounded.Close, "清空搜索")
+                        }
+                    },
+                    placeholder = { Text("搜索当前目录") },
+                )
+            }
+            item(span = { GridItemSpan(maxLineSpan) }, contentType = "library-header") {
+                if (isAlbumCollection) {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (state.path.size > 1) {
+                                FilledTonalIconButton(onClick = { onNavigateTo(state.path.lastIndex - 1) }) {
+                                    Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回上一级")
+                                }
+                                Spacer(Modifier.width(8.dp))
+                            }
+                            Breadcrumbs(state.path, onNavigateTo, Modifier.weight(1f))
+                        }
+                        AlbumCollectionToolbar(
+                            albumCount = visibleEntries.size,
+                            sort = state.albumSort,
+                            useGrid = useGrid,
+                            onSort = onAlbumSort,
+                            onToggleLayout = { useGrid = !useGrid },
+                        )
+                    }
+                } else {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         if (state.path.size > 1) {
                             FilledTonalIconButton(onClick = { onNavigateTo(state.path.lastIndex - 1) }) {
@@ -450,71 +738,72 @@ private fun LibraryScreen(
                             Spacer(Modifier.width(8.dp))
                         }
                         Breadcrumbs(state.path, onNavigateTo, Modifier.weight(1f))
+                        Spacer(Modifier.width(8.dp))
+                        FilledTonalIconButton(onClick = { useGrid = !useGrid }) {
+                            Icon(
+                                if (useGrid) Icons.AutoMirrored.Rounded.ViewList else Icons.Rounded.GridView,
+                                if (useGrid) "切换到列表" else "切换到封面网格",
+                            )
+                        }
                     }
-                    AlbumCollectionToolbar(
-                        albumCount = visibleEntries.size,
-                        sort = state.albumSort,
-                        useGrid = useGrid,
-                        onSort = onAlbumSort,
-                        onToggleLayout = { useGrid = !useGrid },
+                }
+            }
+
+            when {
+                state.isSearching && state.servers.isEmpty() -> item(
+                    span = { GridItemSpan(maxLineSpan) },
+                    contentType = "library-status",
+                ) {
+                    LoadingPanel("正在扫描局域网中的 DLNA 设备…")
+                }
+                state.servers.isEmpty() -> item(
+                    span = { GridItemSpan(maxLineSpan) },
+                    contentType = "library-status",
+                ) {
+                    EmptyPanel(
+                        icon = Icons.Rounded.Devices,
+                        title = "还没发现媒体库",
+                        body = "在设置中选择或重新扫描局域网内的 DLNA 媒体库。",
+                        action = "打开设备设置",
+                        onAction = onOpenSettings,
                     )
                 }
-            } else {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (state.path.size > 1) {
-                        FilledTonalIconButton(onClick = { onNavigateTo(state.path.lastIndex - 1) }) {
-                            Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回上一级")
-                        }
-                        Spacer(Modifier.width(8.dp))
-                    }
-                    Breadcrumbs(state.path, onNavigateTo, Modifier.weight(1f))
-                    Spacer(Modifier.width(8.dp))
-                    FilledTonalIconButton(onClick = { useGrid = !useGrid }) {
-                        Icon(
-                            if (useGrid) Icons.AutoMirrored.Rounded.ViewList else Icons.Rounded.GridView,
-                            if (useGrid) "切换到列表" else "切换到封面网格",
+                state.isBrowsing -> item(
+                    span = { GridItemSpan(maxLineSpan) },
+                    contentType = "library-status",
+                ) { LoadingPanel("正在读取音乐目录…") }
+                visibleEntries.isEmpty() -> item(
+                    span = { GridItemSpan(maxLineSpan) },
+                    contentType = "library-status",
+                ) {
+                    EmptyPanel(
+                        icon = Icons.Rounded.MusicNote,
+                        title = if (query.isBlank()) "这个目录是空的" else "没有匹配的音乐",
+                        body = if (query.isBlank()) "返回上一级看看其他唱片或播放列表。" else "换一个关键词试试。",
+                    )
+                }
+                else -> gridItemsIndexed(
+                    items = visibleEntries,
+                    key = { _, it -> mediaEntryKey(it) },
+                    contentType = { _, _ -> if (useGrid) "media-grid-card" else "media-list-row" },
+                ) { index, entry ->
+                    if (useGrid) {
+                        MediaGridCard(
+                            entry = entry,
+                            compact = state.preferences.gallerySize == GallerySize.COMPACT,
+                            artworkRequestSizePx = artworkRequestSizePx,
+                            onOpen = { onOpen(entry) },
+                            onQueue = { onQueue(entry) },
+                        )
+                    } else {
+                        MediaEntryRow(
+                            entry = entry,
+                            emphasized = index % 5 == 0,
+                            onOpen = { onOpen(entry) },
+                            onPlay = { onPlay(entry) },
+                            onQueue = { onQueue(entry) },
                         )
                     }
-                }
-            }
-        }
-
-        when {
-            state.isSearching && state.servers.isEmpty() -> item(span = { GridItemSpan(maxLineSpan) }) {
-                LoadingPanel("正在扫描局域网中的 DLNA 设备…")
-            }
-            state.servers.isEmpty() -> item(span = { GridItemSpan(maxLineSpan) }) {
-                EmptyPanel(
-                    icon = Icons.Rounded.Devices,
-                    title = "还没发现媒体库",
-                    body = "在设置中选择或重新扫描局域网内的 DLNA 媒体库。",
-                    action = "打开设备设置",
-                    onAction = onOpenSettings,
-                )
-            }
-            state.isBrowsing -> item(span = { GridItemSpan(maxLineSpan) }) { LoadingPanel("正在读取音乐目录…") }
-            visibleEntries.isEmpty() -> item(span = { GridItemSpan(maxLineSpan) }) {
-                EmptyPanel(
-                    icon = Icons.Rounded.MusicNote,
-                    title = if (query.isBlank()) "这个目录是空的" else "没有匹配的音乐",
-                    body = if (query.isBlank()) "返回上一级看看其他唱片或播放列表。" else "换一个关键词试试。",
-                )
-            }
-            else -> gridItemsIndexed(visibleEntries, key = { _, it -> "${it.parentId}:${it.id}" }) { index, entry ->
-                if (useGrid) {
-                    MediaGridCard(
-                        entry = entry,
-                        onOpen = { onOpen(entry) },
-                        onQueue = { onQueue(entry) },
-                    )
-                } else {
-                    MediaEntryRow(
-                        entry = entry,
-                        emphasized = index % 5 == 0,
-                        onOpen = { onOpen(entry) },
-                        onPlay = { onPlay(entry) },
-                        onQueue = { onQueue(entry) },
-                    )
                 }
             }
         }
@@ -631,7 +920,10 @@ private val AlbumSort.explanation: String?
 
 @Composable
 private fun TrackCollectionScreen(
-    state: LsMusicUiState,
+    state: LibraryUiState,
+    pageKey: BrowsePageKey,
+    initialViewState: BrowseViewState,
+    onSaveBrowseViewState: (BrowsePageKey, BrowseViewState) -> Unit,
     onNavigateTo: (Int) -> Unit,
     onPlay: (MediaEntry) -> Unit,
     onQueue: (MediaEntry) -> Unit,
@@ -639,9 +931,43 @@ private fun TrackCollectionScreen(
     onQueueAll: (List<MediaEntry>) -> Unit,
 ) {
     val representativeTrack = state.entries.firstOrNull()
-    val title = state.path.lastOrNull()?.title ?: representativeTrack?.album.orEmpty()
+    val currentLocation = state.path.lastOrNull()
+    val title = currentLocation?.title ?: representativeTrack?.album.orEmpty()
+    val headerArtworkEntry = representativeTrack?.copy(
+        id = currentLocation?.id ?: representativeTrack.id,
+        title = title,
+        artworkUri = currentLocation?.artworkUri ?: representativeTrack.artworkUri,
+        isContainer = true,
+        isAlbum = true,
+    )
     val artists = state.entries.map { it.creator }.filter { it.isNotBlank() }.distinct().take(2).joinToString(" · ")
+    val listState = rememberLazyListState(
+        initialFirstVisibleItemIndex = initialBrowseItemIndex(
+            entries = state.entries,
+            viewState = initialViewState,
+            headerCount = TRACK_COLLECTION_HEADER_COUNT,
+        ),
+        initialFirstVisibleItemScrollOffset = initialViewState.scrollOffset.coerceAtLeast(0),
+    )
+
+    DisposableEffect(pageKey, listState) {
+        onDispose {
+            val anchorKey = listState.layoutInfo.visibleItemsInfo
+                .firstOrNull { it.index == listState.firstVisibleItemIndex }
+                ?.key as? String
+            onSaveBrowseViewState(
+                pageKey,
+                initialViewState.copy(
+                    anchorEntryKey = anchorKey?.takeIf { it.startsWith(MEDIA_ENTRY_KEY_PREFIX) },
+                    fallbackItemIndex = listState.firstVisibleItemIndex,
+                    scrollOffset = listState.firstVisibleItemScrollOffset,
+                ),
+            )
+        }
+    }
+
     LazyColumn(
+        state = listState,
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(start = 20.dp, top = 24.dp, end = 20.dp, bottom = 32.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -662,7 +988,14 @@ private fun TrackCollectionScreen(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                representativeTrack?.let { ArtworkTile(it, 200.dp) }
+                headerArtworkEntry?.let {
+                    ArtworkTile(
+                        entry = it,
+                        size = 200.dp,
+                        imageIdentity = pageKey,
+                        useCachedAlbumThumbnailAsPlaceholder = true,
+                    )
+                }
                 Spacer(Modifier.height(16.dp))
                 Text(title, style = MaterialTheme.typography.headlineSmall, textAlign = TextAlign.Center)
                 if (artists.isNotBlank()) {
@@ -686,11 +1019,11 @@ private fun TrackCollectionScreen(
                 }
             }
         }
-        itemsIndexed(state.entries, key = { index, item -> "collection:$index:${item.id}" }) { index, track ->
+        itemsIndexed(state.entries, key = { _, item -> mediaEntryKey(item) }) { index, track ->
                 TrackCollectionRow(
                     track = track,
                     number = index + 1,
-                    isPlaying = state.currentTrack?.id == track.id && state.playbackState == RemotePlaybackState.PLAYING,
+                    isPlaying = state.currentTrackId == track.id && state.playbackState == RemotePlaybackState.PLAYING,
                     onPlay = { onPlay(track) },
                     onQueue = { onQueue(track) },
                 )
@@ -853,6 +1186,8 @@ private fun Breadcrumbs(
 @Composable
 private fun MediaGridCard(
     entry: MediaEntry,
+    compact: Boolean,
+    artworkRequestSizePx: Int,
     onOpen: () -> Unit,
     onQueue: () -> Unit,
 ) {
@@ -861,56 +1196,52 @@ private fun MediaGridCard(
         shape = RoundedCornerShape(26.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
     ) {
-        Box {
-            ArtworkTile(
-                entry = entry,
-                size = null,
-                modifier = Modifier.fillMaxWidth().aspectRatio(1f),
-            )
-        }
-        BoxWithConstraints {
-            val isCompactCard = maxWidth < 144.dp
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(
-                    start = 14.dp,
-                    top = 12.dp,
-                    end = if (entry.isContainer) 14.dp else 8.dp,
-                    bottom = 12.dp,
-                ),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        entry.title,
-                        modifier = Modifier.heightIn(min = 48.dp),
-                        style = if (isCompactCard) {
-                            MaterialTheme.typography.bodyLarge
-                        } else {
-                            MaterialTheme.typography.titleMedium
-                        },
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Spacer(Modifier.height(2.dp))
-                    Text(
-                        when {
-                            entry.isAlbum -> albumDetails(entry)
-                            entry.isContainer && entry.childCount != null -> "${entry.childCount} 项"
-                            entry.creator.isNotBlank() -> entry.creator
-                            entry.album.isNotBlank() -> entry.album
-                            entry.isContainer -> "文件夹"
-                            else -> entry.duration ?: "音频"
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                if (!entry.isContainer) {
-                    IconButton(onClick = onQueue) { Icon(Icons.Rounded.Add, "加入播放列表") }
-                }
+        ArtworkTile(
+            entry = entry,
+            size = null,
+            requestSizePx = artworkRequestSizePx,
+            modifier = Modifier.fillMaxWidth().aspectRatio(1f),
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(
+                start = 14.dp,
+                top = 12.dp,
+                end = if (entry.isContainer) 14.dp else 8.dp,
+                bottom = 12.dp,
+            ),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    entry.title,
+                    modifier = Modifier.heightIn(min = 48.dp),
+                    style = if (compact) {
+                        MaterialTheme.typography.bodyLarge
+                    } else {
+                        MaterialTheme.typography.titleMedium
+                    },
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    when {
+                        entry.isAlbum -> albumDetails(entry)
+                        entry.isContainer && entry.childCount != null -> "${entry.childCount} 项"
+                        entry.creator.isNotBlank() -> entry.creator
+                        entry.album.isNotBlank() -> entry.album
+                        entry.isContainer -> "文件夹"
+                        else -> entry.duration ?: "音频"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            if (!entry.isContainer) {
+                IconButton(onClick = onQueue) { Icon(Icons.Rounded.Add, "加入播放列表") }
             }
         }
     }
@@ -1521,35 +1852,67 @@ private fun MiniPlayer(
 private fun ArtworkTile(
     entry: MediaEntry,
     size: androidx.compose.ui.unit.Dp?,
+    imageIdentity: Any = mediaEntryKey(entry),
+    requestSizePx: Int? = null,
+    useCachedAlbumThumbnailAsPlaceholder: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
-    val palettes = listOf(
-        listOf(Color(0xFF7454E8), Color(0xFFE263A9)),
-        listOf(Color(0xFF1A9A8A), Color(0xFF8CC85A)),
-        listOf(Color(0xFFE27A45), Color(0xFFF0B85A)),
-        listOf(Color(0xFF376DCC), Color(0xFF6B54E8)),
-    )
-    val colors = palettes[(entry.title.hashCode() and Int.MAX_VALUE) % palettes.size]
+    val context = LocalContext.current
+    val colors = remember(entry.title) {
+        artworkPalettes[(entry.title.hashCode() and Int.MAX_VALUE) % artworkPalettes.size]
+    }
+    val placeholderBrush = remember(colors) { Brush.linearGradient(colors) }
+    val artworkModel = remember(
+        context,
+        entry.artworkUri,
+        requestSizePx,
+        useCachedAlbumThumbnailAsPlaceholder,
+    ) {
+        entry.artworkUri?.takeIf(String::isNotBlank)?.let { uri ->
+            when {
+                requestSizePx != null -> albumArtworkRequest(context, uri, requestSizePx)
+                useCachedAlbumThumbnailAsPlaceholder -> ImageRequest.Builder(context)
+                    .data(uri)
+                    .placeholderMemoryCacheKey(albumArtworkThumbnailMemoryCacheKey(uri))
+                    .scale(Scale.FILL)
+                    .precision(Precision.INEXACT)
+                    .build()
+                else -> uri
+            }
+        }
+    }
     val tileModifier = if (size == null) modifier else modifier.size(size)
     val iconSize = (size ?: 72.dp) * .48f
     Box(
         modifier = tileModifier.clip(RoundedCornerShape(if (entry.isContainer) 18.dp else 16.dp))
-            .background(Brush.linearGradient(colors)),
+            .background(placeholderBrush),
         contentAlignment = Alignment.Center,
     ) {
         Icon(
-            if (entry.isContainer) Icons.Rounded.Folder else Icons.Rounded.MusicNote,
+            when {
+                entry.isAlbum -> Icons.Rounded.Album
+                entry.isContainer -> Icons.Rounded.Folder
+                else -> Icons.Rounded.MusicNote
+            },
             null,
             tint = Color.White,
             modifier = Modifier.size(iconSize),
         )
-        if (!entry.artworkUri.isNullOrBlank()) {
-            AsyncImage(
-                model = entry.artworkUri,
-                contentDescription = "${entry.title} 封面",
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Crop,
-            )
+        if (artworkModel != null) {
+            key(
+                imageIdentity,
+                entry.artworkUri,
+                requestSizePx,
+                useCachedAlbumThumbnailAsPlaceholder,
+            ) {
+                AsyncImage(
+                    model = artworkModel,
+                    contentDescription = "${entry.title} 封面",
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop,
+                    filterQuality = FilterQuality.Low,
+                )
+            }
         }
     }
 }
@@ -1564,12 +1927,14 @@ private fun HeroArtwork(track: MediaEntry, size: androidx.compose.ui.unit.Dp) {
         contentAlignment = Alignment.Center,
     ) {
         if (!track.artworkUri.isNullOrBlank()) {
-            AsyncImage(
-                model = track.artworkUri,
-                contentDescription = "${track.title} 封面",
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Crop,
-            )
+            key(track.id, track.artworkUri) {
+                AsyncImage(
+                    model = track.artworkUri,
+                    contentDescription = "${track.title} 封面",
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop,
+                )
+            }
         } else {
             Surface(shape = CircleShape, color = Color.Black.copy(alpha = .76f), modifier = Modifier.fillMaxSize(.58f)) {
                 Box(contentAlignment = Alignment.Center) {
@@ -1677,6 +2042,7 @@ private fun LibraryPreview() {
             onPlayAll = {},
             onQueueAll = {},
             onAlbumSort = {},
+            onSaveBrowseViewState = { _, _ -> },
             onTogglePlayback = {},
             onPrevious = {},
             onNext = {},
