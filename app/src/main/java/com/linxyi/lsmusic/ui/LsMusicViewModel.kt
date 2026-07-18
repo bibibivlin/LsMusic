@@ -59,6 +59,9 @@ data class BrowseLocation(
     val id: String,
     val title: String,
     val artworkUri: String? = null,
+    val albumArtist: String? = null,
+    val year: Int? = null,
+    val pageKind: LibraryPageKind = LibraryPageKind.DIRECTORY,
 )
 
 private data class RemoteMediaSessionSnapshot(
@@ -376,7 +379,14 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         cacheCurrentBrowsePage(state)
         showBrowsePage(
             key = BrowsePageKey(serverId, entry.id),
-            path = state.path + BrowseLocation(entry.id, entry.title, entry.artworkUri),
+            path = state.path + BrowseLocation(
+                id = entry.id,
+                title = entry.title,
+                artworkUri = entry.artworkUri,
+                albumArtist = entry.albumArtist.ifBlank { entry.creator }.takeIf { it.isNotBlank() },
+                year = entry.year,
+                pageKind = if (entry.isAlbum) LibraryPageKind.ALBUM else LibraryPageKind.RESOLVING,
+            ),
         )
     }
 
@@ -669,17 +679,26 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     private fun showBrowsePage(key: BrowsePageKey, path: List<BrowseLocation>) {
         val cachedPage = libraryBrowseStore.page(key)
         val cachedEntries = cachedPage?.entries
+        val resolvedPath = path.withResolvedLastLocation(cachedEntries)
         _uiState.update {
             it.copy(
-                path = path,
+                path = resolvedPath,
                 browsePageKey = key,
                 browseViewState = cachedPage?.viewState ?: BrowseViewState(),
                 entries = cachedEntries.orEmpty(),
                 isBrowsing = cachedEntries == null,
             )
         }
-        trimBrowseCache(path, key.serverId)
+        trimBrowseCache(resolvedPath, key.serverId)
         if (cachedEntries == null) browse(key.serverId, key.objectId)
+    }
+
+    private fun List<BrowseLocation>.withResolvedLastLocation(
+        entries: List<MediaEntry>?,
+    ): List<BrowseLocation> {
+        val location = lastOrNull() ?: return this
+        val pageKind = resolveLibraryPageKind(location.pageKind, entries)
+        return if (pageKind == location.pageKind) this else dropLast(1) + location.copy(pageKind = pageKind)
     }
 
     private fun cacheCurrentBrowsePage(state: LsMusicUiState) {
@@ -706,7 +725,11 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
                     libraryBrowseStore.storeEntries(key, entries)
                     _uiState.update {
                         if (it.browsePageKey == key) {
-                            it.copy(entries = entries, isBrowsing = false)
+                            it.copy(
+                                path = it.path.withResolvedLastLocation(entries),
+                                entries = entries,
+                                isBrowsing = false,
+                            )
                         } else {
                             it
                         }
@@ -718,7 +741,11 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
                     if (!libraryBrowseStore.isLatestRequest(key, generation)) return@launch
                     _uiState.update {
                         if (it.browsePageKey == key) {
-                            it.copy(isBrowsing = false, error = message)
+                            it.copy(
+                                path = it.path.withResolvedLastLocation(emptyList()),
+                                isBrowsing = false,
+                                error = message,
+                            )
                         } else {
                             it
                         }

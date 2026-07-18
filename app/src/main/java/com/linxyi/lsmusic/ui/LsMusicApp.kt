@@ -564,20 +564,67 @@ private fun LibraryScreen(
 ) {
     val pageKey = state.browsePageKey ?: BrowsePageKey("", state.path.lastOrNull()?.id.orEmpty())
     key(pageKey) {
-        LibraryDirectoryScreen(
-            state = state,
-            pageKey = pageKey,
-            initialViewState = state.browseViewState,
-            onOpen = onOpen,
-            onNavigateTo = onNavigateTo,
-            onPlay = onPlay,
-            onQueue = onQueue,
-            onPlayAll = onPlayAll,
-            onQueueAll = onQueueAll,
-            onAlbumSort = onAlbumSort,
-            onSaveBrowseViewState = onSaveBrowseViewState,
-            onOpenSettings = onOpenSettings,
-        )
+        when (state.path.lastOrNull()?.pageKind ?: LibraryPageKind.DIRECTORY) {
+            LibraryPageKind.ALBUM -> AlbumDetailScreen(
+                state = state,
+                pageKey = pageKey,
+                initialViewState = state.browseViewState,
+                onSaveBrowseViewState = onSaveBrowseViewState,
+                onNavigateTo = onNavigateTo,
+                onPlay = onPlay,
+                onQueue = onQueue,
+                onPlayAll = onPlayAll,
+                onQueueAll = onQueueAll,
+            )
+            LibraryPageKind.RESOLVING -> ResolvingLibraryPage(
+                path = state.path,
+                onNavigateTo = onNavigateTo,
+            )
+            LibraryPageKind.DIRECTORY -> LibraryDirectoryScreen(
+                state = state,
+                pageKey = pageKey,
+                initialViewState = state.browseViewState,
+                onOpen = onOpen,
+                onNavigateTo = onNavigateTo,
+                onPlay = onPlay,
+                onQueue = onQueue,
+                onPlayAll = onPlayAll,
+                onQueueAll = onQueueAll,
+                onAlbumSort = onAlbumSort,
+                onSaveBrowseViewState = onSaveBrowseViewState,
+                onOpenSettings = onOpenSettings,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ResolvingLibraryPage(
+    path: List<BrowseLocation>,
+    onNavigateTo: (Int) -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(start = 20.dp, top = 24.dp, end = 20.dp, bottom = 32.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (path.size > 1) {
+                FilledTonalIconButton(onClick = { onNavigateTo(path.lastIndex - 1) }) {
+                    Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回上一级")
+                }
+                Spacer(Modifier.width(8.dp))
+            }
+            Breadcrumbs(path, onNavigateTo, Modifier.weight(1f))
+        }
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f),
+            contentAlignment = Alignment.Center,
+        ) {
+            LoadingPanel("正在读取音乐内容…")
+        }
     }
 }
 
@@ -614,25 +661,6 @@ private fun LibraryDirectoryScreen(
         }
         if (isAlbumCollection) filtered.sortedAlbums(state.albumSort) else filtered
     }
-    val isTrackCollection = remember(state.entries) {
-        state.entries.isNotEmpty() && state.entries.all { !it.isContainer }
-    }
-
-    if (isTrackCollection && !state.isBrowsing) {
-        TrackCollectionScreen(
-            state = state,
-            pageKey = pageKey,
-            initialViewState = initialViewState,
-            onSaveBrowseViewState = onSaveBrowseViewState,
-            onNavigateTo = onNavigateTo,
-            onPlay = onPlay,
-            onQueue = onQueue,
-            onPlayAll = onPlayAll,
-            onQueueAll = onQueueAll,
-        )
-        return
-    }
-
     val gridState = rememberLazyGridState(
         initialFirstVisibleItemIndex = initialBrowseItemIndex(
             entries = visibleEntries,
@@ -919,7 +947,7 @@ private val AlbumSort.explanation: String?
     }
 
 @Composable
-private fun TrackCollectionScreen(
+private fun AlbumDetailScreen(
     state: LibraryUiState,
     pageKey: BrowsePageKey,
     initialViewState: BrowseViewState,
@@ -930,20 +958,33 @@ private fun TrackCollectionScreen(
     onPlayAll: (List<MediaEntry>) -> Unit,
     onQueueAll: (List<MediaEntry>) -> Unit,
 ) {
-    val representativeTrack = state.entries.firstOrNull()
+    val tracks = remember(state.entries) { state.entries.filterNot { it.isContainer } }
+    val representativeTrack = tracks.firstOrNull()
     val currentLocation = state.path.lastOrNull()
     val title = currentLocation?.title ?: representativeTrack?.album.orEmpty()
-    val headerArtworkEntry = representativeTrack?.copy(
-        id = currentLocation?.id ?: representativeTrack.id,
-        title = title,
-        artworkUri = currentLocation?.artworkUri ?: representativeTrack.artworkUri,
+    val headerArtworkEntry = currentLocation?.let { location ->
+        MediaEntry(
+            id = location.id,
+            parentId = state.path.getOrNull(state.path.lastIndex - 1)?.id.orEmpty(),
+            title = title,
+            creator = location.albumArtist.orEmpty(),
+            albumArtist = location.albumArtist.orEmpty(),
+            year = location.year,
+            artworkUri = location.artworkUri ?: representativeTrack?.artworkUri,
+            isContainer = true,
+            isAlbum = true,
+        )
+    } ?: representativeTrack?.copy(
         isContainer = true,
         isAlbum = true,
     )
-    val artists = state.entries.map { it.creator }.filter { it.isNotBlank() }.distinct().take(2).joinToString(" · ")
+    val artists = currentLocation?.albumArtist.orEmpty().ifBlank {
+        tracks.map { it.creator }.filter { it.isNotBlank() }.distinct().take(2).joinToString(" · ")
+    }
+    val trackCount = tracks.size
     val listState = rememberLazyListState(
         initialFirstVisibleItemIndex = initialBrowseItemIndex(
-            entries = state.entries,
+            entries = tracks,
             viewState = initialViewState,
             headerCount = TRACK_COLLECTION_HEADER_COUNT,
         ),
@@ -1003,15 +1044,25 @@ private fun TrackCollectionScreen(
                     Text(artists, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
                 }
                 Spacer(Modifier.height(8.dp))
-                Text("${state.entries.size} 首歌曲", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    if (state.isBrowsing) "正在读取曲目…" else "$trackCount 首歌曲",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
                 Spacer(Modifier.height(14.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    FilledTonalButton(onClick = { onPlayAll(state.entries) }) {
+                    FilledTonalButton(
+                        onClick = { onPlayAll(tracks) },
+                        enabled = !state.isBrowsing && trackCount > 0,
+                    ) {
                         Icon(Icons.Rounded.PlayArrow, null)
                         Spacer(Modifier.width(8.dp))
                         Text("播放全部")
                     }
-                    OutlinedButton(onClick = { onQueueAll(state.entries) }) {
+                    OutlinedButton(
+                        onClick = { onQueueAll(tracks) },
+                        enabled = !state.isBrowsing && trackCount > 0,
+                    ) {
                         Icon(Icons.Rounded.Add, null)
                         Spacer(Modifier.width(8.dp))
                         Text("加入队列")
@@ -1019,7 +1070,19 @@ private fun TrackCollectionScreen(
                 }
             }
         }
-        itemsIndexed(state.entries, key = { _, item -> mediaEntryKey(item) }) { index, track ->
+        if (!state.isBrowsing && trackCount == 0) {
+            item {
+                EmptyPanel(
+                    icon = Icons.Rounded.MusicNote,
+                    title = "这张专辑没有可播放的曲目",
+                    body = "媒体服务器没有返回可播放的音频内容。",
+                )
+            }
+        }
+        itemsIndexed(
+            items = tracks,
+            key = { _, item -> mediaEntryKey(item) },
+        ) { index, track ->
                 TrackCollectionRow(
                     track = track,
                     number = index + 1,

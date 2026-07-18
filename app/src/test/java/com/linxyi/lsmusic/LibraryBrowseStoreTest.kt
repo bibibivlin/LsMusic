@@ -4,7 +4,9 @@ import com.linxyi.lsmusic.dlna.MediaEntry
 import com.linxyi.lsmusic.ui.BrowsePageKey
 import com.linxyi.lsmusic.ui.BrowseViewState
 import com.linxyi.lsmusic.ui.LibraryBrowseStore
+import com.linxyi.lsmusic.ui.LibraryPageKind
 import com.linxyi.lsmusic.ui.directionalPrefetchRange
+import com.linxyi.lsmusic.ui.resolveLibraryPageKind
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -12,6 +14,48 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LibraryBrowseStoreTest {
+    @Test
+    fun pageKind_keepsKnownAlbumWhileItsTracksAreLoading() {
+        assertEquals(
+            LibraryPageKind.ALBUM,
+            resolveLibraryPageKind(LibraryPageKind.ALBUM, entries = null),
+        )
+    }
+
+    @Test
+    fun pageKind_resolvesUnknownTrackContainerAsAlbum() {
+        assertEquals(
+            LibraryPageKind.ALBUM,
+            resolveLibraryPageKind(
+                LibraryPageKind.RESOLVING,
+                listOf(track("track-1", "album"), track("track-2", "album")),
+            ),
+        )
+    }
+
+    @Test
+    fun pageKind_resolvesUnknownMixedContainerAsDirectory() {
+        assertEquals(
+            LibraryPageKind.DIRECTORY,
+            resolveLibraryPageKind(
+                LibraryPageKind.RESOLVING,
+                listOf(folder("disc-1", "album"), track("track-1", "album")),
+            ),
+        )
+    }
+
+    @Test
+    fun pageKind_keepsExplicitEmptyAlbumAsAlbum() {
+        assertEquals(
+            LibraryPageKind.ALBUM,
+            resolveLibraryPageKind(LibraryPageKind.ALBUM, emptyList()),
+        )
+        assertEquals(
+            LibraryPageKind.DIRECTORY,
+            resolveLibraryPageKind(LibraryPageKind.RESOLVING, emptyList()),
+        )
+    }
+
     @Test
     fun directionalPrefetchRange_prefetchesAheadAndStopsAtLibraryEnd() {
         assertEquals(
@@ -129,5 +173,12 @@ class LibraryBrowseStoreTest {
         parentId = parentId,
         title = id,
         isContainer = true,
+    )
+
+    private fun track(id: String, parentId: String) = MediaEntry(
+        id = id,
+        parentId = parentId,
+        title = id,
+        isContainer = false,
     )
 }

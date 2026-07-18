@@ -7,6 +7,24 @@ data class BrowsePageKey(
     val objectId: String,
 )
 
+enum class LibraryPageKind {
+    DIRECTORY,
+    ALBUM,
+    RESOLVING,
+}
+
+internal fun resolveLibraryPageKind(
+    hint: LibraryPageKind,
+    entries: List<MediaEntry>?,
+): LibraryPageKind {
+    if (entries == null) return hint
+    if (entries.isEmpty()) {
+        return if (hint == LibraryPageKind.ALBUM) LibraryPageKind.ALBUM else LibraryPageKind.DIRECTORY
+    }
+    if (entries.any { it.isContainer }) return LibraryPageKind.DIRECTORY
+    return LibraryPageKind.ALBUM
+}
+
 data class BrowseViewState(
     val query: String = "",
     val useGrid: Boolean? = null,
