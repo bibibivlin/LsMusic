@@ -905,7 +905,7 @@ private fun LibraryDirectoryScreen(
                     if (useGrid) {
                         MediaGridCard(
                             entry = entry,
-                            compact = state.preferences.gallerySize == GallerySize.COMPACT,
+                            gallerySize = state.preferences.gallerySize,
                             artworkRequestSizePx = artworkRequestSizePx,
                             onOpen = { onOpen(entry) },
                             onQueue = { onQueue(entry) },
@@ -1372,40 +1372,74 @@ private fun Breadcrumbs(
 @Composable
 private fun MediaGridCard(
     entry: MediaEntry,
-    compact: Boolean,
+    gallerySize: GallerySize,
     artworkRequestSizePx: Int,
     onOpen: () -> Unit,
     onQueue: () -> Unit,
 ) {
+    val cardCornerRadius = when (gallerySize) {
+        GallerySize.COMPACT -> 16.dp
+        GallerySize.STANDARD -> 21.dp
+        GallerySize.LARGE -> 26.dp
+    }
+    val artworkCornerRadius = when (gallerySize) {
+        GallerySize.COMPACT -> if (entry.isContainer) 10.dp else 9.dp
+        GallerySize.STANDARD -> if (entry.isContainer) 14.dp else 12.dp
+        GallerySize.LARGE -> if (entry.isContainer) 18.dp else 16.dp
+    }
+    val titleStyle = when (gallerySize) {
+        GallerySize.COMPACT -> MaterialTheme.typography.bodySmall
+        GallerySize.STANDARD -> MaterialTheme.typography.bodyMedium
+        GallerySize.LARGE -> MaterialTheme.typography.titleMedium
+    }
+    val detailStyle = when (gallerySize) {
+        GallerySize.COMPACT -> MaterialTheme.typography.labelSmall.copy(
+            fontSize = MaterialTheme.typography.labelSmall.fontSize * .9f,
+        )
+        GallerySize.STANDARD -> MaterialTheme.typography.labelSmall
+        GallerySize.LARGE -> MaterialTheme.typography.bodySmall
+    }
+    val titleMinHeight = when (gallerySize) {
+        GallerySize.COMPACT -> 32.dp
+        GallerySize.STANDARD -> 40.dp
+        GallerySize.LARGE -> 48.dp
+    }
+    val horizontalPadding = when (gallerySize) {
+        GallerySize.COMPACT -> 9.dp
+        GallerySize.STANDARD -> 12.dp
+        GallerySize.LARGE -> 14.dp
+    }
+    val verticalPadding = when (gallerySize) {
+        GallerySize.COMPACT -> 8.dp
+        GallerySize.STANDARD -> 10.dp
+        GallerySize.LARGE -> 12.dp
+    }
     Card(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onOpen),
-        shape = RoundedCornerShape(26.dp),
+        shape = RoundedCornerShape(cardCornerRadius),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
     ) {
         ArtworkTile(
             entry = entry,
             size = null,
             requestSizePx = artworkRequestSizePx,
+            cornerRadius = artworkCornerRadius,
             modifier = Modifier.fillMaxWidth().aspectRatio(1f),
         )
         Row(
             modifier = Modifier.fillMaxWidth().padding(
-                start = 14.dp,
-                top = 12.dp,
-                end = if (entry.isContainer) 14.dp else 8.dp,
-                bottom = 12.dp,
+                start = horizontalPadding,
+                top = verticalPadding,
+                end = if (entry.isContainer) horizontalPadding else 8.dp,
+                bottom = verticalPadding,
             ),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(Modifier.weight(1f)) {
                 Text(
                     entry.title,
-                    modifier = Modifier.heightIn(min = 48.dp),
-                    style = if (compact) {
-                        MaterialTheme.typography.bodyLarge
-                    } else {
-                        MaterialTheme.typography.titleMedium
-                    },
+                    modifier = Modifier.heightIn(min = titleMinHeight),
+                    style = titleStyle,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
@@ -1420,7 +1454,7 @@ private fun MediaGridCard(
                         entry.isContainer -> "文件夹"
                         else -> entry.duration ?: "音频"
                     },
-                    style = MaterialTheme.typography.bodySmall,
+                    style = detailStyle,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -2124,6 +2158,7 @@ private fun ArtworkTile(
     imageIdentity: Any = mediaEntryKey(entry),
     requestSizePx: Int? = null,
     useCachedAlbumThumbnailAsPlaceholder: Boolean = false,
+    cornerRadius: Dp? = null,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -2152,8 +2187,9 @@ private fun ArtworkTile(
     }
     val tileModifier = if (size == null) modifier else modifier.size(size)
     val iconSize = (size ?: 72.dp) * .48f
+    val resolvedCornerRadius = cornerRadius ?: if (entry.isContainer) 18.dp else 16.dp
     Box(
-        modifier = tileModifier.clip(RoundedCornerShape(if (entry.isContainer) 18.dp else 16.dp))
+        modifier = tileModifier.clip(RoundedCornerShape(resolvedCornerRadius))
             .background(placeholderBrush),
         contentAlignment = Alignment.Center,
     ) {
