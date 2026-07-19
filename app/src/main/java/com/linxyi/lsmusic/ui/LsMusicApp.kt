@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -87,6 +88,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.LinearWavyProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -129,6 +131,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalContext
@@ -178,9 +181,15 @@ private data class LibraryUiState(
 
 private const val MEDIA_ENTRY_KEY_PREFIX = "media:"
 private const val LIBRARY_GRID_HEADER_COUNT = 3
-private const val TRACK_COLLECTION_HEADER_COUNT = 2
+private const val ALBUM_DETAIL_HEADER_COUNT = 1
 private const val ALBUM_ART_PREFETCH_SCREENS = 2
 private const val MAX_ACTIVE_ART_PREFETCHES = 32
+private val LargeSquareContentMaxSize = 360.dp
+private val DefaultScreenBottomPadding = 32.dp
+private val MiniPlayerHeight = 68.dp
+private val MiniPlayerBottomSpacing = 12.dp
+private val MiniPlayerContentInset = MiniPlayerHeight + MiniPlayerBottomSpacing
+private val MiniPlayerMaxWidth = 720.dp
 
 private val artworkPalettes = listOf(
     listOf(Color(0xFF7454E8), Color(0xFFE263A9)),
@@ -427,27 +436,25 @@ private fun LsMusicContent(
     }
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val expanded = maxWidth >= 720.dp
+        val showMiniPlayer = state.currentTrack != null && state.destination != AppDestination.NOW_PLAYING
+        val bottomContentPadding = DefaultScreenBottomPadding +
+            if (showMiniPlayer) MiniPlayerContentInset else 0.dp
         Row(Modifier.fillMaxSize()) {
             if (expanded) {
                 AppNavigationRail(state.destination, onDestination)
             }
             Scaffold(
                 modifier = Modifier.weight(1f),
-                snackbarHost = { SnackbarHost(snackbar) },
+                snackbarHost = {
+                    SnackbarHost(
+                        hostState = snackbar,
+                        modifier = Modifier.padding(
+                            bottom = if (showMiniPlayer) MiniPlayerContentInset else 0.dp,
+                        ),
+                    )
+                },
                 bottomBar = {
-                    Column {
-                        // The player must leave immediately: an exit animation changes Scaffold's
-                        // content height and makes the adaptive now-playing artwork resize mid-entry.
-                        if (state.currentTrack != null && state.destination != AppDestination.NOW_PLAYING) {
-                            MiniPlayer(
-                                state = state,
-                                onOpen = { onDestination(AppDestination.NOW_PLAYING) },
-                                onTogglePlayback = onTogglePlayback,
-                                onNext = onNext,
-                            )
-                        }
-                        if (!expanded) AppNavigationBar(state.destination, onDestination)
-                    }
+                    if (!expanded) AppNavigationBar(state.destination, onDestination)
                 },
             ) { padding ->
                 // The now-playing page measures its artwork from the final available height.
@@ -466,6 +473,7 @@ private fun LsMusicContent(
                             onQueueAll,
                             onAlbumSort,
                             onSaveBrowseViewState,
+                            bottomContentPadding,
                             onOpenSettings = { onDestination(AppDestination.SETTINGS) },
                         )
                         AppDestination.QUEUE -> QueueScreen(
@@ -474,6 +482,7 @@ private fun LsMusicContent(
                             onRemoveQueue,
                             onMoveQueue,
                             onClearQueue,
+                            bottomContentPadding,
                         )
                         AppDestination.NOW_PLAYING -> NowPlayingScreen(
                             state,
@@ -498,6 +507,25 @@ private fun LsMusicContent(
                             onListenBrainzToken = onListenBrainzToken,
                             onListenBrainzMinimumSeconds = onListenBrainzMinimumSeconds,
                             onListenBrainzMinimumPercent = onListenBrainzMinimumPercent,
+                            bottomContentPadding = bottomContentPadding,
+                        )
+                    }
+                    if (showMiniPlayer) {
+                        MiniPlayer(
+                            state = state,
+                            onOpen = { onDestination(AppDestination.NOW_PLAYING) },
+                            onTogglePlayback = onTogglePlayback,
+                            onNext = onNext,
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .padding(
+                                    PaddingValues(
+                                        start = 12.dp,
+                                        end = 12.dp,
+                                        bottom = MiniPlayerBottomSpacing,
+                                    ),
+                                )
+                                .widthIn(max = MiniPlayerMaxWidth),
                         )
                     }
                 }
@@ -581,6 +609,7 @@ private fun LibraryScreen(
     onQueueAll: (List<MediaEntry>) -> Unit,
     onAlbumSort: (AlbumSort) -> Unit,
     onSaveBrowseViewState: (BrowsePageKey, BrowseViewState) -> Unit,
+    bottomContentPadding: Dp,
     onOpenSettings: () -> Unit,
 ) {
     val pageKey = state.browsePageKey ?: BrowsePageKey("", state.path.lastOrNull()?.id.orEmpty())
@@ -591,12 +620,12 @@ private fun LibraryScreen(
                 pageKey = pageKey,
                 initialViewState = state.browseViewState,
                 onSaveBrowseViewState = onSaveBrowseViewState,
-                onNavigateTo = onNavigateTo,
                 onPlay = onPlay,
                 onQueue = onQueue,
                 onPlayAll = onPlayAll,
                 onShufflePlay = onShufflePlay,
                 onQueueAll = onQueueAll,
+                bottomContentPadding = bottomContentPadding,
             )
             LibraryPageKind.RESOLVING -> ResolvingLibraryPage(
                 path = state.path,
@@ -615,6 +644,7 @@ private fun LibraryScreen(
                 onQueueAll = onQueueAll,
                 onAlbumSort = onAlbumSort,
                 onSaveBrowseViewState = onSaveBrowseViewState,
+                bottomContentPadding = bottomContentPadding,
                 onOpenSettings = onOpenSettings,
             )
         }
@@ -665,6 +695,7 @@ private fun LibraryDirectoryScreen(
     onQueueAll: (List<MediaEntry>) -> Unit,
     onAlbumSort: (AlbumSort) -> Unit,
     onSaveBrowseViewState: (BrowsePageKey, BrowseViewState) -> Unit,
+    bottomContentPadding: Dp,
     onOpenSettings: () -> Unit,
 ) {
     var query by remember { mutableStateOf(initialViewState.query) }
@@ -745,7 +776,12 @@ private fun LibraryDirectoryScreen(
             columns = if (useGrid) GridCells.Adaptive(minimumCellWidth) else GridCells.Fixed(1),
             state = gridState,
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 24.dp, bottom = 32.dp),
+            contentPadding = PaddingValues(
+                start = 20.dp,
+                top = 24.dp,
+                end = 20.dp,
+                bottom = bottomContentPadding,
+            ),
             verticalArrangement = Arrangement.spacedBy(gridSpacing),
             horizontalArrangement = Arrangement.spacedBy(gridSpacing),
         ) {
@@ -1003,12 +1039,12 @@ private fun AlbumDetailScreen(
     pageKey: BrowsePageKey,
     initialViewState: BrowseViewState,
     onSaveBrowseViewState: (BrowsePageKey, BrowseViewState) -> Unit,
-    onNavigateTo: (Int) -> Unit,
     onPlay: (MediaEntry) -> Unit,
     onQueue: (MediaEntry) -> Unit,
     onPlayAll: (List<MediaEntry>) -> Unit,
     onShufflePlay: (List<MediaEntry>) -> Unit,
     onQueueAll: (List<MediaEntry>) -> Unit,
+    bottomContentPadding: Dp,
 ) {
     val tracks = remember(state.entries) { state.entries.filterNot { it.isContainer } }
     val representativeTrack = tracks.firstOrNull()
@@ -1038,7 +1074,7 @@ private fun AlbumDetailScreen(
         initialFirstVisibleItemIndex = initialBrowseItemIndex(
             entries = tracks,
             viewState = initialViewState,
-            headerCount = TRACK_COLLECTION_HEADER_COUNT,
+            headerCount = ALBUM_DETAIL_HEADER_COUNT,
         ),
         initialFirstVisibleItemScrollOffset = initialViewState.scrollOffset.coerceAtLeast(0),
     )
@@ -1062,32 +1098,32 @@ private fun AlbumDetailScreen(
     LazyColumn(
         state = listState,
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 20.dp, top = 24.dp, end = 20.dp, bottom = 32.dp),
+        contentPadding = PaddingValues(
+            start = 20.dp,
+            top = 24.dp,
+            end = 20.dp,
+            bottom = bottomContentPadding,
+        ),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        item {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (state.path.size > 1) {
-                    FilledTonalIconButton(onClick = { onNavigateTo(state.path.lastIndex - 1) }) {
-                        Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回上一级")
-                    }
-                    Spacer(Modifier.width(8.dp))
-                }
-                Breadcrumbs(state.path, onNavigateTo, Modifier.weight(1f))
-            }
-        }
         item {
             Column(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                headerArtworkEntry?.let {
-                    ArtworkTile(
-                        entry = it,
-                        size = 200.dp,
-                        imageIdentity = pageKey,
-                        useCachedAlbumThumbnailAsPlaceholder = true,
-                    )
+                headerArtworkEntry?.let { entry ->
+                    BoxWithConstraints(
+                        modifier = Modifier.fillMaxWidth(),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        val artworkSize = minOf(maxWidth, maxHeight, LargeSquareContentMaxSize)
+                        ArtworkTile(
+                            entry = entry,
+                            size = artworkSize,
+                            imageIdentity = pageKey,
+                            useCachedAlbumThumbnailAsPlaceholder = true,
+                        )
+                    }
                 }
                 Spacer(Modifier.height(16.dp))
                 Text(title, style = MaterialTheme.typography.headlineSmall, textAlign = TextAlign.Center)
@@ -1459,6 +1495,7 @@ private fun SettingsScreen(
     onListenBrainzToken: (String) -> Unit,
     onListenBrainzMinimumSeconds: (Int) -> Unit,
     onListenBrainzMinimumPercent: (Int) -> Unit,
+    bottomContentPadding: Dp,
 ) {
     var listenBrainzTokenDraft by rememberSaveable(preferences.listenBrainzToken) {
         mutableStateOf(preferences.listenBrainzToken)
@@ -1475,7 +1512,7 @@ private fun SettingsScreen(
     val isCheckingToken = tokenValidationStatus == ListenBrainzTokenValidationStatus.CHECKING
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(20.dp, 24.dp, 20.dp, 32.dp),
+        contentPadding = PaddingValues(20.dp, 24.dp, 20.dp, bottomContentPadding),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         item { Text("设置", style = MaterialTheme.typography.headlineLarge) }
@@ -1736,10 +1773,11 @@ private fun QueueScreen(
     onRemove: (Int) -> Unit,
     onMove: (Int, Int) -> Unit,
     onClear: () -> Unit,
+    bottomContentPadding: Dp,
 ) {
     if (state.queue.isEmpty()) {
         Column(
-            modifier = Modifier.fillMaxSize().padding(20.dp, 24.dp, 20.dp, 32.dp),
+            modifier = Modifier.fillMaxSize().padding(20.dp, 24.dp, 20.dp, bottomContentPadding),
         ) {
             Column {
                 Text("接下来播放", style = MaterialTheme.typography.headlineLarge)
@@ -1756,7 +1794,7 @@ private fun QueueScreen(
     }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(20.dp, 24.dp, 20.dp, 32.dp),
+        contentPadding = PaddingValues(20.dp, 24.dp, 20.dp, bottomContentPadding),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         item {
@@ -1840,8 +1878,9 @@ private fun NowPlayingScreen(
         val wide = maxWidth >= 720.dp
         val verticalPadding = if (compact) 16.dp else 28.dp
         val horizontalPadding = if (wide) 40.dp else 24.dp
-        val titleStyle = if (compact) MaterialTheme.typography.headlineLarge else MaterialTheme.typography.displaySmall
-        val subtitleStyle = if (compact) MaterialTheme.typography.bodyLarge else MaterialTheme.typography.titleLarge
+        val trackTitleStyle = if (compact) MaterialTheme.typography.titleLarge else MaterialTheme.typography.headlineSmall
+        val artistStyle = if (compact) MaterialTheme.typography.bodyLarge else MaterialTheme.typography.titleMedium
+        val albumStyle = if (compact) MaterialTheme.typography.bodySmall else MaterialTheme.typography.bodyMedium
         val primaryControlSize = if (compact) 68.dp else 82.dp
         val secondaryControlSize = if (compact) 50.dp else 58.dp
         val controlIconSize = if (compact) 28.dp else 30.dp
@@ -1873,17 +1912,28 @@ private fun NowPlayingScreen(
             Text(
                 track.title,
                 modifier = Modifier.fillMaxWidth(),
-                style = titleStyle,
+                style = trackTitleStyle,
+                fontWeight = FontWeight.SemiBold,
                 textAlign = TextAlign.Center,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
             Spacer(Modifier.height(4.dp))
             Text(
-                listOf(track.creator, track.album).filter { it.isNotBlank() }.joinToString(" · ").ifBlank { "来自 DLNA 媒体库" },
+                track.creator.ifBlank { "未知艺术家" },
                 modifier = Modifier.fillMaxWidth(),
-                style = subtitleStyle,
+                style = artistStyle,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                track.album.ifBlank { "未知专辑" },
+                modifier = Modifier.fillMaxWidth(),
+                style = albumStyle,
+                color = MaterialTheme.colorScheme.outline,
                 textAlign = TextAlign.Center,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -1892,6 +1942,7 @@ private fun NowPlayingScreen(
             PlaybackSlider(
                 positionMs = state.positionMs,
                 durationMs = state.durationMs,
+                isPlaying = state.playbackState == RemotePlaybackState.PLAYING,
                 onSeek = onSeek,
             )
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -1974,6 +2025,7 @@ private fun NowPlayingScreen(
 private fun PlaybackSlider(
     positionMs: Long,
     durationMs: Long,
+    isPlaying: Boolean,
     onSeek: (Long) -> Unit,
 ) {
     var draggedFraction by remember { mutableStateOf<Float?>(null) }
@@ -1991,6 +2043,29 @@ private fun PlaybackSlider(
         },
         enabled = durationMs > 0L,
         modifier = Modifier.fillMaxWidth(),
+        thumb = {
+            Surface(
+                modifier = Modifier.size(width = 4.dp, height = 28.dp),
+                shape = RoundedCornerShape(2.dp),
+                color = if (durationMs > 0L) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.onSurface.copy(alpha = .38f)
+                },
+            ) {}
+        },
+        track = { sliderState ->
+            LinearWavyProgressIndicator(
+                progress = { sliderState.value },
+                modifier = Modifier.fillMaxWidth().height(12.dp),
+                color = MaterialTheme.colorScheme.primary,
+                trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                stopSize = 0.dp,
+                amplitude = { if (isPlaying) .65f else 0f },
+                wavelength = 64.dp,
+                waveSpeed = 28.dp,
+            )
+        },
     )
 }
 
@@ -2009,10 +2084,11 @@ private fun MiniPlayer(
     onOpen: () -> Unit,
     onTogglePlayback: () -> Unit,
     onNext: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val track = state.currentTrack ?: return
     Surface(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp).clickable(onClick = onOpen),
+        modifier = modifier.fillMaxWidth().clickable(onClick = onOpen),
         shape = RoundedCornerShape(26.dp),
         color = MaterialTheme.colorScheme.primaryContainer,
         shadowElevation = 8.dp,
@@ -2116,7 +2192,7 @@ private fun HeroArtwork(track: MediaEntry, size: androidx.compose.ui.unit.Dp) {
     else listOf(Color(0xFF167D8D), Color(0xFF6957DE), Color(0xFFEC6B9D))
     Box(
         modifier = Modifier.size(size)
-            .clip(RoundedCornerShape(56.dp)).background(Brush.radialGradient(colors)),
+            .clip(RoundedCornerShape(28.dp)).background(Brush.radialGradient(colors)),
         contentAlignment = Alignment.Center,
     ) {
         if (!track.artworkUri.isNullOrBlank()) {
@@ -2174,27 +2250,34 @@ private fun EmptyPanel(
     action: String? = null,
     onAction: () -> Unit = {},
 ) {
-    Surface(
+    BoxWithConstraints(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(34.dp),
-        color = MaterialTheme.colorScheme.surfaceContainer,
+        contentAlignment = Alignment.Center,
     ) {
-        Column(
-            Modifier.padding(horizontal = 28.dp, vertical = 42.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
+        val cardSize = minOf(maxWidth, maxHeight, LargeSquareContentMaxSize)
+        Surface(
+            modifier = Modifier.size(cardSize),
+            shape = RoundedCornerShape(34.dp),
+            color = MaterialTheme.colorScheme.surfaceContainer,
         ) {
-            Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer) {
-                Icon(icon, null, Modifier.padding(18.dp).size(36.dp), tint = MaterialTheme.colorScheme.primary)
-            }
-            Spacer(Modifier.height(18.dp))
-            Text(title, style = MaterialTheme.typography.titleLarge, textAlign = TextAlign.Center)
-            if (!body.isNullOrBlank()) {
-                Spacer(Modifier.height(8.dp))
-                Text(body, textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            if (action != null) {
-                Spacer(Modifier.height(22.dp))
-                Button(onClick = onAction) { Text(action) }
+            Column(
+                Modifier.padding(horizontal = 28.dp, vertical = 42.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+            ) {
+                Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer) {
+                    Icon(icon, null, Modifier.padding(18.dp).size(36.dp), tint = MaterialTheme.colorScheme.primary)
+                }
+                Spacer(Modifier.height(18.dp))
+                Text(title, style = MaterialTheme.typography.titleLarge, textAlign = TextAlign.Center)
+                if (!body.isNullOrBlank()) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(body, textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                if (action != null) {
+                    Spacer(Modifier.height(22.dp))
+                    Button(onClick = onAction) { Text(action) }
+                }
             }
         }
     }
