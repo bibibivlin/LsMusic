@@ -53,6 +53,8 @@
 
 如果 DLNA 媒体服务器在 DIDL-Lite 元数据中提供 Picard/MusicBrainz 标签，应用会优先提交 recording、release 和 artist MBID；无法取得 MBID 时则提交曲名、艺术家和专辑文本。令牌保存在单独的本机偏好文件中，并排除在 Android 云备份与设备迁移之外。接口格式参见 [ListenBrainz API 文档](https://listenbrainz.readthedocs.io/en/latest/users/api/)。
 
+ListenBrainz 请求会跟随 Android 当前的默认网络，包括系统 VPN；从 Wi‑Fi 切换到移动网络后无需重启应用。VPN 的分应用规则仍需允许 L's Music 访问网络。
+
 > 访客网络、AP 隔离和 VPN 可能阻断 SSDP 设备发现。DLNA 互通建议在真机上验证，模拟器通常无法可靠接收局域网组播通知。
 
 ## 开发
