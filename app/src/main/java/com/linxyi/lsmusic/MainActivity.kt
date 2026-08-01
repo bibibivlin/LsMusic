@@ -104,7 +104,7 @@ private fun LocalNetworkPermissionScreen(onRequestPermission: () -> Unit) {
                 Icons.Rounded.Devices,
                 null,
                 modifier = Modifier.padding(24.dp).size(48.dp),
-                tint = MaterialTheme.colorScheme.primary,
+                tint = MaterialTheme.colorScheme.onPrimaryContainer,
             )
         }
         Spacer(Modifier.height(24.dp))

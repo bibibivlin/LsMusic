@@ -9,10 +9,12 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -42,6 +44,7 @@ import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.grid.itemsIndexed as gridItemsIndexed
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -137,9 +140,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.semantics
@@ -152,10 +159,6 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.platform.LocalView
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.linxyi.lsmusic.dlna.DlnaDevice
@@ -163,6 +166,7 @@ import com.linxyi.lsmusic.dlna.MediaEntry
 import com.linxyi.lsmusic.dlna.RemotePlaybackState
 import com.linxyi.lsmusic.dlna.DlnaDeviceKind
 import com.linxyi.lsmusic.ui.theme.LsMusicTheme
+import com.linxyi.lsmusic.ui.theme.presetColorScheme
 import coil3.compose.AsyncImage
 import coil3.SingletonImageLoader
 import coil3.request.Disposable
@@ -341,7 +345,11 @@ fun LsMusicApp(viewModel: LsMusicViewModel) {
         ThemeMode.DARK -> true
     }
 
-    LsMusicTheme(darkTheme = darkTheme, dynamicColor = state.preferences.useDynamicColor) {
+    LsMusicTheme(
+        darkTheme = darkTheme,
+        dynamicColor = state.preferences.useDynamicColor,
+        presetPalette = state.preferences.presetPalette,
+    ) {
         SystemNavigationBarAppearance()
         val snackbar = remember { SnackbarHostState() }
 
@@ -387,6 +395,7 @@ fun LsMusicApp(viewModel: LsMusicViewModel) {
             onDefaultGridLayout = viewModel::setDefaultGridLayout,
             onThemeMode = viewModel::setThemeMode,
             onDynamicColor = viewModel::setDynamicColor,
+            onPresetPalette = viewModel::setPresetPalette,
             onListenBrainzEnabled = viewModel::setListenBrainzEnabled,
             onListenBrainzToken = viewModel::validateAndSaveListenBrainzToken,
             onListenBrainzMinimumSeconds = viewModel::setListenBrainzMinimumSeconds,
@@ -425,6 +434,7 @@ private fun LsMusicContent(
     onDefaultGridLayout: (Boolean) -> Unit,
     onThemeMode: (ThemeMode) -> Unit,
     onDynamicColor: (Boolean) -> Unit,
+    onPresetPalette: (PresetPalette) -> Unit,
     onListenBrainzEnabled: (Boolean) -> Unit,
     onListenBrainzToken: (String) -> Unit,
     onListenBrainzMinimumSeconds: (Int) -> Unit,
@@ -528,6 +538,7 @@ private fun LsMusicContent(
                             onDefaultGridLayout = onDefaultGridLayout,
                             onThemeMode = onThemeMode,
                             onDynamicColor = onDynamicColor,
+                            onPresetPalette = onPresetPalette,
                             onListenBrainzEnabled = onListenBrainzEnabled,
                             onListenBrainzToken = onListenBrainzToken,
                             onListenBrainzMinimumSeconds = onListenBrainzMinimumSeconds,
@@ -1416,6 +1427,11 @@ private fun TrackCollectionRow(
     onPlay: () -> Unit,
     onQueue: () -> Unit,
 ) {
+    val supportingContentColor = if (isPlaying) {
+        MaterialTheme.colorScheme.onPrimaryContainer
+    } else {
+        MaterialTheme.colorScheme.onSurfaceVariant
+    }
     Surface(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onPlay),
         color = if (isPlaying) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
@@ -1426,8 +1442,15 @@ private fun TrackCollectionRow(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Box(Modifier.width(32.dp), contentAlignment = Alignment.Center) {
-                if (isPlaying) Icon(Icons.Rounded.GraphicEq, "正在播放", tint = MaterialTheme.colorScheme.primary)
-                else Text(number.toString(), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (isPlaying) {
+                    Icon(
+                        Icons.Rounded.GraphicEq,
+                        "正在播放",
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                    )
+                } else {
+                    Text(number.toString(), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
@@ -1435,7 +1458,7 @@ private fun TrackCollectionRow(
                 Text(
                     track.creator.ifBlank { track.album.ifBlank { "未知艺术家" } },
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = supportingContentColor,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -1443,7 +1466,7 @@ private fun TrackCollectionRow(
             Text(
                 track.duration?.let { formatPlaybackTime(LsMusicViewModel.parseTimeMs(it)) } ?: "--:--",
                 style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = supportingContentColor,
             )
             IconButton(onClick = onQueue) { Icon(Icons.Rounded.Add, "加入播放列表") }
         }
@@ -1734,6 +1757,7 @@ private fun SettingsScreen(
     onDefaultGridLayout: (Boolean) -> Unit,
     onThemeMode: (ThemeMode) -> Unit,
     onDynamicColor: (Boolean) -> Unit,
+    onPresetPalette: (PresetPalette) -> Unit,
     onListenBrainzEnabled: (Boolean) -> Unit,
     onListenBrainzToken: (String) -> Unit,
     onListenBrainzMinimumSeconds: (Int) -> Unit,
@@ -1811,11 +1835,11 @@ private fun SettingsScreen(
             )
         }
         item {
-            SwitchSettingCard(
-                title = "动态配色",
-                description = "使用壁纸配色；关闭后使用 L's Music 默认配色。",
-                checked = preferences.useDynamicColor,
-                onCheckedChange = onDynamicColor,
+            DynamicColorSettingCard(
+                useDynamicColor = preferences.useDynamicColor,
+                selectedPalette = preferences.presetPalette,
+                onDynamicColorChange = onDynamicColor,
+                onPresetPalette = onPresetPalette,
             )
         }
         item {
@@ -2010,6 +2034,100 @@ private fun SwitchSettingCard(
 }
 
 @Composable
+private fun DynamicColorSettingCard(
+    useDynamicColor: Boolean,
+    selectedPalette: PresetPalette,
+    onDynamicColorChange: (Boolean) -> Unit,
+    onPresetPalette: (PresetPalette) -> Unit,
+) {
+    val previews = remember {
+        PresetPalette.entries.associateWith { palette ->
+            presetColorScheme(palette, darkTheme = false).let { it.primary to it.onPrimary }
+        }
+    }
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(26.dp),
+        color = MaterialTheme.colorScheme.surfaceContainer,
+    ) {
+        Column(Modifier.padding(horizontal = 18.dp, vertical = 16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("动态配色", style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = if (useDynamicColor) {
+                            "使用系统从壁纸生成的配色。"
+                        } else {
+                            "选择 Material 3 Expressive 预设配色。"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Spacer(Modifier.width(16.dp))
+                Switch(checked = useDynamicColor, onCheckedChange = onDynamicColorChange)
+            }
+            AnimatedVisibility(visible = !useDynamicColor) {
+                Column {
+                    Spacer(Modifier.height(16.dp))
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    Spacer(Modifier.height(14.dp))
+                    Text(
+                        "预设配色",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        PresetPalette.entries.forEach { palette ->
+                            val selected = palette == selectedPalette
+                            val (accent, onAccent) = previews.getValue(palette)
+                            Surface(
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .selectable(
+                                        selected = selected,
+                                        role = Role.RadioButton,
+                                        onClick = { onPresetPalette(palette) },
+                                    )
+                                    .semantics {
+                                        contentDescription = "${palette.label}配色"
+                                    },
+                                shape = CircleShape,
+                                color = accent,
+                                border = BorderStroke(
+                                    width = if (selected) 3.dp else 1.dp,
+                                    color = if (selected) {
+                                        MaterialTheme.colorScheme.onSurface
+                                    } else {
+                                        MaterialTheme.colorScheme.outlineVariant
+                                    },
+                                ),
+                            ) {
+                                if (selected) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.Check,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(22.dp),
+                                            tint = onAccent,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun QueueScreen(
     state: LsMusicUiState,
     onPlay: (MediaEntry) -> Unit,
@@ -2062,8 +2180,15 @@ private fun QueueScreen(
             ) {
                 Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.width(30.dp), contentAlignment = Alignment.Center) {
-                        if (playing) Icon(Icons.Rounded.GraphicEq, "正在播放", tint = MaterialTheme.colorScheme.primary)
-                        else Text("${index + 1}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (playing) {
+                            Icon(
+                                Icons.Rounded.GraphicEq,
+                                "正在播放",
+                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                            )
+                        } else {
+                            Text("${index + 1}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
                     }
                     ArtworkTile(item, 48.dp)
                     Spacer(Modifier.width(12.dp))
@@ -2467,7 +2592,7 @@ private fun AlbumMark(size: androidx.compose.ui.unit.Dp) {
         color = MaterialTheme.colorScheme.primaryContainer,
     ) {
         Box(contentAlignment = Alignment.Center) {
-            Icon(Icons.Rounded.MusicNote, null, tint = MaterialTheme.colorScheme.primary)
+            Icon(Icons.Rounded.MusicNote, null, tint = MaterialTheme.colorScheme.onPrimaryContainer)
         }
     }
 }
@@ -2511,7 +2636,12 @@ private fun EmptyPanel(
                 verticalArrangement = Arrangement.Center,
             ) {
                 Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer) {
-                    Icon(icon, null, Modifier.padding(18.dp).size(36.dp), tint = MaterialTheme.colorScheme.primary)
+                    Icon(
+                        icon,
+                        null,
+                        Modifier.padding(18.dp).size(36.dp),
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                    )
                 }
                 Spacer(Modifier.height(18.dp))
                 Text(title, style = MaterialTheme.typography.titleLarge, textAlign = TextAlign.Center)
@@ -2579,6 +2709,7 @@ private fun LibraryPreview() {
             onDefaultGridLayout = {},
             onThemeMode = {},
             onDynamicColor = {},
+            onPresetPalette = {},
             onListenBrainzEnabled = {},
             onListenBrainzToken = {},
             onListenBrainzMinimumSeconds = {},

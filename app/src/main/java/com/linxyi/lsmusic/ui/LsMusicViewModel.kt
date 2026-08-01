@@ -749,6 +749,8 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
 
     fun setDynamicColor(enabled: Boolean) = updatePreferences { it.copy(useDynamicColor = enabled) }
 
+    fun setPresetPalette(palette: PresetPalette) = updatePreferences { it.copy(presetPalette = palette) }
+
     fun setListenBrainzEnabled(enabled: Boolean) = updatePreferences { it.copy(listenBrainzEnabled = enabled) }
 
     fun validateAndSaveListenBrainzToken(token: String) {

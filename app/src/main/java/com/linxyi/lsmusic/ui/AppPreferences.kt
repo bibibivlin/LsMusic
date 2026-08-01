@@ -16,11 +16,24 @@ enum class ThemeMode(val label: String) {
     DARK("深色"),
 }
 
+enum class PresetPalette(
+    val label: String,
+    val seedArgb: Long,
+) {
+    VIOLET("紫罗兰", 0xFF6750A4),
+    ROSE("玫瑰", 0xFFB3265E),
+    ORANGE("暖橙", 0xFF8B5000),
+    GREEN("青翠", 0xFF386A20),
+    TEAL("青蓝", 0xFF006B5F),
+    BLUE("湛蓝", 0xFF005FAF),
+}
+
 data class AppPreferences(
     val gallerySize: GallerySize = GallerySize.STANDARD,
     val useGridByDefault: Boolean = true,
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val useDynamicColor: Boolean = true,
+    val presetPalette: PresetPalette = PresetPalette.VIOLET,
     val listenBrainzEnabled: Boolean = false,
     val listenBrainzToken: String = "",
     val listenBrainzMinimumSeconds: Int = 240,
@@ -36,6 +49,7 @@ class AppPreferencesStore(context: Context) {
         useGridByDefault = preferences.getBoolean(KEY_GRID_DEFAULT, true),
         themeMode = preferences.enumValue(KEY_THEME_MODE, ThemeMode.SYSTEM),
         useDynamicColor = preferences.getBoolean(KEY_DYNAMIC_COLOR, true),
+        presetPalette = preferences.enumValue(KEY_PRESET_PALETTE, PresetPalette.VIOLET),
         listenBrainzEnabled = preferences.getBoolean(KEY_LISTENBRAINZ_ENABLED, false),
         listenBrainzToken = secrets.getString(KEY_LISTENBRAINZ_TOKEN, "").orEmpty(),
         listenBrainzMinimumSeconds = preferences.getInt(KEY_LISTENBRAINZ_MINIMUM_SECONDS, 240)
@@ -82,6 +96,7 @@ class AppPreferencesStore(context: Context) {
             .putBoolean(KEY_GRID_DEFAULT, value.useGridByDefault)
             .putString(KEY_THEME_MODE, value.themeMode.name)
             .putBoolean(KEY_DYNAMIC_COLOR, value.useDynamicColor)
+            .putString(KEY_PRESET_PALETTE, value.presetPalette.name)
             .putBoolean(KEY_LISTENBRAINZ_ENABLED, value.listenBrainzEnabled)
             .putInt(KEY_LISTENBRAINZ_MINIMUM_SECONDS, value.listenBrainzMinimumSeconds)
             .putInt(KEY_LISTENBRAINZ_MINIMUM_PERCENT, value.listenBrainzMinimumPercent)
@@ -141,6 +156,7 @@ class AppPreferencesStore(context: Context) {
         const val KEY_GRID_DEFAULT = "grid_default"
         const val KEY_THEME_MODE = "theme_mode"
         const val KEY_DYNAMIC_COLOR = "dynamic_color"
+        const val KEY_PRESET_PALETTE = "preset_palette"
         const val KEY_LISTENBRAINZ_ENABLED = "listenbrainz_enabled"
         const val KEY_LISTENBRAINZ_TOKEN = "listenbrainz_token"
         const val KEY_LISTENBRAINZ_MINIMUM_SECONDS = "listenbrainz_minimum_seconds"
