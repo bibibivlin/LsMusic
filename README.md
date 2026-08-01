@@ -1,6 +1,6 @@
 # L's Music
 
-一个专注于音乐的 Android DLNA 控制器。手机不传输音频，而是负责浏览局域网音乐库、管理播放列表，并让 DLNA 播放设备直接从媒体服务器播放音乐。
+一个专注于音乐的 Android DLNA 控制器。手机不传输音频，而是负责浏览局域网音乐库、管理播放列表，并让 DLNA 播放设备直接从媒体服务器播放音乐。应用需要 Android 12 或更高版本。
 
 ## 功能
 
@@ -12,6 +12,7 @@
 - 流畅浏览大型专辑库，进入专辑时优先显示列表中已有的封面
 - 手机侧播放列表：播放全部、加入队列、排序、切歌与进度跳转
 - 可选“本机”作为播放设备，使用 Media3 播放远程音乐
+- 可选在线滚动歌词，从网易云音乐和 QQ 音乐自动匹配，支持逐行/逐字同步与双语显示
 - 可选将正在播放及满足自定义阈值的播放记录上报到 ListenBrainz，保存令牌前会同时校验鉴权与网络连接
 - 远程播放支持 Android 系统媒体卡片、锁屏与蓝牙媒体控制
 - Material 3 Expressive 界面，可使用壁纸动态配色或选择内置预设配色
@@ -23,6 +24,16 @@
 2. 安装应用并允许局域网、通知等所需权限。
 3. 在“设置”中扫描并选择媒体库和播放设备。
 4. 浏览音乐库，选择歌曲、专辑或播放列表开始播放。
+
+### 在线歌词
+
+在线歌词默认关闭。前往“设置 > 歌词”打开“在线获取歌词”后，在正在播放页点击专辑封面即可打开歌词：空间不足或屏幕比例接近方形时会用歌词替换封面，只有可用宽高和屏幕比例都适合时才并排显示封面与歌词；轻点歌词区域可返回封面。曲目信息、播放进度和控制按钮始终保留。
+
+应用会按设置中的顺序从网易云音乐和 QQ 音乐自动查找高置信度匹配。可以拖动来源手柄调整优先级，选择是否显示当前歌词来源，并选择仅原文、双语或仅中文显示；仅中文在没有译文时会回退到原文。当前行会保持在歌词区域中央。手动拖动时所有歌词会平滑变清晰，停止操作片刻后自动回到当前行并恢复特效。歌词特效可单独关闭，以便在图形性能较弱的设备上只保留基础滚动和整行高亮。无时间戳歌词仍可手动滚动查看；全部来源都没有匹配时显示“无歌词”，网络请求失败时可点击重试。
+
+成功获取的歌词会在应用缓存目录中保留最多 30 天，未找到结果会短期缓存 24 小时，缓存总量限制为 25 MiB。可在“设置 > 歌词 > 歌词缓存”查看占用并一键清除。关闭在线歌词后，应用不会读取这些缓存或请求歌词服务。
+
+当前版本只支持在线获取，不读取音频文件、媒体标签或用户本地歌词文件，也不提供手动选曲、歌词时间偏移或点击歌词跳转。网易云音乐和 QQ 音乐的非官方公开接口可能随服务端调整而暂时失效。
 
 在“设置 > 界面”中关闭“动态配色”后，配色卡片会展开显示内置颜色。点选任一色球即可立即应用对应的 Material 3 Expressive 配色；浅色与深色模式会分别使用与该重点色协调的完整颜色方案，选择结果会保留到下次启动。
 
@@ -67,6 +78,7 @@ ListenBrainz 请求会跟随 Android 当前的默认网络，包括系统 VPN；
 ./gradlew :app:assembleDebug
 ./gradlew :app:assembleRelease
 ./gradlew :app:testDebugUnitTest
+./gradlew :app:connectedDebugAndroidTest
 ./gradlew :app:lintDebug
 ```
 
@@ -78,9 +90,12 @@ ListenBrainz 请求会跟随 Android 当前的默认网络，包括系统 VPN；
 
 Kotlin、Jetpack Compose、Material 3 Expressive、Media3、jUPnP / DLNA、Coil。
 
+在线来源协议实现参考 Apache-2.0 许可的 [jitwxs/163MusicLyrics](https://github.com/jitwxs/163MusicLyrics) 和 [cqjjjzr/MusicBee-NeteaseLyrics](https://github.com/cqjjjzr/MusicBee-NeteaseLyrics)，QQ QRC 协议实现也与 MIT 许可的 [jixunmoe-go/qrc](https://github.com/jixunmoe-go/qrc) 交叉验证。歌词动画设计参考 Apache-2.0 许可的 [dokar3/amlv](https://github.com/dokar3/amlv)。[applemusic-like-lyrics](https://github.com/amll-dev/applemusic-like-lyrics) 与 [BetterLyrics](https://github.com/jayfunc/BetterLyrics) 仅用于视觉调研，未复制其代码。详细归属与许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
 ## 目录
 
 - `app/src/main/java/com/linxyi/lsmusic/dlna/`：设备发现、媒体库浏览与播放控制
 - `app/src/main/java/com/linxyi/lsmusic/ui/`：Compose 界面、状态管理、专辑排序和主题
 - `app/src/main/java/com/linxyi/lsmusic/playback/`：本机与远程系统媒体会话
 - `app/src/main/java/com/linxyi/lsmusic/listenbrainz/`：播放跟踪、MusicBrainz 元数据与 ListenBrainz 上报
+- `app/src/main/java/com/linxyi/lsmusic/lyrics/`：在线歌词来源、匹配、解析与缓存

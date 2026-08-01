@@ -1,6 +1,7 @@
 package com.linxyi.lsmusic
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -43,6 +44,7 @@ import com.linxyi.lsmusic.ui.theme.LsMusicTheme
 class MainActivity : ComponentActivity() {
     private val viewModel: LsMusicViewModel by viewModels()
 
+    @SuppressLint("InlinedApi")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge(

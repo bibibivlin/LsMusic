@@ -61,6 +61,7 @@ import androidx.compose.material.icons.rounded.ClearAll
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Devices
+import androidx.compose.material.icons.rounded.DragHandle
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.FormatListNumbered
@@ -124,6 +125,7 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
@@ -165,6 +167,8 @@ import com.linxyi.lsmusic.dlna.DlnaDevice
 import com.linxyi.lsmusic.dlna.MediaEntry
 import com.linxyi.lsmusic.dlna.RemotePlaybackState
 import com.linxyi.lsmusic.dlna.DlnaDeviceKind
+import com.linxyi.lsmusic.lyrics.LyricsProviderId
+import com.linxyi.lsmusic.lyrics.LyricsTranslationMode
 import com.linxyi.lsmusic.ui.theme.LsMusicTheme
 import com.linxyi.lsmusic.ui.theme.presetColorScheme
 import coil3.compose.AsyncImage
@@ -396,6 +400,15 @@ fun LsMusicApp(viewModel: LsMusicViewModel) {
             onThemeMode = viewModel::setThemeMode,
             onDynamicColor = viewModel::setDynamicColor,
             onPresetPalette = viewModel::setPresetPalette,
+            onLoadLyrics = viewModel::loadLyrics,
+            onRetryLyrics = viewModel::retryLyrics,
+            onLyricsEnabled = viewModel::setLyricsEnabled,
+            onLyricsProviderOrder = viewModel::setLyricsProviderOrder,
+            onLyricsTranslationMode = viewModel::setLyricsTranslationMode,
+            onLyricsSourceVisible = viewModel::setLyricsSourceVisible,
+            onLyricsEffectsEnabled = viewModel::setLyricsEffectsEnabled,
+            onLyricsFontSizeSp = viewModel::setLyricsFontSizeSp,
+            onClearLyricsCache = viewModel::clearLyricsCache,
             onListenBrainzEnabled = viewModel::setListenBrainzEnabled,
             onListenBrainzToken = viewModel::validateAndSaveListenBrainzToken,
             onListenBrainzMinimumSeconds = viewModel::setListenBrainzMinimumSeconds,
@@ -435,6 +448,15 @@ private fun LsMusicContent(
     onThemeMode: (ThemeMode) -> Unit,
     onDynamicColor: (Boolean) -> Unit,
     onPresetPalette: (PresetPalette) -> Unit,
+    onLoadLyrics: () -> Unit,
+    onRetryLyrics: () -> Unit,
+    onLyricsEnabled: (Boolean) -> Unit,
+    onLyricsProviderOrder: (List<LyricsProviderId>) -> Unit,
+    onLyricsTranslationMode: (LyricsTranslationMode) -> Unit,
+    onLyricsSourceVisible: (Boolean) -> Unit,
+    onLyricsEffectsEnabled: (Boolean) -> Unit,
+    onLyricsFontSizeSp: (Int) -> Unit,
+    onClearLyricsCache: () -> Unit,
     onListenBrainzEnabled: (Boolean) -> Unit,
     onListenBrainzToken: (String) -> Unit,
     onListenBrainzMinimumSeconds: (Int) -> Unit,
@@ -520,13 +542,15 @@ private fun LsMusicContent(
                             bottomContentPadding,
                         )
                         AppDestination.NOW_PLAYING -> NowPlayingScreen(
-                            state,
-                            onTogglePlayback,
-                            onPrevious,
-                            onNext,
-                            onCycleRepeat,
-                            onToggleShuffle,
-                            onSeek,
+                            state = state,
+                            onTogglePlayback = onTogglePlayback,
+                            onPrevious = onPrevious,
+                            onNext = onNext,
+                            onCycleRepeat = onCycleRepeat,
+                            onToggleShuffle = onToggleShuffle,
+                            onSeek = onSeek,
+                            onLoadLyrics = onLoadLyrics,
+                            onRetryLyrics = onRetryLyrics,
                         )
                         AppDestination.SETTINGS -> SettingsScreen(
                             state = state,
@@ -539,6 +563,13 @@ private fun LsMusicContent(
                             onThemeMode = onThemeMode,
                             onDynamicColor = onDynamicColor,
                             onPresetPalette = onPresetPalette,
+                            onLyricsEnabled = onLyricsEnabled,
+                            onLyricsProviderOrder = onLyricsProviderOrder,
+                            onLyricsTranslationMode = onLyricsTranslationMode,
+                            onLyricsSourceVisible = onLyricsSourceVisible,
+                            onLyricsEffectsEnabled = onLyricsEffectsEnabled,
+                            onLyricsFontSizeSp = onLyricsFontSizeSp,
+                            onClearLyricsCache = onClearLyricsCache,
                             onListenBrainzEnabled = onListenBrainzEnabled,
                             onListenBrainzToken = onListenBrainzToken,
                             onListenBrainzMinimumSeconds = onListenBrainzMinimumSeconds,
@@ -600,9 +631,7 @@ private fun SystemNavigationBarAppearance() {
     SideEffect {
         val window = (view.context as? android.app.Activity)?.window ?: return@SideEffect
         window.navigationBarColor = android.graphics.Color.TRANSPARENT
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-            window.isNavigationBarContrastEnforced = false
-        }
+        window.isNavigationBarContrastEnforced = false
         WindowCompat.getInsetsController(window, view).isAppearanceLightNavigationBars =
             colorScheme.surfaceContainer.luminance() > .5f
     }
@@ -1758,6 +1787,13 @@ private fun SettingsScreen(
     onThemeMode: (ThemeMode) -> Unit,
     onDynamicColor: (Boolean) -> Unit,
     onPresetPalette: (PresetPalette) -> Unit,
+    onLyricsEnabled: (Boolean) -> Unit,
+    onLyricsProviderOrder: (List<LyricsProviderId>) -> Unit,
+    onLyricsTranslationMode: (LyricsTranslationMode) -> Unit,
+    onLyricsSourceVisible: (Boolean) -> Unit,
+    onLyricsEffectsEnabled: (Boolean) -> Unit,
+    onLyricsFontSizeSp: (Int) -> Unit,
+    onClearLyricsCache: () -> Unit,
     onListenBrainzEnabled: (Boolean) -> Unit,
     onListenBrainzToken: (String) -> Unit,
     onListenBrainzMinimumSeconds: (Int) -> Unit,
@@ -1858,6 +1894,104 @@ private fun SettingsScreen(
                             label = { Text(mode.label) },
                         )
                     }
+                }
+            }
+        }
+        item {
+            Text("歌词", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+        }
+        item {
+            SwitchSettingCard(
+                title = "在线获取歌词",
+                description = if (preferences.lyricsEnabled) {
+                    "打开播放页歌词面板时，从在线来源查找歌词。"
+                } else {
+                    "关闭后播放页不会显示歌词入口，也不会读取歌词缓存或访问歌词服务。"
+                },
+                checked = preferences.lyricsEnabled,
+                onCheckedChange = onLyricsEnabled,
+            )
+        }
+        item {
+            SettingCard(
+                title = "歌词来源优先级",
+                description = "按顺序查找网易云音乐和 QQ 音乐。拖动手柄或使用上移、下移按钮调整。",
+            ) {
+                LyricsProviderOrderSetting(
+                    order = preferences.lyricsProviderOrder,
+                    enabled = preferences.lyricsEnabled,
+                    onOrderChange = onLyricsProviderOrder,
+                )
+            }
+        }
+        item {
+            SettingCard(
+                title = "歌词翻译",
+                description = "仅中文在没有译文时自动显示原文。",
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    LyricsTranslationMode.entries.forEach { mode ->
+                        FilterChip(
+                            selected = preferences.lyricsTranslationMode == mode,
+                            onClick = { onLyricsTranslationMode(mode) },
+                            enabled = preferences.lyricsEnabled,
+                            label = { Text(mode.label) },
+                        )
+                    }
+                }
+            }
+        }
+        item {
+            SwitchSettingCard(
+                title = "显示歌词来源",
+                description = "在歌词区域底部显示当前使用的在线来源。",
+                checked = preferences.lyricsSourceVisible,
+                enabled = preferences.lyricsEnabled,
+                onCheckedChange = onLyricsSourceVisible,
+            )
+        }
+        item {
+            SwitchSettingCard(
+                title = "歌词特效",
+                description = "启用模糊渐变、缩放、错峰位移和逐字扫光；关闭可降低图形负载。",
+                checked = preferences.lyricsEffectsEnabled,
+                enabled = preferences.lyricsEnabled,
+                onCheckedChange = onLyricsEffectsEnabled,
+            )
+        }
+        item {
+            SettingCard(
+                title = "歌词字体大小",
+                description = "当前 ${preferences.lyricsFontSizeSp}sp，可在 18–40sp 间调整。",
+            ) {
+                Slider(
+                    value = preferences.lyricsFontSizeSp.toFloat(),
+                    onValueChange = { onLyricsFontSizeSp((it / 2f).roundToInt() * 2) },
+                    enabled = preferences.lyricsEnabled,
+                    valueRange = 18f..40f,
+                    steps = 10,
+                )
+            }
+        }
+        item {
+            SettingCard(
+                title = "歌词缓存",
+                description = "网络歌词缓存在可被系统回收的应用缓存目录中，成功结果保留 30 天。",
+            ) {
+                Text(
+                    "当前占用：${formatByteSize(state.lyricsCacheBytes)}",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(10.dp))
+                OutlinedButton(
+                    onClick = onClearLyricsCache,
+                    enabled = !state.isClearingLyricsCache,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(if (state.isClearingLyricsCache) "正在清除…" else "清除歌词缓存")
                 }
             }
         }
@@ -1985,6 +2119,85 @@ private fun formatRuleDuration(seconds: Int): String {
     }
 }
 
+private fun formatByteSize(bytes: Long): String = when {
+    bytes >= 1024L * 1024L -> "%.1f MiB".format(bytes / (1024.0 * 1024.0))
+    bytes >= 1024L -> "%.1f KiB".format(bytes / 1024.0)
+    else -> "$bytes B"
+}
+
+@Composable
+private fun LyricsProviderOrderSetting(
+    order: List<LyricsProviderId>,
+    enabled: Boolean,
+    onOrderChange: (List<LyricsProviderId>) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        order.forEachIndexed { index, provider ->
+            var dragDistance by remember(provider) { mutableFloatStateOf(0f) }
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(18.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        Icons.Rounded.DragHandle,
+                        "拖动调整 ${provider.label} 优先级",
+                        modifier = Modifier
+                            .size(40.dp)
+                            .pointerInput(provider, index, enabled) {
+                                if (!enabled) return@pointerInput
+                                detectVerticalDragGestures(
+                                    onDragStart = { dragDistance = 0f },
+                                    onVerticalDrag = { change, amount ->
+                                        change.consume()
+                                        dragDistance += amount
+                                    },
+                                    onDragEnd = {
+                                        val direction = when {
+                                            dragDistance < -20f -> -1
+                                            dragDistance > 20f -> 1
+                                            else -> 0
+                                        }
+                                        val target = index + direction
+                                        if (direction != 0 && target in order.indices) {
+                                            onOrderChange(order.toMutableList().apply {
+                                                add(target, removeAt(index))
+                                            })
+                                        }
+                                        dragDistance = 0f
+                                    },
+                                )
+                            }
+                            .padding(8.dp),
+                        tint = if (enabled) {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        } else {
+                            MaterialTheme.colorScheme.onSurface.copy(alpha = .38f)
+                        },
+                    )
+                    Text(provider.label, modifier = Modifier.weight(1f))
+                    IconButton(
+                        onClick = {
+                            onOrderChange(order.toMutableList().apply { add(index - 1, removeAt(index)) })
+                        },
+                        enabled = enabled && index > 0,
+                    ) { Icon(Icons.Rounded.KeyboardArrowUp, "${provider.label}上移") }
+                    IconButton(
+                        onClick = {
+                            onOrderChange(order.toMutableList().apply { add(index + 1, removeAt(index)) })
+                        },
+                        enabled = enabled && index < order.lastIndex,
+                    ) { Icon(Icons.Rounded.KeyboardArrowDown, "${provider.label}下移") }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun SettingCard(
     title: String,
@@ -2011,6 +2224,7 @@ private fun SwitchSettingCard(
     title: String,
     description: String,
     checked: Boolean,
+    enabled: Boolean = true,
     onCheckedChange: (Boolean) -> Unit,
 ) {
     Surface(
@@ -2028,7 +2242,7 @@ private fun SwitchSettingCard(
                 Text(description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Spacer(Modifier.width(16.dp))
-            Switch(checked = checked, onCheckedChange = onCheckedChange)
+            Switch(checked = checked, onCheckedChange = onCheckedChange, enabled = enabled)
         }
     }
 }
@@ -2211,20 +2425,34 @@ private fun QueueScreen(
     }
 }
 
+internal fun shouldShowLyricsBesideArtwork(widthDp: Float, heightDp: Float): Boolean {
+    if (widthDp <= 0f || heightDp <= 0f) return false
+    return widthDp >= LYRICS_SIDE_BY_SIDE_MIN_WIDTH_DP &&
+        heightDp >= LYRICS_SIDE_BY_SIDE_MIN_HEIGHT_DP &&
+        widthDp / heightDp >= LYRICS_SIDE_BY_SIDE_MIN_ASPECT_RATIO
+}
+
+private const val LYRICS_SIDE_BY_SIDE_MIN_WIDTH_DP = 720f
+private const val LYRICS_SIDE_BY_SIDE_MIN_HEIGHT_DP = 560f
+private const val LYRICS_SIDE_BY_SIDE_MIN_ASPECT_RATIO = 1.25f
+
 @Composable
-private fun NowPlayingScreen(
+internal fun NowPlayingScreen(
     state: LsMusicUiState,
+    modifier: Modifier = Modifier,
     onTogglePlayback: () -> Unit,
     onPrevious: () -> Unit,
     onNext: () -> Unit,
     onCycleRepeat: () -> Unit,
     onToggleShuffle: () -> Unit,
     onSeek: (Long) -> Unit,
+    onLoadLyrics: () -> Unit,
+    onRetryLyrics: () -> Unit,
 ) {
     val track = state.currentTrack
     if (track == null) {
         Column(
-            modifier = Modifier.fillMaxSize().padding(24.dp, 28.dp, 24.dp, 40.dp),
+            modifier = modifier.fillMaxSize().padding(24.dp, 28.dp, 24.dp, 40.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Text(
@@ -2241,9 +2469,23 @@ private fun NowPlayingScreen(
         }
         return
     }
-    BoxWithConstraints(Modifier.fillMaxSize()) {
+    var showLyrics by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(state.preferences.lyricsEnabled) {
+        if (!state.preferences.lyricsEnabled) showLyrics = false
+    }
+    LaunchedEffect(
+        showLyrics,
+        state.playbackGeneration,
+        state.currentTrack?.id,
+        state.preferences.lyricsEnabled,
+        state.preferences.lyricsProviderOrder,
+    ) {
+        if (showLyrics && state.preferences.lyricsEnabled) onLoadLyrics()
+    }
+    BoxWithConstraints(modifier.fillMaxSize()) {
         val compact = maxHeight < 620.dp
         val wide = maxWidth >= 720.dp
+        val canShowSideBySide = shouldShowLyricsBesideArtwork(maxWidth.value, maxHeight.value)
         val verticalPadding = if (compact) 16.dp else 28.dp
         val horizontalPadding = if (wide) 40.dp else 24.dp
         val trackTitleStyle = if (compact) MaterialTheme.typography.titleLarge else MaterialTheme.typography.headlineSmall
@@ -2268,13 +2510,82 @@ private fun NowPlayingScreen(
                 modifier = Modifier.fillMaxWidth().weight(1f),
                 contentAlignment = Alignment.Center,
             ) {
-                val maximumArtwork = if (wide) 440.dp else 360.dp
-                val artworkSize = minOf(
-                    maxWidth * if (wide) .68f else .84f,
-                    maxHeight * .96f,
-                    maximumArtwork,
-                )
-                HeroArtwork(track, artworkSize)
+                if (showLyrics && canShowSideBySide) {
+                    Row(
+                        modifier = Modifier.fillMaxSize(),
+                        horizontalArrangement = Arrangement.spacedBy(24.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        BoxWithConstraints(
+                            modifier = Modifier.weight(7f).fillMaxHeight(),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            val artworkSize = minOf(maxWidth, maxHeight * .96f, 440.dp)
+                            Box(
+                                modifier = Modifier
+                                    .semantics {
+                                        contentDescription = if (state.preferences.lyricsEnabled) {
+                                            "专辑封面，点击打开歌词"
+                                        } else {
+                                            "专辑封面"
+                                        }
+                                    }
+                                    .clickable(
+                                        enabled = state.preferences.lyricsEnabled,
+                                        onClickLabel = "打开歌词",
+                                    ) { showLyrics = true },
+                            ) { HeroArtwork(track, artworkSize) }
+                        }
+                        LyricsPanel(
+                            loadState = state.lyricsLoadState,
+                            positionMs = state.positionMs,
+                            durationMs = state.durationMs,
+                            isPlaying = state.playbackState == RemotePlaybackState.PLAYING,
+                            translationMode = state.preferences.lyricsTranslationMode,
+                            sourceVisible = state.preferences.lyricsSourceVisible,
+                            effectsEnabled = state.preferences.lyricsEffectsEnabled,
+                            fontSizeSp = state.preferences.lyricsFontSizeSp,
+                            onRetry = onRetryLyrics,
+                            onClose = { showLyrics = false },
+                            modifier = Modifier.weight(8f).fillMaxHeight(),
+                        )
+                    }
+                } else if (showLyrics) {
+                    LyricsPanel(
+                        loadState = state.lyricsLoadState,
+                        positionMs = state.positionMs,
+                        durationMs = state.durationMs,
+                        isPlaying = state.playbackState == RemotePlaybackState.PLAYING,
+                        translationMode = state.preferences.lyricsTranslationMode,
+                        sourceVisible = state.preferences.lyricsSourceVisible,
+                        effectsEnabled = state.preferences.lyricsEffectsEnabled,
+                        fontSizeSp = state.preferences.lyricsFontSizeSp,
+                        onRetry = onRetryLyrics,
+                        onClose = { showLyrics = false },
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                } else {
+                    val maximumArtwork = if (wide) 440.dp else 360.dp
+                    val artworkSize = minOf(
+                        maxWidth * if (wide) .68f else .84f,
+                        maxHeight * .96f,
+                        maximumArtwork,
+                    )
+                    Box(
+                        modifier = Modifier
+                            .semantics {
+                                contentDescription = if (state.preferences.lyricsEnabled) {
+                                    "专辑封面，点击打开歌词"
+                                } else {
+                                    "专辑封面"
+                                }
+                            }
+                            .clickable(
+                                enabled = state.preferences.lyricsEnabled,
+                                onClickLabel = "打开歌词",
+                            ) { showLyrics = true },
+                    ) { HeroArtwork(track, artworkSize) }
+                }
             }
             Spacer(Modifier.height(if (compact) 8.dp else 16.dp))
             Text(
@@ -2489,11 +2800,11 @@ private fun MiniPlayer(
 private fun ArtworkTile(
     entry: MediaEntry,
     size: androidx.compose.ui.unit.Dp?,
+    modifier: Modifier = Modifier,
     imageIdentity: Any = mediaEntryKey(entry),
     requestSizePx: Int? = null,
     useCachedAlbumThumbnailAsPlaceholder: Boolean = false,
     cornerRadius: Dp? = null,
-    modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
     val colors = remember(entry.title) {
@@ -2710,6 +3021,15 @@ private fun LibraryPreview() {
             onThemeMode = {},
             onDynamicColor = {},
             onPresetPalette = {},
+            onLoadLyrics = {},
+            onRetryLyrics = {},
+            onLyricsEnabled = {},
+            onLyricsProviderOrder = {},
+            onLyricsTranslationMode = {},
+            onLyricsSourceVisible = {},
+            onLyricsEffectsEnabled = {},
+            onLyricsFontSizeSp = {},
+            onClearLyricsCache = {},
             onListenBrainzEnabled = {},
             onListenBrainzToken = {},
             onListenBrainzMinimumSeconds = {},

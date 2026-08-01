@@ -13,7 +13,7 @@ android {
 
     defaultConfig {
         applicationId = "com.linxyi.lsmusic"
-        minSdk = 26
+        minSdk = 31
         targetSdk = 37
         versionCode = 1
         versionName = "1.0"
@@ -60,6 +60,7 @@ dependencies {
     implementation(libs.coil.compose)
     implementation(libs.coil.network.okhttp)
     testImplementation(libs.junit)
+    testImplementation(libs.json)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
     androidTestImplementation(libs.androidx.espresso.core)

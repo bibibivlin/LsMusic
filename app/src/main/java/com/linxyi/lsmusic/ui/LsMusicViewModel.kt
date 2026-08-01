@@ -33,6 +33,16 @@ import com.linxyi.lsmusic.listenbrainz.ListenBrainzPlaybackTracker
 import com.linxyi.lsmusic.listenbrainz.EmbeddedAudioMetadataReader
 import com.linxyi.lsmusic.listenbrainz.describeListenBrainzValidationFailure
 import com.linxyi.lsmusic.listenbrainz.shouldSubmitListen
+import com.linxyi.lsmusic.lyrics.LyricsDiskCache
+import com.linxyi.lsmusic.lyrics.LyricsLoadState
+import com.linxyi.lsmusic.lyrics.LyricsProviderId
+import com.linxyi.lsmusic.lyrics.LyricsQuery
+import com.linxyi.lsmusic.lyrics.LyricsRepository
+import com.linxyi.lsmusic.lyrics.LyricsRepositoryResult
+import com.linxyi.lsmusic.lyrics.LyricsTranslationMode
+import com.linxyi.lsmusic.lyrics.NetEaseLyricsProvider
+import com.linxyi.lsmusic.lyrics.QqLyricsProvider
+import com.linxyi.lsmusic.lyrics.normalizedProviderOrder
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.channels.Channel
@@ -45,6 +55,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.io.File
 
 enum class AppDestination { LIBRARY, QUEUE, NOW_PLAYING, SETTINGS }
 
@@ -125,6 +136,11 @@ data class LsMusicUiState(
     val positionMs: Long = 0L,
     val durationMs: Long = 0L,
     val bufferedPositionMs: Long = 0L,
+    val lyricsLoadState: LyricsLoadState = LyricsLoadState.Idle,
+    val lyricsPlaybackGeneration: Long? = null,
+    val lyricsTrackId: String? = null,
+    val lyricsCacheBytes: Long = 0L,
+    val isClearingLyricsCache: Boolean = false,
     val preferences: AppPreferences = AppPreferences(),
     val listenBrainzTokenValidation: ListenBrainzTokenValidationUiState = ListenBrainzTokenValidationUiState(),
     val destination: AppDestination = AppDestination.LIBRARY,
@@ -145,6 +161,10 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     private val listenBrainzClient = ListenBrainzClient()
     private val embeddedAudioMetadataReader = EmbeddedAudioMetadataReader()
     private val listenBrainzPlaybackTracker = ListenBrainzPlaybackTracker()
+    private val lyricsRepository = LyricsRepository(
+        providers = listOf(NetEaseLyricsProvider(), QqLyricsProvider()),
+        cache = LyricsDiskCache(File(application.cacheDir, "online-lyrics-v1")),
+    )
     private val listenBrainzSubmissions = Channel<ListenBrainzSubmission>(Channel.BUFFERED)
     private val libraryBrowseStore = LibraryBrowseStore()
     private val rememberedServer = preferenceStore.lastServer()
@@ -179,6 +199,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     private var remoteLastObservedPositionMs: Long? = null
     private var remoteTrackCommandedAtMs = 0L
     private var listenBrainzTokenValidationJob: Job? = null
+    private var lyricsJob: Job? = null
 
     private val remoteMediaCommandReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -339,6 +360,22 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
                 refreshPlaybackProgress()
                 delay(if (_uiState.value.selectedRendererId == LOCAL_RENDERER_ID) 500L else 1_000L)
             }
+        }
+
+        if (_uiState.value.preferences.lyricsEnabled) refreshLyricsCacheSize()
+
+        viewModelScope.launch {
+            uiState.map { it.playbackGeneration to it.currentTrack?.id }
+                .distinctUntilChanged()
+                .collect { (generation, trackId) ->
+                    val current = _uiState.value
+                    if (
+                        current.lyricsPlaybackGeneration != null &&
+                        (current.lyricsPlaybackGeneration != generation || current.lyricsTrackId != trackId)
+                    ) {
+                        cancelLyricsLoadAndReset()
+                    }
+                }
         }
 
         viewModelScope.launch {
@@ -722,6 +759,128 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun setDestination(destination: AppDestination) = _uiState.update { it.copy(destination = destination) }
+
+    fun loadLyrics(forceRefresh: Boolean = false) {
+        val state = _uiState.value
+        if (!state.preferences.lyricsEnabled) return
+        val track = state.currentTrack ?: return
+        val generation = state.playbackGeneration
+        if (
+            !forceRefresh &&
+            state.lyricsPlaybackGeneration == generation &&
+            state.lyricsTrackId == track.id &&
+            state.lyricsLoadState !is LyricsLoadState.Idle
+        ) return
+
+        lyricsJob?.cancel()
+        _uiState.update {
+            it.copy(
+                lyricsLoadState = LyricsLoadState.Loading,
+                lyricsPlaybackGeneration = generation,
+                lyricsTrackId = track.id,
+            )
+        }
+        val query = LyricsQuery(
+            title = track.title,
+            artist = track.creator,
+            album = track.album,
+            durationMs = state.durationMs.takeIf { it > 0L } ?: parseTimeMs(track.duration),
+        )
+        val trackId = track.id
+        val order = state.preferences.lyricsProviderOrder
+        lyricsJob = viewModelScope.launch {
+            val result = lyricsRepository.load(query, order, forceRefresh)
+            _uiState.update { current ->
+                if (
+                    current.playbackGeneration != generation ||
+                    current.currentTrack?.id != trackId ||
+                    !current.preferences.lyricsEnabled
+                ) {
+                    current
+                } else {
+                    current.copy(
+                        lyricsLoadState = when (result) {
+                            is LyricsRepositoryResult.Found -> LyricsLoadState.Loaded(result.document)
+                            LyricsRepositoryResult.NotFound -> LyricsLoadState.NotFound
+                            is LyricsRepositoryResult.Failure -> LyricsLoadState.Error(result.message)
+                        },
+                        lyricsPlaybackGeneration = generation,
+                        lyricsTrackId = trackId,
+                    )
+                }
+            }
+            _uiState.update { it.copy(lyricsCacheBytes = lyricsRepository.cacheSizeBytes()) }
+        }
+    }
+
+    fun retryLyrics() = loadLyrics(forceRefresh = true)
+
+    fun setLyricsEnabled(enabled: Boolean) {
+        if (_uiState.value.preferences.lyricsEnabled == enabled) return
+        if (!enabled) cancelLyricsLoadAndReset()
+        updatePreferences { it.copy(lyricsEnabled = enabled) }
+        if (enabled) refreshLyricsCacheSize()
+    }
+
+    fun setLyricsProviderOrder(order: List<LyricsProviderId>) {
+        val normalized = normalizedProviderOrder(order)
+        if (normalized == _uiState.value.preferences.lyricsProviderOrder) return
+        updatePreferences { it.copy(lyricsProviderOrder = normalized) }
+        cancelLyricsLoadAndReset()
+    }
+
+    fun setLyricsTranslationMode(mode: LyricsTranslationMode) = updatePreferences {
+        it.copy(lyricsTranslationMode = mode)
+    }
+
+    fun setLyricsSourceVisible(visible: Boolean) = updatePreferences {
+        it.copy(lyricsSourceVisible = visible)
+    }
+
+    fun setLyricsEffectsEnabled(enabled: Boolean) = updatePreferences {
+        it.copy(lyricsEffectsEnabled = enabled)
+    }
+
+    fun setLyricsFontSizeSp(size: Int) = updatePreferences {
+        it.copy(lyricsFontSizeSp = normalizedLyricsFontSizeSp(size))
+    }
+
+    fun clearLyricsCache() {
+        if (_uiState.value.isClearingLyricsCache) return
+        cancelLyricsLoadAndReset()
+        _uiState.update { it.copy(isClearingLyricsCache = true) }
+        viewModelScope.launch {
+            val failure = runCatching { lyricsRepository.clearCache() }.exceptionOrNull()
+            val size = runCatching { lyricsRepository.cacheSizeBytes() }
+                .getOrDefault(_uiState.value.lyricsCacheBytes)
+            _uiState.update {
+                it.copy(
+                    lyricsCacheBytes = size,
+                    isClearingLyricsCache = false,
+                )
+            }
+            if (failure != null) showError("清除歌词缓存失败")
+        }
+    }
+
+    private fun cancelLyricsLoadAndReset() {
+        lyricsJob?.cancel()
+        lyricsJob = null
+        _uiState.update {
+            it.copy(
+                lyricsLoadState = LyricsLoadState.Idle,
+                lyricsPlaybackGeneration = null,
+                lyricsTrackId = null,
+            )
+        }
+    }
+
+    private fun refreshLyricsCacheSize() {
+        viewModelScope.launch {
+            val size = runCatching { lyricsRepository.cacheSizeBytes() }.getOrNull() ?: return@launch
+            _uiState.update { it.copy(lyricsCacheBytes = size) }
+        }
+    }
 
     fun cycleRepeatMode() = _uiState.update { state ->
         state.copy(
@@ -1189,6 +1348,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     override fun onCleared() {
+        lyricsJob?.cancel()
         listenBrainzSubmissions.close()
         getApplication<Application>().unregisterReceiver(remoteMediaCommandReceiver)
         getApplication<Application>().startService(

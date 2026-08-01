@@ -3,6 +3,9 @@ package com.linxyi.lsmusic.ui
 import android.content.Context
 import com.linxyi.lsmusic.dlna.DlnaDevice
 import com.linxyi.lsmusic.dlna.DlnaDeviceKind
+import com.linxyi.lsmusic.lyrics.LyricsProviderId
+import com.linxyi.lsmusic.lyrics.LyricsTranslationMode
+import com.linxyi.lsmusic.lyrics.normalizedProviderOrder
 
 enum class GallerySize(val label: String, val minCellSize: Int) {
     COMPACT("紧凑", 96),
@@ -34,11 +37,25 @@ data class AppPreferences(
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val useDynamicColor: Boolean = true,
     val presetPalette: PresetPalette = PresetPalette.VIOLET,
+    val lyricsEnabled: Boolean = false,
+    val lyricsProviderOrder: List<LyricsProviderId> = LyricsProviderId.entries,
+    val lyricsTranslationMode: LyricsTranslationMode = LyricsTranslationMode.ORIGINAL,
+    val lyricsSourceVisible: Boolean = true,
+    val lyricsEffectsEnabled: Boolean = true,
+    val lyricsFontSizeSp: Int = 28,
     val listenBrainzEnabled: Boolean = false,
     val listenBrainzToken: String = "",
     val listenBrainzMinimumSeconds: Int = 240,
     val listenBrainzMinimumPercent: Int = 50,
 )
+
+internal fun parseLyricsProviderOrder(value: String?): List<LyricsProviderId> = normalizedProviderOrder(
+    value?.split(',')
+        ?.mapNotNull { name -> LyricsProviderId.entries.firstOrNull { it.name == name } }
+        .orEmpty(),
+)
+
+internal fun normalizedLyricsFontSizeSp(value: Int): Int = value.coerceIn(18, 40).let { it - it % 2 }
 
 class AppPreferencesStore(context: Context) {
     private val preferences = context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
@@ -50,6 +67,15 @@ class AppPreferencesStore(context: Context) {
         themeMode = preferences.enumValue(KEY_THEME_MODE, ThemeMode.SYSTEM),
         useDynamicColor = preferences.getBoolean(KEY_DYNAMIC_COLOR, true),
         presetPalette = preferences.enumValue(KEY_PRESET_PALETTE, PresetPalette.VIOLET),
+        lyricsEnabled = preferences.getBoolean(KEY_LYRICS_ENABLED, false),
+        lyricsProviderOrder = parseLyricsProviderOrder(preferences.getString(KEY_LYRICS_PROVIDER_ORDER, null)),
+        lyricsTranslationMode = preferences.enumValue(
+            KEY_LYRICS_TRANSLATION_MODE,
+            LyricsTranslationMode.ORIGINAL,
+        ),
+        lyricsSourceVisible = preferences.getBoolean(KEY_LYRICS_SOURCE_VISIBLE, true),
+        lyricsEffectsEnabled = preferences.getBoolean(KEY_LYRICS_EFFECTS_ENABLED, true),
+        lyricsFontSizeSp = normalizedLyricsFontSizeSp(preferences.getInt(KEY_LYRICS_FONT_SIZE_SP, 28)),
         listenBrainzEnabled = preferences.getBoolean(KEY_LISTENBRAINZ_ENABLED, false),
         listenBrainzToken = secrets.getString(KEY_LISTENBRAINZ_TOKEN, "").orEmpty(),
         listenBrainzMinimumSeconds = preferences.getInt(KEY_LISTENBRAINZ_MINIMUM_SECONDS, 240)
@@ -97,6 +123,15 @@ class AppPreferencesStore(context: Context) {
             .putString(KEY_THEME_MODE, value.themeMode.name)
             .putBoolean(KEY_DYNAMIC_COLOR, value.useDynamicColor)
             .putString(KEY_PRESET_PALETTE, value.presetPalette.name)
+            .putBoolean(KEY_LYRICS_ENABLED, value.lyricsEnabled)
+            .putString(
+                KEY_LYRICS_PROVIDER_ORDER,
+                normalizedProviderOrder(value.lyricsProviderOrder).joinToString(",", transform = LyricsProviderId::name),
+            )
+            .putString(KEY_LYRICS_TRANSLATION_MODE, value.lyricsTranslationMode.name)
+            .putBoolean(KEY_LYRICS_SOURCE_VISIBLE, value.lyricsSourceVisible)
+            .putBoolean(KEY_LYRICS_EFFECTS_ENABLED, value.lyricsEffectsEnabled)
+            .putInt(KEY_LYRICS_FONT_SIZE_SP, normalizedLyricsFontSizeSp(value.lyricsFontSizeSp))
             .putBoolean(KEY_LISTENBRAINZ_ENABLED, value.listenBrainzEnabled)
             .putInt(KEY_LISTENBRAINZ_MINIMUM_SECONDS, value.listenBrainzMinimumSeconds)
             .putInt(KEY_LISTENBRAINZ_MINIMUM_PERCENT, value.listenBrainzMinimumPercent)
@@ -157,6 +192,12 @@ class AppPreferencesStore(context: Context) {
         const val KEY_THEME_MODE = "theme_mode"
         const val KEY_DYNAMIC_COLOR = "dynamic_color"
         const val KEY_PRESET_PALETTE = "preset_palette"
+        const val KEY_LYRICS_ENABLED = "lyrics_enabled"
+        const val KEY_LYRICS_PROVIDER_ORDER = "lyrics_provider_order"
+        const val KEY_LYRICS_TRANSLATION_MODE = "lyrics_translation_mode"
+        const val KEY_LYRICS_SOURCE_VISIBLE = "lyrics_source_visible"
+        const val KEY_LYRICS_EFFECTS_ENABLED = "lyrics_effects_enabled"
+        const val KEY_LYRICS_FONT_SIZE_SP = "lyrics_font_size_sp"
         const val KEY_LISTENBRAINZ_ENABLED = "listenbrainz_enabled"
         const val KEY_LISTENBRAINZ_TOKEN = "listenbrainz_token"
         const val KEY_LISTENBRAINZ_MINIMUM_SECONDS = "listenbrainz_minimum_seconds"
