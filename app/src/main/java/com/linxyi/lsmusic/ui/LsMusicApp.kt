@@ -4,8 +4,14 @@ package com.linxyi.lsmusic.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -21,6 +27,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -84,6 +91,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilledTonalIconButton
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -109,10 +117,12 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -120,18 +130,27 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.progressBarRangeInfo
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.setProgress
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalContext
@@ -152,6 +171,7 @@ import coil3.size.Precision
 import coil3.size.Scale
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 private data class DestinationItem(
@@ -181,6 +201,11 @@ private data class LibraryUiState(
 
 private const val MEDIA_ENTRY_KEY_PREFIX = "media:"
 private const val LIBRARY_GRID_HEADER_COUNT = 3
+private const val LIBRARY_SEARCH_ITEM_INDEX = 1
+private val LibrarySearchControlHeight = 56.dp
+private val LibraryFastScrollerTopInset = LibrarySearchControlHeight + 32.dp
+private val LibraryFastScrollerTouchWidth = 48.dp
+private val LibraryFastScrollerMinimumThumbHeight = 48.dp
 private const val ALBUM_DETAIL_HEADER_COUNT = 1
 private const val ALBUM_ART_PREFETCH_SCREENS = 2
 private const val MAX_ACTIVE_ART_PREFETCHES = 32
@@ -724,6 +749,20 @@ private fun LibraryDirectoryScreen(
         ),
         initialFirstVisibleItemScrollOffset = initialViewState.scrollOffset.coerceAtLeast(0),
     )
+    val searchFocusRequester = remember { FocusRequester() }
+    val coroutineScope = rememberCoroutineScope()
+    val showFloatingSearchButton by remember {
+        derivedStateOf {
+            gridState.firstVisibleItemIndex > LIBRARY_SEARCH_ITEM_INDEX
+        }
+    }
+    val showFastScroller by remember {
+        derivedStateOf {
+            val layoutInfo = gridState.layoutInfo
+            layoutInfo.totalItemsCount > layoutInfo.visibleItemsInfo.size &&
+                (gridState.canScrollBackward || gridState.canScrollForward)
+        }
+    }
     val currentQuery by rememberUpdatedState(query)
     val currentUseGrid by rememberUpdatedState(useGrid)
     val contentStatus = resolveLibraryContentStatus(
@@ -792,7 +831,10 @@ private fun LibraryDirectoryScreen(
                 OutlinedTextField(
                     value = query,
                     onValueChange = { query = it },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(LibrarySearchControlHeight)
+                        .focusRequester(searchFocusRequester),
                     singleLine = true,
                     shape = RoundedCornerShape(24.dp),
                     leadingIcon = { Icon(Icons.Rounded.Search, null) },
@@ -921,6 +963,173 @@ private fun LibraryDirectoryScreen(
                     }
                 }
             }
+        }
+
+        AnimatedVisibility(
+            visible = showFastScroller,
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .fillMaxHeight()
+                .padding(
+                    top = LibraryFastScrollerTopInset,
+                    bottom = bottomContentPadding,
+                )
+                .width(LibraryFastScrollerTouchWidth),
+            enter = fadeIn(),
+            exit = fadeOut(),
+        ) {
+            LibraryFastScroller(
+                gridState = gridState,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+
+        AnimatedVisibility(
+            visible = showFloatingSearchButton,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(top = 20.dp, end = 20.dp),
+            enter = fadeIn() + scaleIn(),
+            exit = fadeOut() + scaleOut(),
+        ) {
+            FloatingActionButton(
+                onClick = {
+                    coroutineScope.launch {
+                        gridState.animateScrollToItem(LIBRARY_SEARCH_ITEM_INDEX)
+                        searchFocusRequester.requestFocus()
+                    }
+                },
+                modifier = Modifier.size(LibrarySearchControlHeight),
+                shape = CircleShape,
+                containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+            ) {
+                Icon(Icons.Rounded.Search, "搜索当前目录")
+            }
+        }
+    }
+}
+
+@Composable
+private fun LibraryFastScroller(
+    gridState: LazyGridState,
+    modifier: Modifier = Modifier,
+) {
+    val layoutInfo = gridState.layoutInfo
+    val totalItemCount = layoutInfo.totalItemsCount
+    val visibleItemCount = layoutInfo.visibleItemsInfo.size.coerceAtMost(totalItemCount)
+    if (totalItemCount <= 0 || visibleItemCount <= 0) return
+
+    BoxWithConstraints(modifier) {
+        val density = LocalDensity.current
+        val trackHeightPx = with(density) { maxHeight.toPx() }
+        if (trackHeightPx <= 0f) return@BoxWithConstraints
+
+        val minimumThumbHeightPx = with(density) { LibraryFastScrollerMinimumThumbHeight.toPx() }
+        val thumbHeightPx = (trackHeightPx * visibleItemCount / totalItemCount)
+            .coerceAtLeast(minimumThumbHeightPx.coerceAtMost(trackHeightPx))
+            .coerceAtMost(trackHeightPx)
+        val maximumThumbOffsetPx = (trackHeightPx - thumbHeightPx).coerceAtLeast(0f)
+        val positionFraction = fastScrollPositionFraction(
+            firstVisibleItemIndex = gridState.firstVisibleItemIndex,
+            visibleItemCount = visibleItemCount,
+            totalItemCount = totalItemCount,
+        )
+        val settledThumbOffsetPx = positionFraction * maximumThumbOffsetPx
+        val thumbHeight = with(density) { thumbHeightPx.toDp() }
+        var draggedThumbOffsetPx by remember { mutableStateOf<Float?>(null) }
+        var requestedItemIndex by remember { mutableStateOf<Int?>(null) }
+        val displayedThumbOffsetPx = draggedThumbOffsetPx ?: settledThumbOffsetPx
+        val currentSettledThumbOffsetPx by rememberUpdatedState(settledThumbOffsetPx)
+        val currentThumbHeightPx by rememberUpdatedState(thumbHeightPx)
+        val currentMaximumThumbOffsetPx by rememberUpdatedState(maximumThumbOffsetPx)
+        val currentVisibleItemCount by rememberUpdatedState(visibleItemCount)
+        val currentTotalItemCount by rememberUpdatedState(totalItemCount)
+
+        LaunchedEffect(requestedItemIndex) {
+            val targetItemIndex = requestedItemIndex ?: return@LaunchedEffect
+            gridState.scrollToItem(targetItemIndex)
+            if (requestedItemIndex == targetItemIndex) requestedItemIndex = null
+        }
+
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .semantics {
+                    contentDescription = "媒体库快速滚动"
+                    progressBarRangeInfo = ProgressBarRangeInfo(positionFraction, 0f..1f)
+                    setProgress { requestedFraction ->
+                        requestedItemIndex = fastScrollTargetItemIndex(
+                            positionFraction = requestedFraction,
+                            visibleItemCount = visibleItemCount,
+                            totalItemCount = totalItemCount,
+                        )
+                        true
+                    }
+                }
+                .pointerInput(gridState) {
+                    detectVerticalDragGestures(
+                        onDragStart = { position ->
+                            val settledOffset = currentSettledThumbOffsetPx
+                            val thumbEnd = settledOffset + currentThumbHeightPx
+                            val startOffset = if (position.y in settledOffset..thumbEnd) {
+                                settledOffset
+                            } else {
+                                (position.y - currentThumbHeightPx / 2f)
+                                    .coerceIn(0f, currentMaximumThumbOffsetPx)
+                            }
+                            draggedThumbOffsetPx = startOffset
+                            val requestedFraction = if (currentMaximumThumbOffsetPx > 0f) {
+                                startOffset / currentMaximumThumbOffsetPx
+                            } else {
+                                0f
+                            }
+                            requestedItemIndex = fastScrollTargetItemIndex(
+                                positionFraction = requestedFraction,
+                                visibleItemCount = currentVisibleItemCount,
+                                totalItemCount = currentTotalItemCount,
+                            )
+                        },
+                        onVerticalDrag = { change, dragAmount ->
+                            change.consume()
+                            val newOffset = ((draggedThumbOffsetPx ?: currentSettledThumbOffsetPx) + dragAmount)
+                                .coerceIn(0f, currentMaximumThumbOffsetPx)
+                            draggedThumbOffsetPx = newOffset
+                            val requestedFraction = if (currentMaximumThumbOffsetPx > 0f) {
+                                newOffset / currentMaximumThumbOffsetPx
+                            } else {
+                                0f
+                            }
+                            requestedItemIndex = fastScrollTargetItemIndex(
+                                positionFraction = requestedFraction,
+                                visibleItemCount = currentVisibleItemCount,
+                                totalItemCount = currentTotalItemCount,
+                            )
+                        },
+                        onDragEnd = { draggedThumbOffsetPx = null },
+                        onDragCancel = { draggedThumbOffsetPx = null },
+                    )
+                },
+        ) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(end = 6.dp)
+                    .fillMaxHeight()
+                    .width(4.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.18f)),
+            )
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(end = 4.dp)
+                    .offset { IntOffset(0, displayedThumbOffsetPx.roundToInt()) }
+                    .width(8.dp)
+                    .height(thumbHeight)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.82f)),
+            )
         }
     }
 }

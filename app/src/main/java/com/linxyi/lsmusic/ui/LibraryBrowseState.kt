@@ -1,6 +1,7 @@
 package com.linxyi.lsmusic.ui
 
 import com.linxyi.lsmusic.dlna.MediaEntry
+import kotlin.math.roundToInt
 
 data class BrowsePageKey(
     val serverId: String,
@@ -90,6 +91,27 @@ internal fun directionalPrefetchRange(
         val last = firstVisibleIndex - 1
         if (first <= last) first..last else IntRange.EMPTY
     }
+}
+
+internal fun fastScrollPositionFraction(
+    firstVisibleItemIndex: Int,
+    visibleItemCount: Int,
+    totalItemCount: Int,
+): Float {
+    val maximumFirstVisibleIndex = (totalItemCount - visibleItemCount).coerceAtLeast(0)
+    if (maximumFirstVisibleIndex == 0) return 0f
+    return firstVisibleItemIndex
+        .coerceIn(0, maximumFirstVisibleIndex)
+        .toFloat() / maximumFirstVisibleIndex
+}
+
+internal fun fastScrollTargetItemIndex(
+    positionFraction: Float,
+    visibleItemCount: Int,
+    totalItemCount: Int,
+): Int {
+    val maximumFirstVisibleIndex = (totalItemCount - visibleItemCount).coerceAtLeast(0)
+    return (positionFraction.coerceIn(0f, 1f) * maximumFirstVisibleIndex).roundToInt()
 }
 
 internal data class CachedBrowsePage(

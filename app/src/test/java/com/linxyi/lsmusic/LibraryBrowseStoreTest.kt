@@ -8,6 +8,8 @@ import com.linxyi.lsmusic.ui.LibraryBrowseStore
 import com.linxyi.lsmusic.ui.LibraryContentStatus
 import com.linxyi.lsmusic.ui.LibraryPageKind
 import com.linxyi.lsmusic.ui.directionalPrefetchRange
+import com.linxyi.lsmusic.ui.fastScrollPositionFraction
+import com.linxyi.lsmusic.ui.fastScrollTargetItemIndex
 import com.linxyi.lsmusic.ui.resolveLibraryContentStatus
 import com.linxyi.lsmusic.ui.resolveLibraryPageKind
 import org.junit.Assert.assertEquals
@@ -165,6 +167,21 @@ class LibraryBrowseStoreTest {
                 forward = false,
             ).isEmpty(),
         )
+    }
+
+    @Test
+    fun fastScrollPosition_tracksTheScrollableItemRange() {
+        assertEquals(0f, fastScrollPositionFraction(0, 20, 100), 0f)
+        assertEquals(0.5f, fastScrollPositionFraction(40, 20, 100), 0f)
+        assertEquals(1f, fastScrollPositionFraction(80, 20, 100), 0f)
+    }
+
+    @Test
+    fun fastScrollTarget_clampsToValidFirstVisibleItem() {
+        assertEquals(0, fastScrollTargetItemIndex(-1f, 20, 100))
+        assertEquals(40, fastScrollTargetItemIndex(0.5f, 20, 100))
+        assertEquals(80, fastScrollTargetItemIndex(2f, 20, 100))
+        assertEquals(0, fastScrollTargetItemIndex(1f, 20, 10))
     }
 
     @Test
