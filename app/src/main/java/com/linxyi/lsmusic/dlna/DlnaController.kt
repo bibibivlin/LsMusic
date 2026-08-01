@@ -35,6 +35,7 @@ class DlnaController(context: Context) : AutoCloseable {
     private val appContext = context.applicationContext
     private val mainHandler = Handler(Looper.getMainLooper())
     private val devices = ConcurrentHashMap<String, RemoteDevice>()
+    private val rawSoapRendererIds: MutableSet<String> = ConcurrentHashMap.newKeySet()
     private val commandExecutor = Executors.newSingleThreadExecutor()
     private val _snapshot = MutableStateFlow(DlnaSnapshot(isSearching = true))
     val snapshot: StateFlow<DlnaSnapshot> = _snapshot.asStateFlow()
@@ -248,20 +249,23 @@ class DlnaController(context: Context) : AutoCloseable {
         onComplete: () -> Unit,
         onError: (String) -> Unit,
         retriesRemaining: Int = 1,
+        transitionRecoveryRemaining: Int = 1,
     ) {
         val renderer = devices[rendererId]
         val avTransport = renderer?.findService(AV_TRANSPORT)
-        if (renderer != null && avTransport != null && isAkConnectRenderer(renderer)) {
-            setAkConnectTrackUri(
+        if (renderer != null && avTransport != null && shouldUseRawSoap(rendererId)) {
+            setRawSoapTrackUri(
                 rendererId = rendererId,
                 controlUri = avTransport.controlURI,
                 descriptorUri = renderer.identity.descriptorURL.toURI(),
+                serviceType = avTransport.serviceType.toString(),
                 uri = uri,
                 metadata = metadata,
                 playImmediately = playImmediately,
                 onComplete = onComplete,
                 onError = onError,
                 retriesRemaining = retriesRemaining,
+                transitionRecoveryRemaining = transitionRecoveryRemaining,
             )
             return
         }
@@ -278,19 +282,50 @@ class DlnaController(context: Context) : AutoCloseable {
             } else {
                 onComplete()
             }
-        }, onError = { error ->
+        }, onError = setUriFailure@{ error ->
+            if (renderer != null && avTransport != null && AvTransportSoap.isRequestSerializationFailure(error)) {
+                Log.i(TAG, "jUPnP could not serialize SetAVTransportURI for $rendererId; using raw SOAP")
+                setRawSoapTrackUri(
+                    rendererId = rendererId,
+                    controlUri = avTransport.controlURI,
+                    descriptorUri = renderer.identity.descriptorURL.toURI(),
+                    serviceType = avTransport.serviceType.toString(),
+                    uri = uri,
+                    metadata = metadata,
+                    playImmediately = playImmediately,
+                    onComplete = onComplete,
+                    onError = onError,
+                    retriesRemaining = retriesRemaining,
+                    transitionRecoveryRemaining = transitionRecoveryRemaining,
+                )
+                return@setUriFailure
+            }
+            if (transitionRecoveryRemaining > 0 && AvTransportSoap.isTransitionUnavailable(error)) {
+                recoverSetTrackTransition(
+                    rendererId = rendererId,
+                    uri = uri,
+                    metadata = metadata,
+                    playImmediately = playImmediately,
+                    onComplete = onComplete,
+                    onError = onError,
+                    retriesRemaining = retriesRemaining,
+                    transitionRecoveryRemaining = transitionRecoveryRemaining,
+                )
+                return@setUriFailure
+            }
             if (retriesRemaining > 0) {
                 Log.i(TAG, "SetAVTransportURI retrying on $rendererId after: $error")
                 mainHandler.postDelayed(
                     {
                         setTrackUri(
-                            rendererId,
-                            uri,
-                            metadata,
-                            playImmediately,
-                            onComplete,
-                            onError,
-                            retriesRemaining - 1,
+                            rendererId = rendererId,
+                            uri = uri,
+                            metadata = metadata,
+                            playImmediately = playImmediately,
+                            onComplete = onComplete,
+                            onError = onError,
+                            retriesRemaining = retriesRemaining - 1,
+                            transitionRecoveryRemaining = transitionRecoveryRemaining,
                         )
                     },
                     SET_URI_RETRY_DELAY_MS,
@@ -302,51 +337,38 @@ class DlnaController(context: Context) : AutoCloseable {
     }
 
     /**
-     * AK Connect accepts the server DIDL but rejects the SOAP body serialized by JUPnP with a
-     * generic HTTP 500. Its own control point accepts the conventional SOAP 1.1 representation.
+     * Sends a conventional SOAP 1.1 request without jUPnP's DOM serializer after the standard
+     * control path reports a local request-serialization failure.
      */
-    private fun setAkConnectTrackUri(
+    private fun setRawSoapTrackUri(
         rendererId: String,
         controlUri: URI,
         descriptorUri: URI,
+        serviceType: String,
         uri: String,
         metadata: String,
         playImmediately: Boolean,
         onComplete: () -> Unit,
         onError: (String) -> Unit,
         retriesRemaining: Int,
+        transitionRecoveryRemaining: Int,
     ) {
         val endpoint = if (controlUri.isAbsolute) controlUri else descriptorUri.resolve(controlUri)
         commandExecutor.execute {
             val result = runCatching {
-                val payload = akConnectSetUriEnvelope(uri, metadata).toByteArray(Charsets.UTF_8)
-                val connection = (URL(endpoint.toString()).openConnection() as HttpURLConnection)
-                try {
-                    connection.requestMethod = "POST"
-                    connection.connectTimeout = HTTP_TIMEOUT_MS
-                    connection.readTimeout = HTTP_TIMEOUT_MS
-                    connection.doOutput = true
-                    connection.setRequestProperty("Content-Type", "text/xml; charset=\"utf-8\"")
-                    connection.setRequestProperty(
-                        "SOAPACTION",
-                        "\"urn:schemas-upnp-org:service:AVTransport:1#SetAVTransportURI\"",
-                    )
-                    connection.setFixedLengthStreamingMode(payload.size)
-                    connection.outputStream.use { it.write(payload) }
-                    val responseCode = connection.responseCode
-                    val response = (if (responseCode in 200..299) connection.inputStream else connection.errorStream)
-                        ?.bufferedReader(Charsets.UTF_8)
-                        ?.use { it.readText() }
-                        .orEmpty()
-                    if (responseCode !in 200..299) {
-                        error("HTTP $responseCode${response.takeIf { it.isNotBlank() }?.let { ": $it" }.orEmpty()}")
-                    }
-                } finally {
-                    connection.disconnect()
-                }
+                sendRawSoapAction(
+                    endpoint = endpoint,
+                    serviceType = serviceType,
+                    actionName = "SetAVTransportURI",
+                    inputs = mapOf(
+                        "InstanceID" to "0",
+                        "CurrentURI" to uri,
+                        "CurrentURIMetaData" to metadata,
+                    ),
+                )
             }
             result.onSuccess {
-                Log.i(TAG, "SetAVTransportURI accepted by AK Connect renderer $rendererId")
+                rememberRawSoapRenderer(rendererId, "SetAVTransportURI")
                 if (playImmediately) {
                     mainHandler.postDelayed({ play(rendererId, onComplete, onError) }, PLAY_AFTER_SET_DELAY_MS)
                 } else {
@@ -355,17 +377,32 @@ class DlnaController(context: Context) : AutoCloseable {
             }.onFailure { failure ->
                 val error = "SetAVTransportURI 失败：${failure.localizedMessage ?: "无法连接播放设备"}"
                 Log.w(TAG, "Raw SetAVTransportURI failed on $rendererId: $error", failure)
-                if (retriesRemaining > 0) {
+                if (transitionRecoveryRemaining > 0 && AvTransportSoap.isTransitionUnavailable(error)) {
+                    recoverSetTrackTransition(
+                        rendererId = rendererId,
+                        uri = uri,
+                        metadata = metadata,
+                        playImmediately = playImmediately,
+                        onComplete = onComplete,
+                        onError = onError,
+                        retriesRemaining = retriesRemaining,
+                        transitionRecoveryRemaining = transitionRecoveryRemaining,
+                    )
+                } else if (retriesRemaining > 0) {
                     mainHandler.postDelayed(
                         {
-                            setTrackUri(
-                                rendererId,
-                                uri,
-                                metadata,
-                                playImmediately,
-                                onComplete,
-                                onError,
-                                retriesRemaining - 1,
+                            setRawSoapTrackUri(
+                                rendererId = rendererId,
+                                controlUri = controlUri,
+                                descriptorUri = descriptorUri,
+                                serviceType = serviceType,
+                                uri = uri,
+                                metadata = metadata,
+                                playImmediately = playImmediately,
+                                onComplete = onComplete,
+                                onError = onError,
+                                retriesRemaining = retriesRemaining - 1,
+                                transitionRecoveryRemaining = transitionRecoveryRemaining,
                             )
                         },
                         SET_URI_RETRY_DELAY_MS,
@@ -377,87 +414,120 @@ class DlnaController(context: Context) : AutoCloseable {
         }
     }
 
+    private fun recoverSetTrackTransition(
+        rendererId: String,
+        uri: String,
+        metadata: String,
+        playImmediately: Boolean,
+        onComplete: () -> Unit,
+        onError: (String) -> Unit,
+        retriesRemaining: Int,
+        transitionRecoveryRemaining: Int,
+    ) {
+        Log.i(TAG, "SetAVTransportURI is unavailable in the current state on $rendererId; stopping before retry")
+        stop(
+            rendererId = rendererId,
+            onComplete = {
+                mainHandler.postDelayed(
+                    {
+                        setTrackUri(
+                            rendererId = rendererId,
+                            uri = uri,
+                            metadata = metadata,
+                            playImmediately = playImmediately,
+                            onComplete = onComplete,
+                            onError = onError,
+                            retriesRemaining = retriesRemaining,
+                            transitionRecoveryRemaining = transitionRecoveryRemaining - 1,
+                        )
+                    },
+                    SET_URI_AFTER_STOP_DELAY_MS,
+                )
+            },
+            onError = { stopError -> onError("切换曲目前停止播放失败：$stopError") },
+        )
+    }
+
     fun play(rendererId: String, onComplete: () -> Unit = {}, onError: (String) -> Unit = {}) {
-        if (executeAkConnectTransportAction(
-                rendererId,
-                "Play",
-                mapOf("InstanceID" to "0", "Speed" to "1"),
-                onComplete,
-                onError,
-            )
-        ) return
-        execute(rendererId, "AVTransport", "Play", mapOf("InstanceID" to 0, "Speed" to "1"), onComplete, onError)
-    }
-
-    fun pause(rendererId: String, onComplete: () -> Unit = {}, onError: (String) -> Unit = {}) {
-        if (executeAkConnectTransportAction(rendererId, "Pause", mapOf("InstanceID" to "0"), onComplete, onError)) return
-        execute(rendererId, "AVTransport", "Pause", mapOf("InstanceID" to 0), onComplete, onError)
-    }
-
-    fun stop(rendererId: String, onComplete: () -> Unit = {}, onError: (String) -> Unit = {}) {
-        if (executeAkConnectTransportAction(rendererId, "Stop", mapOf("InstanceID" to "0"), onComplete, onError)) return
-        execute(rendererId, "AVTransport", "Stop", mapOf("InstanceID" to 0), onComplete, onError)
-    }
-
-    fun seek(rendererId: String, target: String, onError: (String) -> Unit = {}) {
-        if (executeAkConnectTransportAction(
-                rendererId,
-                "Seek",
-                mapOf("InstanceID" to "0", "Unit" to "REL_TIME", "Target" to target),
-                onError = onError,
-            )
-        ) return
-        execute(
-            rendererId,
-            "AVTransport",
-            "Seek",
-            mapOf("InstanceID" to 0, "Unit" to "REL_TIME", "Target" to target),
+        executeTransportAction(
+            rendererId = rendererId,
+            actionName = "Play",
+            inputs = mapOf("InstanceID" to 0, "Speed" to "1"),
+            onSuccess = onComplete,
             onError = onError,
         )
     }
 
-    /** Returns true when the command is handed to the AK Connect SOAP compatibility path. */
-    private fun executeAkConnectTransportAction(
+    fun pause(rendererId: String, onComplete: () -> Unit = {}, onError: (String) -> Unit = {}) {
+        executeTransportAction(rendererId, "Pause", mapOf("InstanceID" to 0), onComplete, onError)
+    }
+
+    fun stop(rendererId: String, onComplete: () -> Unit = {}, onError: (String) -> Unit = {}) {
+        executeTransportAction(rendererId, "Stop", mapOf("InstanceID" to 0), onComplete, onError)
+    }
+
+    fun seek(rendererId: String, target: String, onError: (String) -> Unit = {}) {
+        executeTransportAction(
+            rendererId = rendererId,
+            actionName = "Seek",
+            inputs = mapOf("InstanceID" to 0, "Unit" to "REL_TIME", "Target" to target),
+            onError = onError,
+        )
+    }
+
+    private fun executeTransportAction(
         rendererId: String,
         actionName: String,
-        inputs: Map<String, String>,
+        inputs: Map<String, Any>,
         onSuccess: () -> Unit = {},
         onError: (String) -> Unit = {},
-    ): Boolean {
-        val renderer = devices[rendererId] ?: return false
-        val avTransport = renderer.findService(AV_TRANSPORT) ?: return false
-        if (!isAkConnectRenderer(renderer)) return false
+    ) {
+        val renderer = devices[rendererId] ?: return onError("所选播放设备不再可用")
+        val avTransport = renderer.findService(AV_TRANSPORT)
+            ?: return onError("播放设备不支持 AVTransport")
+        if (shouldUseRawSoap(rendererId)) {
+            executeRawSoapTransportAction(rendererId, actionName, inputs, onSuccess, onError)
+            return
+        }
+        execute(
+            rendererId = rendererId,
+            serviceName = "AVTransport",
+            actionName = actionName,
+            inputs = inputs,
+            onSuccess = onSuccess,
+            onError = transportFailure@{ error ->
+                if (AvTransportSoap.isRequestSerializationFailure(error)) {
+                    Log.i(TAG, "jUPnP could not serialize $actionName for $rendererId; using raw SOAP")
+                    executeRawSoapTransportAction(rendererId, actionName, inputs, onSuccess, onError)
+                    return@transportFailure
+                }
+                onError(error)
+            },
+        )
+    }
+
+    private fun executeRawSoapTransportAction(
+        rendererId: String,
+        actionName: String,
+        inputs: Map<String, Any>,
+        onSuccess: () -> Unit = {},
+        onError: (String) -> Unit = {},
+    ) {
+        val renderer = devices[rendererId] ?: return onError("所选播放设备不再可用")
+        val avTransport = renderer.findService(AV_TRANSPORT)
+            ?: return onError("播放设备不支持 AVTransport")
         val controlUri = avTransport.controlURI
         val endpoint = if (controlUri.isAbsolute) controlUri else renderer.identity.descriptorURL.toURI().resolve(controlUri)
         commandExecutor.execute {
             runCatching {
-                val payload = akConnectActionEnvelope(actionName, inputs).toByteArray(Charsets.UTF_8)
-                val connection = (URL(endpoint.toString()).openConnection() as HttpURLConnection)
-                try {
-                    connection.requestMethod = "POST"
-                    connection.connectTimeout = HTTP_TIMEOUT_MS
-                    connection.readTimeout = HTTP_TIMEOUT_MS
-                    connection.doOutput = true
-                    connection.setRequestProperty("Content-Type", "text/xml; charset=\"utf-8\"")
-                    connection.setRequestProperty(
-                        "SOAPACTION",
-                        "\"urn:schemas-upnp-org:service:AVTransport:1#$actionName\"",
-                    )
-                    connection.setFixedLengthStreamingMode(payload.size)
-                    connection.outputStream.use { it.write(payload) }
-                    val responseCode = connection.responseCode
-                    val response = (if (responseCode in 200..299) connection.inputStream else connection.errorStream)
-                        ?.bufferedReader(Charsets.UTF_8)
-                        ?.use { it.readText() }
-                        .orEmpty()
-                    if (responseCode !in 200..299) {
-                        error("HTTP $responseCode${response.takeIf { it.isNotBlank() }?.let { ": $it" }.orEmpty()}")
-                    }
-                } finally {
-                    connection.disconnect()
-                }
+                sendRawSoapAction(
+                    endpoint = endpoint,
+                    serviceType = avTransport.serviceType.toString(),
+                    actionName = actionName,
+                    inputs = inputs.mapValues { it.value.toString() },
+                )
             }.onSuccess {
-                Log.i(TAG, "$actionName accepted by AK Connect renderer $rendererId")
+                rememberRawSoapRenderer(rendererId, actionName)
                 onSuccess()
             }.onFailure { failure ->
                 val error = "$actionName 失败：${failure.localizedMessage ?: "无法连接播放设备"}"
@@ -465,7 +535,6 @@ class DlnaController(context: Context) : AutoCloseable {
                 onError(error)
             }
         }
-        return true
     }
 
     fun getPositionInfo(
@@ -475,11 +544,12 @@ class DlnaController(context: Context) : AutoCloseable {
     ) {
         val renderer = devices[rendererId]
         val avTransport = renderer?.findService(AV_TRANSPORT)
-        if (renderer != null && avTransport != null && isAkConnectRenderer(renderer)) {
-            getAkConnectPositionInfo(
+        if (renderer != null && avTransport != null && shouldUseRawSoap(rendererId)) {
+            getRawSoapPositionInfo(
                 rendererId = rendererId,
                 controlUri = avTransport.controlURI,
                 descriptorUri = renderer.identity.descriptorURL.toURI(),
+                serviceType = avTransport.serviceType.toString(),
                 onResult = onResult,
                 onError = onError,
             )
@@ -504,7 +574,21 @@ class DlnaController(context: Context) : AutoCloseable {
                 invocation: ActionInvocation<*>,
                 operation: UpnpResponse?,
                 defaultMsg: String,
-            ) = onError(defaultMsg)
+            ) {
+                if (AvTransportSoap.isRequestSerializationFailure(defaultMsg)) {
+                    Log.i(TAG, "jUPnP could not serialize GetPositionInfo for $rendererId; using raw SOAP")
+                    getRawSoapPositionInfo(
+                        rendererId = rendererId,
+                        controlUri = remoteService.controlURI,
+                        descriptorUri = renderer.identity.descriptorURL.toURI(),
+                        serviceType = remoteService.serviceType.toString(),
+                        onResult = onResult,
+                        onError = onError,
+                    )
+                } else {
+                    onError(defaultMsg)
+                }
+            }
         })
     }
 
@@ -515,11 +599,12 @@ class DlnaController(context: Context) : AutoCloseable {
     ) {
         val renderer = devices[rendererId]
         val avTransport = renderer?.findService(AV_TRANSPORT)
-        if (renderer != null && avTransport != null && isAkConnectRenderer(renderer)) {
-            getAkConnectTransportInfo(
+        if (renderer != null && avTransport != null && shouldUseRawSoap(rendererId)) {
+            getRawSoapTransportInfo(
                 rendererId = rendererId,
                 controlUri = avTransport.controlURI,
                 descriptorUri = renderer.identity.descriptorURL.toURI(),
+                serviceType = avTransport.serviceType.toString(),
                 onResult = onResult,
                 onError = onError,
             )
@@ -541,53 +626,49 @@ class DlnaController(context: Context) : AutoCloseable {
                 invocation: ActionInvocation<*>,
                 operation: UpnpResponse?,
                 defaultMsg: String,
-            ) = onError(defaultMsg)
+            ) {
+                if (AvTransportSoap.isRequestSerializationFailure(defaultMsg)) {
+                    Log.i(TAG, "jUPnP could not serialize GetTransportInfo for $rendererId; using raw SOAP")
+                    getRawSoapTransportInfo(
+                        rendererId = rendererId,
+                        controlUri = remoteService.controlURI,
+                        descriptorUri = renderer.identity.descriptorURL.toURI(),
+                        serviceType = remoteService.serviceType.toString(),
+                        onResult = onResult,
+                        onError = onError,
+                    )
+                } else {
+                    onError(defaultMsg)
+                }
+            }
         })
     }
 
-    private fun getAkConnectPositionInfo(
+    private fun getRawSoapPositionInfo(
         rendererId: String,
         controlUri: URI,
         descriptorUri: URI,
+        serviceType: String,
         onResult: (position: String?, duration: String?) -> Unit,
         onError: (String) -> Unit,
     ) {
         val endpoint = if (controlUri.isAbsolute) controlUri else descriptorUri.resolve(controlUri)
         commandExecutor.execute {
             runCatching {
-                val payload = akConnectActionEnvelope("GetPositionInfo", mapOf("InstanceID" to "0"))
-                    .toByteArray(Charsets.UTF_8)
-                val connection = (URL(endpoint.toString()).openConnection() as HttpURLConnection)
-                try {
-                    connection.requestMethod = "POST"
-                    connection.connectTimeout = HTTP_TIMEOUT_MS
-                    connection.readTimeout = HTTP_TIMEOUT_MS
-                    connection.doOutput = true
-                    connection.setRequestProperty("Content-Type", "text/xml; charset=\"utf-8\"")
-                    connection.setRequestProperty(
-                        "SOAPACTION",
-                        "\"urn:schemas-upnp-org:service:AVTransport:1#GetPositionInfo\"",
-                    )
-                    connection.setFixedLengthStreamingMode(payload.size)
-                    connection.outputStream.use { it.write(payload) }
-                    val responseCode = connection.responseCode
-                    val response = (if (responseCode in 200..299) connection.inputStream else connection.errorStream)
-                        ?.bufferedReader(Charsets.UTF_8)
-                        ?.use { it.readText() }
-                        .orEmpty()
-                    if (responseCode !in 200..299) {
-                        error("HTTP $responseCode${response.takeIf { it.isNotBlank() }?.let { ": $it" }.orEmpty()}")
-                    }
-                    val position = soapValue(response, "RelTime")
-                    val duration = soapValue(response, "TrackDuration")
-                    if (position == null && duration == null) {
-                        error("播放设备未返回进度数据")
-                    }
-                    position to duration
-                } finally {
-                    connection.disconnect()
+                val response = sendRawSoapAction(
+                    endpoint = endpoint,
+                    serviceType = serviceType,
+                    actionName = "GetPositionInfo",
+                    inputs = mapOf("InstanceID" to "0"),
+                )
+                val position = AvTransportSoap.responseValue(response, "RelTime")
+                val duration = AvTransportSoap.responseValue(response, "TrackDuration")
+                if (position == null && duration == null) {
+                    error("播放设备未返回进度数据")
                 }
+                position to duration
             }.onSuccess { (position, duration) ->
+                rememberRawSoapRenderer(rendererId, "GetPositionInfo")
                 onResult(position, duration)
             }.onFailure { failure ->
                 val error = "进度查询失败：${failure.localizedMessage ?: "无法连接播放设备"}"
@@ -597,48 +678,73 @@ class DlnaController(context: Context) : AutoCloseable {
         }
     }
 
-    private fun getAkConnectTransportInfo(
+    private fun getRawSoapTransportInfo(
         rendererId: String,
         controlUri: URI,
         descriptorUri: URI,
+        serviceType: String,
         onResult: (state: String?) -> Unit,
         onError: (String) -> Unit,
     ) {
         val endpoint = if (controlUri.isAbsolute) controlUri else descriptorUri.resolve(controlUri)
         commandExecutor.execute {
             runCatching {
-                val payload = akConnectActionEnvelope("GetTransportInfo", mapOf("InstanceID" to "0"))
-                    .toByteArray(Charsets.UTF_8)
-                val connection = (URL(endpoint.toString()).openConnection() as HttpURLConnection)
-                try {
-                    connection.requestMethod = "POST"
-                    connection.connectTimeout = HTTP_TIMEOUT_MS
-                    connection.readTimeout = HTTP_TIMEOUT_MS
-                    connection.doOutput = true
-                    connection.setRequestProperty("Content-Type", "text/xml; charset=\"utf-8\"")
-                    connection.setRequestProperty(
-                        "SOAPACTION",
-                        "\"urn:schemas-upnp-org:service:AVTransport:1#GetTransportInfo\"",
-                    )
-                    connection.setFixedLengthStreamingMode(payload.size)
-                    connection.outputStream.use { it.write(payload) }
-                    val responseCode = connection.responseCode
-                    val response = (if (responseCode in 200..299) connection.inputStream else connection.errorStream)
-                        ?.bufferedReader(Charsets.UTF_8)
-                        ?.use { it.readText() }
-                        .orEmpty()
-                    if (responseCode !in 200..299) {
-                        error("HTTP $responseCode${response.takeIf { it.isNotBlank() }?.let { ": $it" }.orEmpty()}")
-                    }
-                    soapValue(response, "CurrentTransportState")
-                } finally {
-                    connection.disconnect()
-                }
-            }.onSuccess(onResult).onFailure { failure ->
+                val response = sendRawSoapAction(
+                    endpoint = endpoint,
+                    serviceType = serviceType,
+                    actionName = "GetTransportInfo",
+                    inputs = mapOf("InstanceID" to "0"),
+                )
+                AvTransportSoap.responseValue(response, "CurrentTransportState")
+            }.onSuccess { state ->
+                rememberRawSoapRenderer(rendererId, "GetTransportInfo")
+                onResult(state)
+            }.onFailure { failure ->
                 val error = "状态查询失败：${failure.localizedMessage ?: "无法连接播放设备"}"
                 Log.w(TAG, "Raw GetTransportInfo failed on $rendererId: $error", failure)
                 onError(error)
             }
+        }
+    }
+
+    private fun sendRawSoapAction(
+        endpoint: URI,
+        serviceType: String,
+        actionName: String,
+        inputs: Map<String, String>,
+    ): String {
+        val payload = AvTransportSoap.envelope(serviceType, actionName, inputs).toByteArray(Charsets.UTF_8)
+        val connection = URL(endpoint.toString()).openConnection() as HttpURLConnection
+        return try {
+            connection.requestMethod = "POST"
+            connection.connectTimeout = HTTP_TIMEOUT_MS
+            connection.readTimeout = HTTP_TIMEOUT_MS
+            connection.doOutput = true
+            connection.setRequestProperty("Content-Type", "text/xml; charset=\"utf-8\"")
+            connection.setRequestProperty("SOAPACTION", "\"$serviceType#$actionName\"")
+            connection.setFixedLengthStreamingMode(payload.size)
+            connection.outputStream.use { it.write(payload) }
+            val responseCode = connection.responseCode
+            val response = (if (responseCode in 200..299) connection.inputStream else connection.errorStream)
+                ?.bufferedReader(Charsets.UTF_8)
+                ?.use { it.readText() }
+                .orEmpty()
+            if (responseCode !in 200..299) {
+                error("HTTP $responseCode${response.takeIf { it.isNotBlank() }?.let { ": $it" }.orEmpty()}")
+            }
+            response
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun shouldUseRawSoap(rendererId: String): Boolean = rendererId in rawSoapRendererIds
+
+    private fun rememberRawSoapRenderer(rendererId: String, actionName: String) {
+        if (rawSoapRendererIds.add(rendererId)) {
+            Log.i(TAG, "$actionName accepted through raw SOAP; enabled compatibility for $rendererId")
+        } else {
+            Log.i(TAG, "$actionName accepted through raw SOAP for $rendererId")
         }
     }
 
@@ -717,6 +823,7 @@ class DlnaController(context: Context) : AutoCloseable {
 
     override fun close() {
         mainHandler.removeCallbacksAndMessages(null)
+        rawSoapRendererIds.clear()
         commandExecutor.shutdownNow()
         service?.registry?.removeListener(registryListener)
         if (bound) appContext.unbindService(connection)
@@ -743,10 +850,7 @@ class DlnaController(context: Context) : AutoCloseable {
         """.trimIndent()
     }
 
-    /**
-     * Astell&Kern renderers validate more than the standard minimum DIDL fields. Preserve the
-     * server-provided XML item verbatim so vendor extensions and the exact res attributes survive.
-     */
+    /** Preserves vendor extensions and exact resource attributes from the server-provided item. */
     private fun extractOriginalItemMetadata(rawDidl: String?, itemId: String): String? {
         if (rawDidl.isNullOrBlank()) return null
         val root = Regex("<DIDL-Lite\\b([^>]*)>", RegexOption.IGNORE_CASE).find(rawDidl) ?: return null
@@ -772,51 +876,12 @@ class DlnaController(context: Context) : AutoCloseable {
         }
     }
 
-    private fun akConnectSetUriEnvelope(uri: String, metadata: String): String = """
-        <?xml version="1.0" encoding="utf-8"?>
-        <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
-          <s:Body>
-            <u:SetAVTransportURI xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">
-              <InstanceID>0</InstanceID>
-              <CurrentURI>${xmlEscape(uri)}</CurrentURI>
-              <CurrentURIMetaData>${xmlEscape(metadata)}</CurrentURIMetaData>
-            </u:SetAVTransportURI>
-          </s:Body>
-        </s:Envelope>
-    """.trimIndent()
-
-    private fun akConnectActionEnvelope(actionName: String, inputs: Map<String, String>): String {
-        val fields = inputs.entries.joinToString(separator = "") { (name, value) ->
-            "<$name>${xmlEscape(value)}</$name>"
-        }
-        return """
-            <?xml version="1.0" encoding="utf-8"?>
-            <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
-              <s:Body>
-                <u:$actionName xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">$fields</u:$actionName>
-              </s:Body>
-            </s:Envelope>
-        """.trimIndent()
-    }
-
-    private fun soapValue(response: String, name: String): String? = Regex(
-        "<(?:[A-Za-z][\\w.-]*:)?$name>(.*?)</(?:[A-Za-z][\\w.-]*:)?$name>",
-        setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL),
-    ).find(response)?.groupValues?.getOrNull(1)?.trim()?.takeIf { it.isNotEmpty() }
-
-    private fun isAkConnectRenderer(device: RemoteDevice): Boolean {
-        val manufacturer = device.details.manufacturerDetails?.manufacturer.orEmpty()
-        val model = device.details.modelDetails?.modelName.orEmpty()
-        return manufacturer.contains("iriver", ignoreCase = true) ||
-            manufacturer.contains("astell", ignoreCase = true) ||
-            model.contains("AK Connect", ignoreCase = true)
-    }
-
     companion object {
         private val CONTENT_DIRECTORY = UDAServiceType("ContentDirectory")
         private val AV_TRANSPORT = UDAServiceType("AVTransport")
         private const val SEARCH_WINDOW_MS = 3_500L
         private const val SET_URI_RETRY_DELAY_MS = 800L
+        private const val SET_URI_AFTER_STOP_DELAY_MS = 250L
         private const val PLAY_AFTER_SET_DELAY_MS = 450L
         private const val HTTP_TIMEOUT_MS = 10_000
         private const val TAG = "LsMusic/DLNA"

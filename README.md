@@ -15,7 +15,7 @@
 - 可选将正在播放及满足自定义阈值的播放记录上报到 ListenBrainz，保存令牌前会同时校验鉴权与网络连接
 - 远程播放支持 Android 系统媒体卡片、锁屏与蓝牙媒体控制
 - Material 3 Expressive 界面、动态配色和设备选择记忆
-- 针对 Astell&Kern / IRIVER AK Connect（如 SR35）的 SOAP 兼容控制
+- 远程播放器 SOAP 兼容控制；遇到本机序列化异常时会自动回退，暂停状态下无法直接换曲时会停止后重试
 
 ## 使用方式
 
