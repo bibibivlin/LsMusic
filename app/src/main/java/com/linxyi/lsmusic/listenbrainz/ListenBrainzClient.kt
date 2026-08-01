@@ -26,6 +26,40 @@ class ListenBrainzHttpException(
 
 class ListenBrainzResponseException(message: String) : IOException(message)
 
+private const val CLIENT_NAME = "L's Music"
+
+internal data class ListenBrainzTrackPayloadFields(
+    val artistName: String,
+    val trackName: String,
+    val releaseName: String?,
+    val additionalInfo: Map<String, Any>,
+)
+
+internal fun buildListenBrainzTrackPayloadFields(
+    track: MediaEntry,
+    durationMs: Long,
+    listenedMs: Long?,
+): ListenBrainzTrackPayloadFields {
+    val additionalInfo = linkedMapOf<String, Any>(
+        "media_player" to CLIENT_NAME,
+        "submission_client" to CLIENT_NAME,
+    )
+    if (durationMs > 0L) additionalInfo["duration_ms"] = durationMs
+    listenedMs?.takeIf { it > 0L }?.let { additionalInfo["duration_played"] = it / 1_000L }
+    track.recordingMbid?.let { additionalInfo["recording_mbid"] = it }
+    track.releaseMbid?.let { additionalInfo["release_mbid"] = it }
+    track.releaseGroupMbid?.let { additionalInfo["release_group_mbid"] = it }
+    track.trackMbid?.let { additionalInfo["track_mbid"] = it }
+    if (track.artistMbids.isNotEmpty()) additionalInfo["artist_mbids"] = track.artistMbids
+    track.trackNumber?.let { additionalInfo["tracknumber"] = it.toString() }
+    return ListenBrainzTrackPayloadFields(
+        artistName = track.creator.ifBlank { "未知艺术家" },
+        trackName = track.title.ifBlank { "未知曲目" },
+        releaseName = track.album.takeIf { it.isNotBlank() },
+        additionalInfo = additionalInfo,
+    )
+}
+
 class ListenBrainzClient {
     suspend fun validateToken(token: String): ListenBrainzTokenValidationResult = withContext(Dispatchers.IO) {
         val connection = openConnection(VALIDATE_TOKEN_URL, "GET", token)
@@ -97,28 +131,23 @@ class ListenBrainzClient {
     }
 
     private fun trackPayload(track: MediaEntry, durationMs: Long, listenedMs: Long?): JSONObject {
+        val fields = buildListenBrainzTrackPayloadFields(track, durationMs, listenedMs)
         val additionalInfo = JSONObject()
-            .put("media_player", CLIENT_NAME)
-            .put("submission_client", CLIENT_NAME)
-        if (durationMs > 0L) additionalInfo.put("duration_ms", durationMs)
-        listenedMs?.takeIf { it > 0L }?.let { additionalInfo.put("duration_played", it / 1_000L) }
-        track.recordingMbid?.let { additionalInfo.put("recording_mbid", it) }
-        track.releaseMbid?.let { additionalInfo.put("release_mbid", it) }
-        if (track.artistMbids.isNotEmpty()) additionalInfo.put("artist_mbids", JSONArray(track.artistMbids))
-        track.trackNumber?.let { additionalInfo.put("tracknumber", it.toString()) }
+        fields.additionalInfo.forEach { (name, value) ->
+            additionalInfo.put(name, if (value is List<*>) JSONArray(value) else value)
+        }
 
         val metadata = JSONObject()
-            .put("artist_name", track.creator.ifBlank { "未知艺术家" })
-            .put("track_name", track.title.ifBlank { "未知曲目" })
+            .put("artist_name", fields.artistName)
+            .put("track_name", fields.trackName)
             .put("additional_info", additionalInfo)
-        if (track.album.isNotBlank()) metadata.put("release_name", track.album)
+        fields.releaseName?.let { metadata.put("release_name", it) }
         return JSONObject().put("track_metadata", metadata)
     }
 
     private companion object {
         const val SUBMIT_URL = "https://api.listenbrainz.org/1/submit-listens"
         const val VALIDATE_TOKEN_URL = "https://api.listenbrainz.org/1/validate-token"
-        const val CLIENT_NAME = "L's Music"
         const val TIMEOUT_MS = 15_000
     }
 }

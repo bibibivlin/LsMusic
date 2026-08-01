@@ -30,6 +30,7 @@ import com.linxyi.lsmusic.listenbrainz.ListenBrainzClient
 import com.linxyi.lsmusic.listenbrainz.ListenBrainzPlaybackObservation
 import com.linxyi.lsmusic.listenbrainz.ListenBrainzPlaybackReport
 import com.linxyi.lsmusic.listenbrainz.ListenBrainzPlaybackTracker
+import com.linxyi.lsmusic.listenbrainz.EmbeddedAudioMetadataReader
 import com.linxyi.lsmusic.listenbrainz.describeListenBrainzValidationFailure
 import com.linxyi.lsmusic.listenbrainz.shouldSubmitListen
 import kotlinx.coroutines.Job
@@ -142,6 +143,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     private val dlna = DlnaController(application)
     private val preferenceStore = AppPreferencesStore(application)
     private val listenBrainzClient = ListenBrainzClient()
+    private val embeddedAudioMetadataReader = EmbeddedAudioMetadataReader()
     private val listenBrainzPlaybackTracker = ListenBrainzPlaybackTracker()
     private val listenBrainzSubmissions = Channel<ListenBrainzSubmission>(Channel.BUFFERED)
     private val libraryBrowseStore = LibraryBrowseStore()
@@ -367,15 +369,19 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
             for (submission in listenBrainzSubmissions) {
                 runCatching {
                     when (submission) {
-                        is ListenBrainzSubmission.NowPlaying -> listenBrainzClient.submitNowPlaying(
-                            submission.token,
-                            submission.track,
-                            submission.durationMs,
-                        )
+                        is ListenBrainzSubmission.NowPlaying -> {
+                            val track = embeddedAudioMetadataReader.enrich(submission.track)
+                            listenBrainzClient.submitNowPlaying(
+                                submission.token,
+                                track,
+                                submission.durationMs,
+                            )
+                        }
                         is ListenBrainzSubmission.Listen -> submission.report.let { report ->
+                            val track = embeddedAudioMetadataReader.enrich(report.track)
                             listenBrainzClient.submitListen(
                                 submission.token,
-                                report.track,
+                                track,
                                 report.startedAtEpochSeconds,
                                 report.durationMs,
                                 report.listenedMs,

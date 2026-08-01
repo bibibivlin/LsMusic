@@ -28,6 +28,8 @@ data class MediaEntry(
     val didlMetadata: String? = null,
     val recordingMbid: String? = null,
     val releaseMbid: String? = null,
+    val releaseGroupMbid: String? = null,
+    val trackMbid: String? = null,
     val artistMbids: List<String> = emptyList(),
     val isContainer: Boolean,
     val isAlbum: Boolean = false,

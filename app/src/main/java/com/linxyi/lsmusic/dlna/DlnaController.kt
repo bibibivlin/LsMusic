@@ -25,7 +25,6 @@ import org.jupnp.support.contentdirectory.DIDLParser
 import org.jupnp.support.model.BrowseFlag
 import org.jupnp.support.model.DIDLContent
 import org.jupnp.support.model.DIDLObject
-import org.jupnp.support.model.PersonWithRole
 import java.net.URI
 import java.net.HttpURLConnection
 import java.net.URL
@@ -170,11 +169,19 @@ class DlnaController(context: Context) : AutoCloseable {
                     } ?: item.resources.firstOrNull()
                     val selectedResource = resource ?: return@mapNotNull null
                     val uri = resolveServerUri(selectedResource.value) ?: return@mapNotNull null
-                    val artist = item.creator.orEmpty().ifBlank {
-                        (item.getFirstPropertyValue(
-                            DIDLObject.Property.UPNP.ARTIST::class.java,
-                        ) as? PersonWithRole)?.name.orEmpty()
-                    }
+                    val artists = item.getPropertyValues(DIDLObject.Property.UPNP.ARTIST::class.java)
+                    val artist = artists.firstOrNull { it.role.equals("Artist", ignoreCase = true) }
+                        ?.name.orEmpty().ifBlank {
+                            artists.firstOrNull { it.role.isNullOrBlank() }?.name.orEmpty()
+                        }.ifBlank {
+                            artists.firstOrNull {
+                                !it.role.equals("Composer", ignoreCase = true) &&
+                                    !it.role.equals("AlbumArtist", ignoreCase = true)
+                            }?.name.orEmpty()
+                        }.ifBlank {
+                            artists.firstOrNull { it.role.equals("AlbumArtist", ignoreCase = true) }
+                                ?.name.orEmpty()
+                        }.ifBlank { item.creator.orEmpty() }
                     val originalDidlMetadata = extractOriginalItemMetadata(rawDidl, item.id)
                         ?: runCatching { DIDLParser().generate(DIDLContent().apply { addItem(item) }) }
                             .onFailure { Log.w(TAG, "Unable to preserve source DIDL metadata for ${item.id}", it) }
@@ -200,6 +207,8 @@ class DlnaController(context: Context) : AutoCloseable {
                         didlMetadata = originalDidlMetadata,
                         recordingMbid = musicBrainzIds.recordingMbid,
                         releaseMbid = musicBrainzIds.releaseMbid,
+                        releaseGroupMbid = musicBrainzIds.releaseGroupMbid,
+                        trackMbid = musicBrainzIds.trackMbid,
                         artistMbids = musicBrainzIds.artistMbids,
                         isContainer = false,
                     )

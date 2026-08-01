@@ -51,7 +51,7 @@
 
 应用会在曲目开始播放时发送 `playing_now`；曲目结束、停止或切换后，实际播放时长达到任一阈值才会永久记录。暂停时间不计入播放时长，拖动进度也不会虚增记录进度。默认规则遵循 ListenBrainz 建议：播放 4 分钟或曲目时长的 50%，先满足者生效。
 
-如果 DLNA 媒体服务器在 DIDL-Lite 元数据中提供 Picard/MusicBrainz 标签，应用会优先提交 recording、release 和 artist MBID；无法取得 MBID 时则提交曲名、艺术家和专辑文本。令牌保存在单独的本机偏好文件中，并排除在 Android 云备份与设备迁移之外。接口格式参见 [ListenBrainz API 文档](https://listenbrainz.readthedocs.io/en/latest/users/api/)。
+应用会优先使用音频文件内嵌的 Picard/MusicBrainz 标签，并在文件标签缺失时使用 DLNA 服务器提供的 DIDL-Lite 元数据。目前可从 MP3、FLAC、DSF 和 DFF 音频源读取标签；服务器不允许分段读取或文件没有相应标签时，则提交可取得的曲名、艺术家和专辑文本。令牌保存在单独的本机偏好文件中，并排除在 Android 云备份与设备迁移之外。接口格式参见 [ListenBrainz API 文档](https://listenbrainz.readthedocs.io/en/latest/users/api/)。
 
 ListenBrainz 请求会跟随 Android 当前的默认网络，包括系统 VPN；从 Wi‑Fi 切换到移动网络后无需重启应用。VPN 的分应用规则仍需允许 L's Music 访问网络。
 

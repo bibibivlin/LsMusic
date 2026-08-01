@@ -3,6 +3,8 @@ package com.linxyi.lsmusic.listenbrainz
 data class MusicBrainzIds(
     val recordingMbid: String? = null,
     val releaseMbid: String? = null,
+    val releaseGroupMbid: String? = null,
+    val trackMbid: String? = null,
     val artistMbids: List<String> = emptyList(),
 )
 
@@ -14,22 +16,27 @@ object MusicBrainzMetadataParser {
 
     fun parse(didlMetadata: String?): MusicBrainzIds {
         if (didlMetadata.isNullOrBlank()) return MusicBrainzIds()
-        val trackArtistMbids = valuesFor(
-            didlMetadata,
-            listOf("musicbrainz_artistid", "artist_mbids"),
-        )
         return MusicBrainzIds(
             recordingMbid = valuesFor(
                 didlMetadata,
-                listOf("musicbrainz_recordingid", "musicbrainz_trackid", "recording_mbid"),
+                listOf("musicbrainz_recordingid", "recording_mbid"),
             ).firstOrNull(),
             releaseMbid = valuesFor(
                 didlMetadata,
                 listOf("musicbrainz_albumid", "musicbrainz_releaseid", "release_mbid"),
             ).firstOrNull(),
-            artistMbids = trackArtistMbids.ifEmpty {
-                valuesFor(didlMetadata, listOf("musicbrainz_albumartistid"))
-            },
+            releaseGroupMbid = valuesFor(
+                didlMetadata,
+                listOf("musicbrainz_releasegroupid", "release_group_mbid"),
+            ).firstOrNull(),
+            trackMbid = valuesFor(
+                didlMetadata,
+                listOf("musicbrainz_trackid", "musicbrainz_releasetrackid", "track_mbid"),
+            ).firstOrNull(),
+            artistMbids = valuesFor(
+                didlMetadata,
+                listOf("musicbrainz_artistid", "artist_mbids"),
+            ),
         )
     }
 

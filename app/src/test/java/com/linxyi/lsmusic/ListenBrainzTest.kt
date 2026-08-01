@@ -8,6 +8,7 @@ import com.linxyi.lsmusic.listenbrainz.ListenBrainzPlaybackTracker
 import com.linxyi.lsmusic.listenbrainz.ListenBrainzHttpException
 import com.linxyi.lsmusic.listenbrainz.MusicBrainzMetadataParser
 import com.linxyi.lsmusic.listenbrainz.describeListenBrainzValidationFailure
+import com.linxyi.lsmusic.listenbrainz.buildListenBrainzTrackPayloadFields
 import com.linxyi.lsmusic.listenbrainz.shouldSubmitListen
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -49,6 +50,8 @@ class ListenBrainzTest {
               <item id="1">
                 <custom:musicbrainz_recordingid>98255a8c-017a-4bc7-8dd6-1fa36124572b</custom:musicbrainz_recordingid>
                 <desc id="musicbrainz_albumid">bf9e91ea-8029-4a04-a26a-224e00a83266</desc>
+                <meta name="musicbrainz_releasegroupid">1d98b0bc-5832-49d2-a93e-463032631a2f</meta>
+                <meta name="musicbrainz_trackid">02f899af-2fa8-495e-bd1e-5081a5fc170e</meta>
                 <meta name="musicbrainz_artistid">db92a151-1ac2-438b-bc43-b82e149ddd50</meta>
               </item>
             </DIDL-Lite>
@@ -57,7 +60,45 @@ class ListenBrainzTest {
 
         assertEquals("98255a8c-017a-4bc7-8dd6-1fa36124572b", ids.recordingMbid)
         assertEquals("bf9e91ea-8029-4a04-a26a-224e00a83266", ids.releaseMbid)
+        assertEquals("1d98b0bc-5832-49d2-a93e-463032631a2f", ids.releaseGroupMbid)
+        assertEquals("02f899af-2fa8-495e-bd1e-5081a5fc170e", ids.trackMbid)
         assertEquals(listOf("db92a151-1ac2-438b-bc43-b82e149ddd50"), ids.artistMbids)
+    }
+
+    @Test
+    fun metadataParser_doesNotUseReleaseArtistAsTrackArtist() {
+        val ids = MusicBrainzMetadataParser.parse(
+            """<meta name="musicbrainz_albumartistid">db92a151-1ac2-438b-bc43-b82e149ddd50</meta>""",
+        )
+
+        assertTrue(ids.artistMbids.isEmpty())
+    }
+
+    @Test
+    fun payload_keepsEachMusicBrainzEntityInItsOwnField() {
+        val fields = buildListenBrainzTrackPayloadFields(
+            track.copy(
+                creator = "小暮奈々子（CV愛美）",
+                recordingMbid = "dda6aa28-5ff4-4327-80b0-02439b4a16e2",
+                releaseMbid = "9e8ff159-b8a2-4fa1-bc33-7d6fbd8c29bd",
+                releaseGroupMbid = "d22976c6-5e1e-46b5-96a0-b31152c5b4d5",
+                trackMbid = "02f899af-2fa8-495e-bd1e-5081a5fc170e",
+                artistMbids = listOf(
+                    "cdcdc22a-19a3-44ef-bf44-db8d62983a0c",
+                    "3f063b83-8437-44b3-a4a9-9f3267a04979",
+                ),
+                trackNumber = 1,
+            ),
+            durationMs = 280_000L,
+            listenedMs = 282_000L,
+        )
+
+        assertEquals("小暮奈々子（CV愛美）", fields.artistName)
+        assertEquals("dda6aa28-5ff4-4327-80b0-02439b4a16e2", fields.additionalInfo["recording_mbid"])
+        assertEquals("9e8ff159-b8a2-4fa1-bc33-7d6fbd8c29bd", fields.additionalInfo["release_mbid"])
+        assertEquals("d22976c6-5e1e-46b5-96a0-b31152c5b4d5", fields.additionalInfo["release_group_mbid"])
+        assertEquals("02f899af-2fa8-495e-bd1e-5081a5fc170e", fields.additionalInfo["track_mbid"])
+        assertEquals("1", fields.additionalInfo["tracknumber"])
     }
 
     @Test
