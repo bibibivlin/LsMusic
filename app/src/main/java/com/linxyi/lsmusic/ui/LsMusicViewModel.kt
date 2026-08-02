@@ -686,8 +686,16 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun removeFromQueue(index: Int) {
-        if (_uiState.value.selectedRendererId == LOCAL_RENDERER_ID && index < (localController?.mediaItemCount ?: 0)) {
-            localController?.removeMediaItem(index)
+        val currentState = _uiState.value
+        val controller = localController
+        val playerIndex = if (currentState.selectedRendererId == LOCAL_RENDERER_ID && controller != null) {
+            currentState.queue.getOrNull(index)?.id?.let { removedTrackId ->
+                (0 until controller.mediaItemCount).firstOrNull { playerItemIndex ->
+                    controller.getMediaItemAt(playerItemIndex).mediaId == removedTrackId
+                }
+            }
+        } else {
+            null
         }
         _uiState.update { state ->
             if (index !in state.queue.indices) return@update state
@@ -707,29 +715,26 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
                 playbackState = if (queue.isEmpty()) RemotePlaybackState.STOPPED else state.playbackState,
             )
         }
+        if (playerIndex != null) controller?.removeMediaItem(playerIndex)
     }
 
-    fun moveQueueItem(index: Int, direction: Int) {
-        val destination = index + direction
-        if (
-            _uiState.value.selectedRendererId == LOCAL_RENDERER_ID &&
-            index < (localController?.mediaItemCount ?: 0) &&
-            destination in 0 until (localController?.mediaItemCount ?: 0)
-        ) {
-            localController?.moveMediaItem(index, destination)
-        }
+    fun moveQueueItem(fromIndex: Int, toIndex: Int) {
         _uiState.update { state ->
-            if (index !in state.queue.indices || destination !in state.queue.indices) return@update state
-            val queue = state.queue.toMutableList()
-            val item = queue.removeAt(index)
-            queue.add(destination, item)
-            val current = when (state.currentQueueIndex) {
-                index -> destination
-                destination -> index
-                else -> state.currentQueueIndex
+            if (fromIndex !in state.queue.indices || toIndex !in state.queue.indices || fromIndex == toIndex) {
+                return@update state
             }
-            state.copy(queue = queue, currentQueueIndex = current)
+            state.copy(
+                queue = moveListItem(state.queue, fromIndex, toIndex),
+                currentQueueIndex = indexAfterListItemMove(
+                    trackedIndex = state.currentQueueIndex,
+                    fromIndex = fromIndex,
+                    toIndex = toIndex,
+                ),
+            )
         }
+        // Playback advancement is driven by this queue. Do not reorder the active Media3 timeline:
+        // some controller/service startup states can interpret its first move as a transition.
+        // The full Media3 queue is rebuilt from this order whenever a track is played.
     }
 
     fun clearQueue() {

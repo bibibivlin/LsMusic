@@ -2,9 +2,14 @@
 
 package com.linxyi.lsmusic.ui
 
+import android.os.SystemClock
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
@@ -12,7 +17,11 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitLongPressOrCancellation
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -35,6 +44,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyItemScope
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
@@ -67,8 +77,6 @@ import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.FormatListNumbered
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.GridView
-import androidx.compose.material.icons.rounded.KeyboardArrowDown
-import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.MusicNote
@@ -126,24 +134,35 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.LocalPinnableContainer
+import androidx.compose.ui.layout.PinnableContainer
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
@@ -161,6 +180,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.linxyi.lsmusic.dlna.DlnaDevice
@@ -209,11 +229,19 @@ private data class LibraryUiState(
 
 private const val MEDIA_ENTRY_KEY_PREFIX = "media:"
 private const val LIBRARY_GRID_HEADER_COUNT = 3
+private const val LIBRARY_TOP_ITEM_INDEX = 0
 private const val LIBRARY_SEARCH_ITEM_INDEX = 1
 private val LibrarySearchControlHeight = 56.dp
 private val LibraryFastScrollerTopInset = LibrarySearchControlHeight + 32.dp
 private val LibraryFastScrollerTouchWidth = 48.dp
 private val LibraryFastScrollerMinimumThumbHeight = 48.dp
+private val ReorderEdgeScrollSize = 72.dp
+private val ReorderMaximumScrollPerFrame = 20.dp
+private val ReorderVisualPadding = 8.dp
+private const val ReorderPlacementAnimationDurationMillis = 110
+private const val QueuePostDragClickSuppressionMs = 450L
+private val LyricsProviderItemHeight = 52.dp
+private val LyricsProviderItemSpacing = 8.dp
 private const val ALBUM_DETAIL_HEADER_COUNT = 1
 private const val ALBUM_ART_PREFETCH_SCREENS = 2
 private const val MAX_ACTIVE_ART_PREFETCHES = 32
@@ -223,6 +251,17 @@ private val MiniPlayerHeight = 68.dp
 private val MiniPlayerBottomSpacing = 12.dp
 private val MiniPlayerContentInset = MiniPlayerHeight + MiniPlayerBottomSpacing
 private val MiniPlayerMaxWidth = 720.dp
+
+private fun LazyItemScope.reorderPlacementModifier(dragged: Boolean): Modifier =
+    if (dragged) {
+        Modifier
+    } else {
+        Modifier.animateItem(
+            fadeInSpec = null,
+            placementSpec = tween(durationMillis = ReorderPlacementAnimationDurationMillis),
+            fadeOutSpec = null,
+        )
+    }
 
 private val artworkPalettes = listOf(
     listOf(Color(0xFF7454E8), Color(0xFFE263A9)),
@@ -1035,7 +1074,7 @@ private fun LibraryDirectoryScreen(
             FloatingActionButton(
                 onClick = {
                     coroutineScope.launch {
-                        gridState.animateScrollToItem(LIBRARY_SEARCH_ITEM_INDEX)
+                        gridState.animateScrollToItem(LIBRARY_TOP_ITEM_INDEX)
                         searchFocusRequester.requestFocus()
                     }
                 },
@@ -1915,7 +1954,7 @@ private fun SettingsScreen(
         item {
             SettingCard(
                 title = "歌词来源优先级",
-                description = "按顺序查找网易云音乐和 QQ 音乐。拖动手柄或使用上移、下移按钮调整。",
+                description = "按顺序查找网易云音乐和 QQ 音乐。长按拖动手柄调整优先级。",
             ) {
                 LyricsProviderOrderSetting(
                     order = preferences.lyricsProviderOrder,
@@ -2131,13 +2170,51 @@ private fun LyricsProviderOrderSetting(
     enabled: Boolean,
     onOrderChange: (List<LyricsProviderId>) -> Unit,
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        order.forEachIndexed { index, provider ->
-            var dragDistance by remember(provider) { mutableFloatStateOf(0f) }
+    var displayedOrder by remember(order) { mutableStateOf(order) }
+    val listState = rememberLazyListState()
+    val reorderState = remember(listState) {
+        LazyListReorderState(listState = listState, itemIndexOffset = 0)
+    }
+    reorderState.onMove = { fromIndex, toIndex ->
+        displayedOrder = moveListItem(displayedOrder, fromIndex, toIndex)
+    }
+    val commitOrder = {
+        if (displayedOrder != order) onOrderChange(displayedOrder)
+    }
+    val listHeight = LyricsProviderItemHeight * displayedOrder.size +
+        LyricsProviderItemSpacing * (displayedOrder.size - 1).coerceAtLeast(0) +
+        ReorderVisualPadding * 2
+
+    LazyColumn(
+        state = listState,
+        modifier = Modifier.fillMaxWidth().height(listHeight),
+        contentPadding = PaddingValues(vertical = ReorderVisualPadding),
+        verticalArrangement = Arrangement.spacedBy(LyricsProviderItemSpacing),
+        userScrollEnabled = false,
+    ) {
+        itemsIndexed(displayedOrder, key = { _, provider -> provider.name }) { _, provider ->
+            val itemKey = provider.name
+            val dragged = reorderState.isDragging(itemKey)
+            val pinnableContainer = LocalPinnableContainer.current
+            val scale by animateFloatAsState(if (dragged) 1.035f else 1f, label = "歌词来源拖动缩放")
+            val elevation by animateDpAsState(if (dragged) 4.dp else 0.dp, label = "歌词来源拖动阴影")
+            val containerColor by animateColorAsState(
+                if (dragged) MaterialTheme.colorScheme.primaryContainer
+                else MaterialTheme.colorScheme.surfaceContainerHigh,
+                label = "歌词来源拖动颜色",
+            )
             Surface(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = reorderPlacementModifier(dragged)
+                    .fillMaxWidth()
+                    .zIndex(if (dragged) 1f else 0f)
+                    .graphicsLayer {
+                        translationY = if (dragged) reorderState.draggedItemOffset else 0f
+                        scaleX = scale
+                        scaleY = scale
+                    },
                 shape = RoundedCornerShape(18.dp),
-                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                color = containerColor,
+                shadowElevation = elevation,
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
@@ -2148,30 +2225,14 @@ private fun LyricsProviderOrderSetting(
                         "拖动调整 ${provider.label} 优先级",
                         modifier = Modifier
                             .size(40.dp)
-                            .pointerInput(provider, index, enabled) {
-                                if (!enabled) return@pointerInput
-                                detectVerticalDragGestures(
-                                    onDragStart = { dragDistance = 0f },
-                                    onVerticalDrag = { change, amount ->
-                                        change.consume()
-                                        dragDistance += amount
-                                    },
-                                    onDragEnd = {
-                                        val direction = when {
-                                            dragDistance < -20f -> -1
-                                            dragDistance > 20f -> 1
-                                            else -> 0
-                                        }
-                                        val target = index + direction
-                                        if (direction != 0 && target in order.indices) {
-                                            onOrderChange(order.toMutableList().apply {
-                                                add(target, removeAt(index))
-                                            })
-                                        }
-                                        dragDistance = 0f
-                                    },
-                                )
-                            }
+                            .lazyListReorderHandle(
+                                enabled = enabled,
+                                itemKey = itemKey,
+                                reorderState = reorderState,
+                                pinnableContainer = pinnableContainer,
+                                onDragEnd = commitOrder,
+                                onDragCancel = commitOrder,
+                            )
                             .padding(8.dp),
                         tint = if (enabled) {
                             MaterialTheme.colorScheme.onSurfaceVariant
@@ -2180,18 +2241,6 @@ private fun LyricsProviderOrderSetting(
                         },
                     )
                     Text(provider.label, modifier = Modifier.weight(1f))
-                    IconButton(
-                        onClick = {
-                            onOrderChange(order.toMutableList().apply { add(index - 1, removeAt(index)) })
-                        },
-                        enabled = enabled && index > 0,
-                    ) { Icon(Icons.Rounded.KeyboardArrowUp, "${provider.label}上移") }
-                    IconButton(
-                        onClick = {
-                            onOrderChange(order.toMutableList().apply { add(index + 1, removeAt(index)) })
-                        },
-                        enabled = enabled && index < order.lastIndex,
-                    ) { Icon(Icons.Rounded.KeyboardArrowDown, "${provider.label}下移") }
                 }
             }
         }
@@ -2341,6 +2390,75 @@ private fun DynamicColorSettingCard(
     }
 }
 
+@Immutable
+private data class QueueDisplayItem(
+    val key: String,
+    val stateIndex: Int,
+    val entry: MediaEntry,
+)
+
+private class QueueDisplayKeyGenerator {
+    private var nextKey = 0L
+
+    fun next(entry: MediaEntry): String = "queue:${nextKey++}:${entry.id}"
+}
+
+private fun reconcileQueueDisplayItems(
+    currentItems: List<QueueDisplayItem>,
+    queue: List<MediaEntry>,
+    keyGenerator: QueueDisplayKeyGenerator,
+): List<QueueDisplayItem> {
+    val unmatchedItems = currentItems.toMutableList()
+    return queue.mapIndexed { index, entry ->
+        val matchIndex = unmatchedItems.indexOfFirst { it.entry.id == entry.id }
+        if (matchIndex >= 0) {
+            unmatchedItems.removeAt(matchIndex).copy(stateIndex = index, entry = entry)
+        } else {
+            QueueDisplayItem(
+                key = keyGenerator.next(entry),
+                stateIndex = index,
+                entry = entry,
+            )
+        }
+    }
+}
+
+private data class QueueDragHandleInfo(
+    val itemKey: String,
+    val boundsInRoot: Rect,
+    val pinnableContainer: PinnableContainer?,
+)
+
+private suspend fun PointerInputScope.detectQueueReorderGestures(
+    handleAt: (Offset) -> QueueDragHandleInfo?,
+    reorderState: LazyListReorderState,
+    onDragStart: () -> Unit,
+    onDragEnd: (String) -> Unit,
+    onDragCancel: (String) -> Unit,
+) {
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false)
+        val handle = handleAt(down.position) ?: return@awaitEachGesture
+        val longPress = awaitLongPressOrCancellation(down.id) ?: return@awaitEachGesture
+        longPress.consume()
+        reorderState.startDragging(handle.itemKey, handle.pinnableContainer)
+        if (!reorderState.isDragging(handle.itemKey)) return@awaitEachGesture
+        onDragStart()
+
+        try {
+            val completed = drag(longPress.id) { change ->
+                val distance = change.position.y - change.previousPosition.y
+                change.consume()
+                reorderState.dragBy(distance)
+            }
+            if (completed) currentEvent.changes.forEach { it.consume() }
+            if (completed) onDragEnd(handle.itemKey) else onDragCancel(handle.itemKey)
+        } finally {
+            reorderState.stopDragging()
+        }
+    }
+}
+
 @Composable
 private fun QueueScreen(
     state: LsMusicUiState,
@@ -2367,10 +2485,80 @@ private fun QueueScreen(
         }
         return
     }
+    val queueDisplayKeyGenerator = remember { QueueDisplayKeyGenerator() }
+    var displayedQueue by remember {
+        mutableStateOf(
+            state.queue.mapIndexed { index, entry ->
+                QueueDisplayItem(
+                    key = queueDisplayKeyGenerator.next(entry),
+                    stateIndex = index,
+                    entry = entry,
+                )
+            },
+        )
+    }
+    val listState = rememberLazyListState()
+    val reorderState = remember(listState) {
+        LazyListReorderState(listState = listState, itemIndexOffset = 1)
+    }
+    val dragHandles = remember { mutableMapOf<String, QueueDragHandleInfo>() }
+    val listPositionInRoot = remember { mutableStateOf(Offset.Zero) }
+    var suppressItemClicksUntilMs by remember { mutableLongStateOf(0L) }
+    val currentDisplayedQueue by rememberUpdatedState(displayedQueue)
+    val currentOnMove by rememberUpdatedState(onMove)
+    reorderState.onMove = { fromIndex, toIndex ->
+        displayedQueue = moveListItem(displayedQueue, fromIndex, toIndex)
+    }
+    val suppressQueueItemClicks = {
+        suppressItemClicksUntilMs =
+            SystemClock.elapsedRealtime() + QueuePostDragClickSuppressionMs
+    }
+    val commitQueueDrag: (String) -> Unit = { itemKey ->
+        val queue = currentDisplayedQueue
+        val destination = queue.indexOfFirst { it.key == itemKey }
+        val draggedItem = queue.getOrNull(destination)
+        if (draggedItem != null && destination != draggedItem.stateIndex) {
+            currentOnMove(draggedItem.stateIndex, destination)
+        }
+        suppressQueueItemClicks()
+    }
+    LaunchedEffect(state.queue) {
+        displayedQueue = reconcileQueueDisplayItems(
+            currentItems = displayedQueue,
+            queue = state.queue,
+            keyGenerator = queueDisplayKeyGenerator,
+        )
+    }
+    val density = LocalDensity.current
+    val reorderEdgeSizePx = with(density) { ReorderEdgeScrollSize.toPx() }
+    val reorderMaximumScrollPx = with(density) { ReorderMaximumScrollPerFrame.toPx() }
+
+    LaunchedEffect(reorderState.draggedItemKey, reorderEdgeSizePx, reorderMaximumScrollPx) {
+        while (reorderState.draggedItemKey != null) {
+            withFrameNanos { }
+            reorderState.scrollAtEdge(reorderEdgeSizePx, reorderMaximumScrollPx)
+        }
+    }
     LazyColumn(
-        modifier = Modifier.fillMaxSize(),
+        state = listState,
+        modifier = Modifier
+            .fillMaxSize()
+            .onGloballyPositioned { listPositionInRoot.value = it.positionInRoot() }
+            .pointerInput(reorderState, dragHandles, listPositionInRoot) {
+                detectQueueReorderGestures(
+                    handleAt = { localPosition ->
+                        val rootPosition = localPosition + listPositionInRoot.value
+                        dragHandles.values.firstOrNull { it.boundsInRoot.contains(rootPosition) }
+                    },
+                    reorderState = reorderState,
+                    onDragStart = suppressQueueItemClicks,
+                    onDragEnd = commitQueueDrag,
+                    onDragCancel = commitQueueDrag,
+                )
+            },
         contentPadding = PaddingValues(20.dp, 24.dp, 20.dp, bottomContentPadding),
         verticalArrangement = Arrangement.spacedBy(10.dp),
+        userScrollEnabled = reorderState.draggedItemKey == null,
     ) {
         item {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -2385,40 +2573,86 @@ private fun QueueScreen(
                 }
             }
         }
-        itemsIndexed(state.queue, key = { index, item -> "queue:$index:${item.id}" }) { index, item ->
-            val playing = index == state.currentQueueIndex
+        itemsIndexed(displayedQueue, key = { _, item -> item.key }) { index, queueItem ->
+            val item = queueItem.entry
+            val dragged = reorderState.isDragging(queueItem.key)
+            val pinnableContainer = LocalPinnableContainer.current
+            DisposableEffect(queueItem.key) {
+                onDispose { dragHandles.remove(queueItem.key) }
+            }
+            val playing = item.id == state.currentTrack?.id
+            val scale by animateFloatAsState(if (dragged) 1.025f else 1f, label = "播放列表拖动缩放")
+            val elevation by animateDpAsState(if (dragged) 6.dp else 0.dp, label = "播放列表拖动阴影")
+            val normalContainerColor = if (playing) {
+                MaterialTheme.colorScheme.primaryContainer
+            } else {
+                MaterialTheme.colorScheme.surfaceContainer
+            }
+            val containerColor by animateColorAsState(
+                if (dragged) MaterialTheme.colorScheme.secondaryContainer else normalContainerColor,
+                label = "播放列表拖动颜色",
+            )
             Surface(
-                modifier = Modifier.fillMaxWidth().clickable { onPlay(item) },
+                modifier = reorderPlacementModifier(dragged)
+                    .fillMaxWidth()
+                    .zIndex(if (dragged) 1f else 0f)
+                    .graphicsLayer {
+                        translationY = if (dragged) reorderState.draggedItemOffset else 0f
+                        scaleX = scale
+                        scaleY = scale
+                    },
                 shape = RoundedCornerShape(if (playing) 28.dp else 18.dp),
-                color = if (playing) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainer,
+                color = containerColor,
+                shadowElevation = elevation,
             ) {
                 Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Box(Modifier.width(30.dp), contentAlignment = Alignment.Center) {
-                        if (playing) {
-                            Icon(
-                                Icons.Rounded.GraphicEq,
-                                "正在播放",
-                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                            )
-                        } else {
-                            Text("${index + 1}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Row(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(14.dp))
+                            .clickable {
+                                if (SystemClock.elapsedRealtime() >= suppressItemClicksUntilMs) {
+                                    onPlay(item)
+                                }
+                            },
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Box(Modifier.width(30.dp), contentAlignment = Alignment.Center) {
+                            if (playing) {
+                                Icon(
+                                    Icons.Rounded.GraphicEq,
+                                    "正在播放",
+                                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                )
+                            } else {
+                                Text("${index + 1}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                        ArtworkTile(item, 48.dp)
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(item.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
+                            Text(item.creator.ifBlank { item.duration ?: "音频" }, style = MaterialTheme.typography.bodySmall)
                         }
                     }
-                    ArtworkTile(item, 48.dp)
-                    Spacer(Modifier.width(12.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text(item.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
-                        Text(item.creator.ifBlank { item.duration ?: "音频" }, style = MaterialTheme.typography.bodySmall)
+                    Icon(
+                        Icons.Rounded.DragHandle,
+                        "拖动调整 ${item.title} 顺序",
+                        modifier = Modifier
+                            .size(44.dp)
+                            .onGloballyPositioned { coordinates ->
+                                dragHandles[queueItem.key] = QueueDragHandleInfo(
+                                    itemKey = queueItem.key,
+                                    boundsInRoot = coordinates.boundsInRoot(),
+                                    pinnableContainer = pinnableContainer,
+                                )
+                            }
+                            .padding(10.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    IconButton(onClick = { onRemove(queueItem.stateIndex) }) {
+                        Icon(Icons.Rounded.DeleteOutline, "移除")
                     }
-                    Column {
-                        IconButton(onClick = { onMove(index, -1) }, enabled = index > 0, modifier = Modifier.size(32.dp)) {
-                            Icon(Icons.Rounded.KeyboardArrowUp, "上移")
-                        }
-                        IconButton(onClick = { onMove(index, 1) }, enabled = index < state.queue.lastIndex, modifier = Modifier.size(32.dp)) {
-                            Icon(Icons.Rounded.KeyboardArrowDown, "下移")
-                        }
-                    }
-                    IconButton(onClick = { onRemove(index) }) { Icon(Icons.Rounded.DeleteOutline, "移除") }
                 }
             }
         }
