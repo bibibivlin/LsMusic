@@ -404,9 +404,14 @@ fun LsMusicApp(viewModel: LsMusicViewModel) {
         }
 
         BackHandler(
-            enabled = state.destination == AppDestination.LIBRARY && state.path.size > 1,
+            enabled = state.destination == AppDestination.PENDING_LISTENS ||
+                (state.destination == AppDestination.LIBRARY && state.path.size > 1),
         ) {
-            viewModel.navigateTo(state.path.lastIndex - 1)
+            if (state.destination == AppDestination.PENDING_LISTENS) {
+                viewModel.setDestination(AppDestination.SETTINGS)
+            } else {
+                viewModel.navigateTo(state.path.lastIndex - 1)
+            }
         }
 
         LsMusicContent(
@@ -452,6 +457,9 @@ fun LsMusicApp(viewModel: LsMusicViewModel) {
             onListenBrainzToken = viewModel::validateAndSaveListenBrainzToken,
             onListenBrainzMinimumSeconds = viewModel::setListenBrainzMinimumSeconds,
             onListenBrainzMinimumPercent = viewModel::setListenBrainzMinimumPercent,
+            onRetryPendingListens = viewModel::retryPendingListens,
+            onRemovePendingListen = viewModel::removePendingListen,
+            onClearPendingListens = viewModel::clearPendingListens,
         )
     }
 }
@@ -500,6 +508,9 @@ private fun LsMusicContent(
     onListenBrainzToken: (String) -> Unit,
     onListenBrainzMinimumSeconds: (Int) -> Unit,
     onListenBrainzMinimumPercent: (Int) -> Unit,
+    onRetryPendingListens: (Set<String>?) -> Unit,
+    onRemovePendingListen: (String) -> Unit,
+    onClearPendingListens: () -> Unit,
 ) {
     val libraryState = remember(
         state.entries,
@@ -613,6 +624,15 @@ private fun LsMusicContent(
                             onListenBrainzToken = onListenBrainzToken,
                             onListenBrainzMinimumSeconds = onListenBrainzMinimumSeconds,
                             onListenBrainzMinimumPercent = onListenBrainzMinimumPercent,
+                            onOpenPendingListens = { onDestination(AppDestination.PENDING_LISTENS) },
+                            bottomContentPadding = bottomContentPadding,
+                        )
+                        AppDestination.PENDING_LISTENS -> PendingListensScreen(
+                            state = state,
+                            onBack = { onDestination(AppDestination.SETTINGS) },
+                            onRetry = onRetryPendingListens,
+                            onRemove = onRemovePendingListen,
+                            onClear = onClearPendingListens,
                             bottomContentPadding = bottomContentPadding,
                         )
                     }
@@ -642,6 +662,11 @@ private fun LsMusicContent(
 
 @Composable
 private fun AppNavigationBar(selected: AppDestination, onDestination: (AppDestination) -> Unit) {
+    val selectedNavigationDestination = if (selected == AppDestination.PENDING_LISTENS) {
+        AppDestination.SETTINGS
+    } else {
+        selected
+    }
     Box(
         Modifier.fillMaxWidth()
             .background(MaterialTheme.colorScheme.surfaceContainer)
@@ -653,7 +678,7 @@ private fun AppNavigationBar(selected: AppDestination, onDestination: (AppDestin
         ) {
             destinations.forEach { item ->
                 NavigationBarItem(
-                    selected = selected == item.destination,
+                    selected = selectedNavigationDestination == item.destination,
                     onClick = { onDestination(item.destination) },
                     icon = { Icon(item.icon, null) },
                     label = { Text(item.label) },
@@ -678,6 +703,11 @@ private fun SystemNavigationBarAppearance() {
 
 @Composable
 private fun AppNavigationRail(selected: AppDestination, onDestination: (AppDestination) -> Unit) {
+    val selectedNavigationDestination = if (selected == AppDestination.PENDING_LISTENS) {
+        AppDestination.SETTINGS
+    } else {
+        selected
+    }
     NavigationRail(Modifier.fillMaxHeight().width(132.dp)) {
         Spacer(Modifier.height(24.dp))
         AlbumMark(54.dp)
@@ -685,7 +715,7 @@ private fun AppNavigationRail(selected: AppDestination, onDestination: (AppDesti
         destinations.forEach { item ->
             NavigationRailItem(
                 modifier = Modifier.width(116.dp),
-                selected = selected == item.destination,
+                selected = selectedNavigationDestination == item.destination,
                 onClick = { onDestination(item.destination) },
                 icon = { Icon(item.icon, null) },
                 label = {
@@ -1837,6 +1867,7 @@ private fun SettingsScreen(
     onListenBrainzToken: (String) -> Unit,
     onListenBrainzMinimumSeconds: (Int) -> Unit,
     onListenBrainzMinimumPercent: (Int) -> Unit,
+    onOpenPendingListens: () -> Unit,
     bottomContentPadding: Dp,
 ) {
     var listenBrainzTokenDraft by rememberSaveable(preferences.listenBrainzToken) {
@@ -2048,6 +2079,23 @@ private fun SettingsScreen(
                 checked = preferences.listenBrainzEnabled,
                 onCheckedChange = onListenBrainzEnabled,
             )
+        }
+        if (state.pendingListens.isNotEmpty()) {
+            item {
+                SettingCard(
+                    title = "待上传记录",
+                    description = "${state.pendingListens.size} 条播放记录尚未上传成功，已安全保存在本机。",
+                ) {
+                    FilledTonalButton(
+                        onClick = onOpenPendingListens,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Icon(Icons.AutoMirrored.Rounded.PlaylistPlay, null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("查看并管理")
+                    }
+                }
+            }
         }
         item {
             SettingCard(
@@ -3268,6 +3316,9 @@ private fun LibraryPreview() {
             onListenBrainzToken = {},
             onListenBrainzMinimumSeconds = {},
             onListenBrainzMinimumPercent = {},
+            onRetryPendingListens = {},
+            onRemovePendingListen = {},
+            onClearPendingListens = {},
         )
     }
 }

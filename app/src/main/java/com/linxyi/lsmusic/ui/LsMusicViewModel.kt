@@ -31,6 +31,9 @@ import com.linxyi.lsmusic.listenbrainz.ListenBrainzPlaybackObservation
 import com.linxyi.lsmusic.listenbrainz.ListenBrainzPlaybackReport
 import com.linxyi.lsmusic.listenbrainz.ListenBrainzPlaybackTracker
 import com.linxyi.lsmusic.listenbrainz.EmbeddedAudioMetadataReader
+import com.linxyi.lsmusic.listenbrainz.ListenBrainzUploadScheduler
+import com.linxyi.lsmusic.listenbrainz.PendingListen
+import com.linxyi.lsmusic.listenbrainz.PendingListenRepository
 import com.linxyi.lsmusic.listenbrainz.describeListenBrainzValidationFailure
 import com.linxyi.lsmusic.listenbrainz.shouldSubmitListen
 import com.linxyi.lsmusic.lyrics.LyricsDiskCache
@@ -57,7 +60,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
 
-enum class AppDestination { LIBRARY, QUEUE, NOW_PLAYING, SETTINGS }
+enum class AppDestination { LIBRARY, QUEUE, NOW_PLAYING, SETTINGS, PENDING_LISTENS }
 
 enum class ListenBrainzTokenValidationStatus { IDLE, CHECKING, VALID, INVALID, ERROR }
 
@@ -109,11 +112,6 @@ private sealed interface ListenBrainzSubmission {
         val track: MediaEntry,
         val durationMs: Long,
     ) : ListenBrainzSubmission
-
-    data class Listen(
-        override val token: String,
-        val report: ListenBrainzPlaybackReport.Finished,
-    ) : ListenBrainzSubmission
 }
 
 data class LsMusicUiState(
@@ -143,6 +141,8 @@ data class LsMusicUiState(
     val isClearingLyricsCache: Boolean = false,
     val preferences: AppPreferences = AppPreferences(),
     val listenBrainzTokenValidation: ListenBrainzTokenValidationUiState = ListenBrainzTokenValidationUiState(),
+    val pendingListens: List<PendingListen> = emptyList(),
+    val isPendingListensUploading: Boolean = false,
     val destination: AppDestination = AppDestination.LIBRARY,
     val isSearching: Boolean = true,
     val browseLoadStatus: BrowseLoadStatus = BrowseLoadStatus.WAITING_FOR_DEVICE,
@@ -161,6 +161,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     private val listenBrainzClient = ListenBrainzClient()
     private val embeddedAudioMetadataReader = EmbeddedAudioMetadataReader()
     private val listenBrainzPlaybackTracker = ListenBrainzPlaybackTracker()
+    private val pendingListenRepository = PendingListenRepository.get(application)
     private val lyricsRepository = LyricsRepository(
         providers = listOf(NetEaseLyricsProvider(), QqLyricsProvider()),
         cache = LyricsDiskCache(File(application.cacheDir, "online-lyrics-v1")),
@@ -179,6 +180,8 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
             rememberedRenderer = rememberedRenderer ?: LOCAL_RENDERER,
             browsePageKey = rememberedServer?.id?.let { BrowsePageKey(it, ROOT_OBJECT_ID) },
             preferences = preferenceStore.load(),
+            pendingListens = pendingListenRepository.records.value,
+            isPendingListensUploading = pendingListenRepository.isUploading.value,
         ),
     )
     val uiState: StateFlow<LsMusicUiState> = _uiState.asStateFlow()
@@ -199,6 +202,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     private var remoteLastObservedPositionMs: Long? = null
     private var remoteTrackCommandedAtMs = 0L
     private var listenBrainzTokenValidationJob: Job? = null
+    private var pendingListenUploadJob: Job? = null
     private var lyricsJob: Job? = null
 
     private val remoteMediaCommandReceiver = object : BroadcastReceiver() {
@@ -364,6 +368,22 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
 
         if (_uiState.value.preferences.lyricsEnabled) refreshLyricsCacheSize()
 
+        if (pendingListenRepository.records.value.isNotEmpty()) {
+            ListenBrainzUploadScheduler.schedule(application)
+        }
+
+        viewModelScope.launch {
+            pendingListenRepository.records.collect { records ->
+                _uiState.update { it.copy(pendingListens = records) }
+            }
+        }
+
+        viewModelScope.launch {
+            pendingListenRepository.isUploading.collect { isUploading ->
+                _uiState.update { it.copy(isPendingListensUploading = isUploading) }
+            }
+        }
+
         viewModelScope.launch {
             uiState.map { it.playbackGeneration to it.currentTrack?.id }
                 .distinctUntilChanged()
@@ -414,20 +434,11 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
                                 submission.durationMs,
                             )
                         }
-                        is ListenBrainzSubmission.Listen -> submission.report.let { report ->
-                            val track = embeddedAudioMetadataReader.enrich(report.track)
-                            listenBrainzClient.submitListen(
-                                submission.token,
-                                track,
-                                report.startedAtEpochSeconds,
-                                report.durationMs,
-                                report.listenedMs,
-                            )
-                        }
                     }
                 }.onFailure {
-                    Log.w(TAG, "ListenBrainz submission failed", it)
-                    showError("ListenBrainz 上报失败：${it.localizedMessage ?: "网络请求失败"}")
+                    // playing_now is transient. A network failure here should not interrupt playback;
+                    // eligible permanent listens are persisted and retried through the pending queue.
+                    Log.w(TAG, "ListenBrainz now-playing submission failed", it)
                 }
             }
         }
@@ -915,13 +926,24 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
 
     fun setPresetPalette(palette: PresetPalette) = updatePreferences { it.copy(presetPalette = palette) }
 
-    fun setListenBrainzEnabled(enabled: Boolean) = updatePreferences { it.copy(listenBrainzEnabled = enabled) }
+    fun setListenBrainzEnabled(enabled: Boolean) {
+        updatePreferences { it.copy(listenBrainzEnabled = enabled) }
+        if (enabled && pendingListenRepository.records.value.isNotEmpty()) {
+            ListenBrainzUploadScheduler.schedule(getApplication())
+            startPendingListenUpload(showFeedback = false)
+        } else if (!enabled) {
+            pendingListenUploadJob?.cancel()
+            ListenBrainzUploadScheduler.cancel(getApplication())
+        }
+    }
 
     fun validateAndSaveListenBrainzToken(token: String) {
         listenBrainzTokenValidationJob?.cancel()
         val normalized = token.trim()
         if (normalized.isEmpty()) {
             updatePreferences { it.copy(listenBrainzToken = "") }
+            pendingListenUploadJob?.cancel()
+            ListenBrainzUploadScheduler.cancel(getApplication())
             _uiState.update {
                 it.copy(listenBrainzTokenValidation = ListenBrainzTokenValidationUiState())
             }
@@ -942,7 +964,16 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
             runCatching { listenBrainzClient.validateToken(normalized) }
                 .onSuccess { result ->
                     if (result.valid) {
+                        pendingListenUploadJob?.cancel()
+                        ListenBrainzUploadScheduler.cancel(getApplication())
                         updatePreferences { it.copy(listenBrainzToken = normalized) }
+                        if (
+                            _uiState.value.preferences.listenBrainzEnabled &&
+                            pendingListenRepository.records.value.isNotEmpty()
+                        ) {
+                            ListenBrainzUploadScheduler.schedule(getApplication())
+                            startPendingListenUpload(showFeedback = false)
+                        }
                         _uiState.update {
                             it.copy(
                                 listenBrainzTokenValidation = ListenBrainzTokenValidationUiState(
@@ -989,6 +1020,77 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
 
     fun setListenBrainzMinimumPercent(percent: Int) = updatePreferences {
         it.copy(listenBrainzMinimumPercent = percent.coerceIn(10, 100))
+    }
+
+    fun retryPendingListens(ids: Set<String>? = null) = startPendingListenUpload(ids, showFeedback = true)
+
+    private fun startPendingListenUpload(ids: Set<String>? = null, showFeedback: Boolean) {
+        val preferences = _uiState.value.preferences
+        if (!preferences.listenBrainzEnabled) {
+            if (showFeedback) showError("请先启用 ListenBrainz 播放记录")
+            return
+        }
+        if (preferences.listenBrainzToken.isBlank()) {
+            if (showFeedback) showError("请先保存有效的 ListenBrainz 令牌")
+            return
+        }
+        if (pendingListenUploadJob?.isActive == true) return
+        pendingListenUploadJob = viewModelScope.launch {
+            val result = try {
+                pendingListenRepository.upload(
+                    token = preferences.listenBrainzToken,
+                    ids = ids,
+                    client = listenBrainzClient,
+                    metadataReader = embeddedAudioMetadataReader,
+                )
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                Log.e(TAG, "Unable to upload pending ListenBrainz listens", error)
+                if (pendingListenRepository.records.value.isNotEmpty()) {
+                    ListenBrainzUploadScheduler.schedule(getApplication())
+                }
+                if (showFeedback) {
+                    showError("无法上传待处理记录：${error.localizedMessage ?: "本机存储错误"}")
+                }
+                return@launch
+            }
+            when {
+                result.errorMessage != null -> {
+                    ListenBrainzUploadScheduler.schedule(getApplication())
+                    if (showFeedback) showError("仍有记录未上传：${result.errorMessage}")
+                }
+                showFeedback && result.uploadedCount > 0 ->
+                    showError("已上传 ${result.uploadedCount} 条 ListenBrainz 记录")
+            }
+            if (result.remainingCount > 0) {
+                ListenBrainzUploadScheduler.schedule(getApplication())
+            } else {
+                ListenBrainzUploadScheduler.cancel(getApplication())
+            }
+        }
+    }
+
+    fun removePendingListen(id: String) {
+        if (_uiState.value.isPendingListensUploading) return
+        viewModelScope.launch {
+            runCatching { pendingListenRepository.remove(id) }
+                .onFailure { showError("无法删除待上传记录：${it.localizedMessage}") }
+            if (pendingListenRepository.records.value.isEmpty()) {
+                ListenBrainzUploadScheduler.cancel(getApplication())
+            }
+        }
+    }
+
+    fun clearPendingListens() {
+        if (_uiState.value.isPendingListensUploading) return
+        viewModelScope.launch {
+            runCatching { pendingListenRepository.clear() }
+                .onFailure { showError("无法清空待上传记录：${it.localizedMessage}") }
+            if (pendingListenRepository.records.value.isEmpty()) {
+                ListenBrainzUploadScheduler.cancel(getApplication())
+            }
+        }
     }
 
     fun consumeError() = _uiState.update { it.copy(error = null) }
@@ -1090,7 +1192,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
 
     private fun showError(message: String) = _uiState.update { it.copy(error = message) }
 
-    private fun trackListenBrainzPlayback(snapshot: ListenBrainzStateSnapshot) {
+    private suspend fun trackListenBrainzPlayback(snapshot: ListenBrainzStateSnapshot) {
         val preferences = snapshot.preferences
         val configured = preferences.listenBrainzEnabled && preferences.listenBrainzToken.isNotBlank()
         listenBrainzPlaybackTracker.observe(
@@ -1121,12 +1223,21 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
                         minimumPercent = preferences.listenBrainzMinimumPercent,
                     )
                 ) {
-                    listenBrainzSubmissions.trySend(
-                        ListenBrainzSubmission.Listen(
-                            token = preferences.listenBrainzToken,
-                            report = report,
-                        ),
-                    )
+                    try {
+                        pendingListenRepository.enqueue(
+                            PendingListen.fromReport(
+                                report = report,
+                                queuedAtEpochSeconds = System.currentTimeMillis() / 1_000L,
+                            ),
+                        )
+                        ListenBrainzUploadScheduler.schedule(getApplication())
+                        startPendingListenUpload(showFeedback = false)
+                    } catch (error: CancellationException) {
+                        throw error
+                    } catch (error: Throwable) {
+                        Log.e(TAG, "Unable to persist pending ListenBrainz listen", error)
+                        showError("无法保存待上传的 ListenBrainz 记录：${error.localizedMessage}")
+                    }
                 }
             }
         }

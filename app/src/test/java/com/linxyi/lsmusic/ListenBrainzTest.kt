@@ -7,11 +7,17 @@ import com.linxyi.lsmusic.listenbrainz.ListenBrainzPlaybackReport
 import com.linxyi.lsmusic.listenbrainz.ListenBrainzPlaybackTracker
 import com.linxyi.lsmusic.listenbrainz.ListenBrainzHttpException
 import com.linxyi.lsmusic.listenbrainz.MusicBrainzMetadataParser
+import com.linxyi.lsmusic.listenbrainz.PendingListen
+import com.linxyi.lsmusic.listenbrainz.PendingListenJsonCodec
 import com.linxyi.lsmusic.listenbrainz.describeListenBrainzValidationFailure
 import com.linxyi.lsmusic.listenbrainz.buildListenBrainzTrackPayloadFields
+import com.linxyi.lsmusic.listenbrainz.processPendingListens
+import com.linxyi.lsmusic.listenbrainz.shouldContinuePendingListenBatchAfter
 import com.linxyi.lsmusic.listenbrainz.shouldSubmitListen
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.net.SocketTimeoutException
@@ -161,6 +167,175 @@ class ListenBrainzTest {
             ).contains("HTTP 503"),
         )
     }
+
+    @Test
+    fun pendingListenJson_roundTripPreservesPlaybackTimeAndReportingMetadata() {
+        val pending = PendingListen(
+            id = "pending-1",
+            track = track.copy(
+                trackNumber = 7,
+                recordingMbid = "dda6aa28-5ff4-4327-80b0-02439b4a16e2",
+                releaseMbid = "9e8ff159-b8a2-4fa1-bc33-7d6fbd8c29bd",
+                releaseGroupMbid = "d22976c6-5e1e-46b5-96a0-b31152c5b4d5",
+                trackMbid = "02f899af-2fa8-495e-bd1e-5081a5fc170e",
+                artistMbids = listOf("cdcdc22a-19a3-44ef-bf44-db8d62983a0c"),
+            ),
+            startedAtEpochSeconds = 1_700_000_000L,
+            durationMs = 300_000L,
+            listenedMs = 180_000L,
+            queuedAtEpochSeconds = 1_700_000_300L,
+            attemptCount = 2,
+            lastAttemptAtEpochSeconds = 1_700_000_500L,
+            lastError = "offline",
+        )
+
+        val restored = PendingListenJsonCodec.decode(PendingListenJsonCodec.encode(listOf(pending))).single()
+
+        assertEquals(pending, restored)
+        assertEquals(1_700_000_000L, restored.startedAtEpochSeconds)
+    }
+
+    @Test
+    fun pendingListenProcessing_removesOnlyAfterSuccessfulUploadAndUsesOriginalPlaybackTime() = runBlocking {
+        val pending = PendingListen(
+            id = "pending-1",
+            track = track,
+            startedAtEpochSeconds = 1_700_000_000L,
+            durationMs = 300_000L,
+            listenedMs = 180_000L,
+            queuedAtEpochSeconds = 1_700_000_300L,
+        )
+        val stored = linkedMapOf(pending.id to pending)
+        var submittedStartedAt: Long? = null
+        var submittedArtist: String? = null
+
+        val result = processPendingListens(
+            pending = stored.values.toList(),
+            attemptedAtEpochSeconds = { 1_700_000_600L },
+            enrich = { it.copy(creator = "Embedded Artist") },
+            onAttempt = { id, attemptedAt ->
+                stored[id] = requireNotNull(stored[id]).copy(
+                    attemptCount = requireNotNull(stored[id]).attemptCount + 1,
+                    lastAttemptAtEpochSeconds = attemptedAt,
+                )
+            },
+            onEnriched = { id, enriched -> stored[id] = requireNotNull(stored[id]).copy(track = enriched) },
+            submit = { record, enriched ->
+                submittedStartedAt = record.startedAtEpochSeconds
+                submittedArtist = enriched.creator
+            },
+            onUploaded = stored::remove,
+            onFailed = { id, message -> stored[id] = requireNotNull(stored[id]).copy(lastError = message) },
+        )
+
+        assertEquals(1, result.uploadedCount)
+        assertEquals(1_700_000_000L, submittedStartedAt)
+        assertEquals("Embedded Artist", submittedArtist)
+        assertTrue(stored.isEmpty())
+    }
+
+    @Test
+    fun pendingListenProcessing_keepsFailedRecordForLaterRetry() = runBlocking {
+        val pending = PendingListen(
+            id = "pending-1",
+            track = track,
+            startedAtEpochSeconds = 1_700_000_000L,
+            durationMs = 300_000L,
+            listenedMs = 180_000L,
+            queuedAtEpochSeconds = 1_700_000_300L,
+        )
+        val stored = linkedMapOf(pending.id to pending)
+
+        val result = processPendingListens(
+            pending = stored.values.toList(),
+            attemptedAtEpochSeconds = { 1_700_000_600L },
+            enrich = { it },
+            onAttempt = { id, attemptedAt ->
+                stored[id] = requireNotNull(stored[id]).copy(
+                    attemptCount = requireNotNull(stored[id]).attemptCount + 1,
+                    lastAttemptAtEpochSeconds = attemptedAt,
+                    lastError = null,
+                )
+            },
+            onEnriched = { _, _ -> },
+            submit = { _, _ -> throw UnknownHostException("offline") },
+            onUploaded = stored::remove,
+            onFailed = { id, message -> stored[id] = requireNotNull(stored[id]).copy(lastError = message) },
+        )
+
+        assertEquals(0, result.uploadedCount)
+        assertEquals(1, stored.size)
+        assertEquals(1, stored.getValue(pending.id).attemptCount)
+        assertEquals("offline", stored.getValue(pending.id).lastError)
+        assertNull(stored.getValue(pending.id).track.recordingMbid)
+    }
+
+    @Test
+    fun pendingListenProcessing_continuesPastRecordSpecificBadRequest() = runBlocking {
+        val first = pendingListen("pending-1")
+        val second = pendingListen("pending-2")
+        val stored = linkedMapOf(first.id to first, second.id to second)
+
+        val result = processPendingListens(
+            pending = stored.values.toList(),
+            attemptedAtEpochSeconds = { 1_700_000_600L },
+            enrich = { it },
+            onAttempt = { _, _ -> },
+            onEnriched = { _, _ -> },
+            submit = { record, _ ->
+                if (record.id == first.id) throw ListenBrainzHttpException(400, "bad payload")
+            },
+            onUploaded = stored::remove,
+            onFailed = { id, message -> stored[id] = requireNotNull(stored[id]).copy(lastError = message) },
+            continueAfterFailure = ::shouldContinuePendingListenBatchAfter,
+        )
+
+        assertEquals(2, result.attemptedCount)
+        assertEquals(1, result.uploadedCount)
+        assertEquals(setOf(first.id), stored.keys)
+        assertEquals("ListenBrainz HTTP 400", stored.getValue(first.id).lastError)
+    }
+
+    @Test
+    fun pendingListenProcessing_stopsBatchAfterConnectivityFailure() = runBlocking {
+        val first = pendingListen("pending-1")
+        val second = pendingListen("pending-2")
+        val attempted = mutableListOf<String>()
+
+        val result = processPendingListens(
+            pending = listOf(first, second),
+            attemptedAtEpochSeconds = { 1_700_000_600L },
+            enrich = { it },
+            onAttempt = { id, _ -> attempted += id },
+            onEnriched = { _, _ -> },
+            submit = { _, _ -> throw UnknownHostException("offline") },
+            onUploaded = {},
+            onFailed = { _, _ -> },
+            continueAfterFailure = ::shouldContinuePendingListenBatchAfter,
+        )
+
+        assertEquals(listOf(first.id), attempted)
+        assertEquals(1, result.attemptedCount)
+        assertEquals(0, result.uploadedCount)
+    }
+
+    @Test
+    fun pendingListenBatchPolicy_onlyContinuesForRecordSpecificClientErrors() {
+        assertTrue(shouldContinuePendingListenBatchAfter(ListenBrainzHttpException(400, "bad payload")))
+        assertTrue(shouldContinuePendingListenBatchAfter(ListenBrainzHttpException(422, "invalid metadata")))
+        assertFalse(shouldContinuePendingListenBatchAfter(ListenBrainzHttpException(401, "invalid token")))
+        assertFalse(shouldContinuePendingListenBatchAfter(ListenBrainzHttpException(503, "unavailable")))
+        assertFalse(shouldContinuePendingListenBatchAfter(UnknownHostException("offline")))
+    }
+
+    private fun pendingListen(id: String) = PendingListen(
+        id = id,
+        track = track.copy(id = "track-$id"),
+        startedAtEpochSeconds = 1_700_000_000L,
+        durationMs = 300_000L,
+        listenedMs = 180_000L,
+        queuedAtEpochSeconds = 1_700_000_300L,
+    )
 
     private fun observation(state: RemotePlaybackState, positionMs: Long) = ListenBrainzPlaybackObservation(
         track = track,
