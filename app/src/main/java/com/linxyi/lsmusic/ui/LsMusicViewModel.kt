@@ -19,11 +19,14 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
+import com.linxyi.lsmusic.artwork.AlbumArtworkRepository
 import com.linxyi.lsmusic.dlna.DlnaController
 import com.linxyi.lsmusic.dlna.DlnaDevice
 import com.linxyi.lsmusic.dlna.DlnaDeviceKind
+import com.linxyi.lsmusic.dlna.ArtworkCandidate
 import com.linxyi.lsmusic.dlna.MediaEntry
 import com.linxyi.lsmusic.dlna.RemotePlaybackState
+import com.linxyi.lsmusic.dlna.selectThumbnailArtworkUri
 import com.linxyi.lsmusic.playback.LocalPlaybackService
 import com.linxyi.lsmusic.playback.RemotePlaybackService
 import com.linxyi.lsmusic.listenbrainz.ListenBrainzClient
@@ -74,10 +77,26 @@ data class BrowseLocation(
     val id: String,
     val title: String,
     val artworkUri: String? = null,
+    val artworkCandidates: List<ArtworkCandidate> = artworkUri?.let {
+        listOf(ArtworkCandidate(it))
+    }.orEmpty(),
     val albumArtist: String? = null,
     val year: Int? = null,
     val pageKind: LibraryPageKind = LibraryPageKind.DIRECTORY,
 )
+
+data class AlbumArtworkUiState(
+    val pageKey: BrowsePageKey,
+    val targetSizePx: Int,
+    val displayUri: String?,
+)
+
+internal fun shouldApplyAlbumArtworkResult(
+    currentPageKey: BrowsePageKey?,
+    resultPageKey: BrowsePageKey,
+    currentGeneration: Long,
+    resultGeneration: Long,
+): Boolean = currentPageKey == resultPageKey && currentGeneration == resultGeneration
 
 private data class RemoteMediaSessionSnapshot(
     val rendererId: String?,
@@ -146,6 +165,7 @@ data class LsMusicUiState(
     val destination: AppDestination = AppDestination.LIBRARY,
     val isSearching: Boolean = true,
     val browseLoadStatus: BrowseLoadStatus = BrowseLoadStatus.WAITING_FOR_DEVICE,
+    val albumArtwork: AlbumArtworkUiState? = null,
     val error: String? = null,
 ) {
     val currentTrack: MediaEntry?
@@ -160,6 +180,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     private val preferenceStore = AppPreferencesStore(application)
     private val listenBrainzClient = ListenBrainzClient()
     private val embeddedAudioMetadataReader = EmbeddedAudioMetadataReader()
+    private val albumArtworkRepository = AlbumArtworkRepository.create(application)
     private val listenBrainzPlaybackTracker = ListenBrainzPlaybackTracker()
     private val pendingListenRepository = PendingListenRepository.get(application)
     private val lyricsRepository = LyricsRepository(
@@ -204,6 +225,9 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     private var listenBrainzTokenValidationJob: Job? = null
     private var pendingListenUploadJob: Job? = null
     private var lyricsJob: Job? = null
+    private var albumArtworkJob: Job? = null
+    private var albumArtworkGeneration = 0L
+    private var albumArtworkRequestIdentity: String? = null
 
     private val remoteMediaCommandReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -309,7 +333,10 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
                 val serverChanged = serverId != old.selectedServerId
                 val serverAvailabilityChanged = serverWasAvailable != serverIsAvailable
                 val shouldBrowseRoot = (serverChanged || !serverWasAvailable) && liveServer != null
-                if (serverChanged || serverAvailabilityChanged) libraryBrowseStore.clear()
+                if (serverChanged || serverAvailabilityChanged) {
+                    libraryBrowseStore.clear()
+                    cancelAlbumArtworkResolution()
+                }
                 if (liveServer != null && liveServer != old.rememberedServer) {
                     preferenceStore.saveLastServer(liveServer)
                 }
@@ -464,6 +491,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         userSelectedServer = true
         preferenceStore.saveLastServer(device)
         libraryBrowseStore.clear()
+        cancelAlbumArtworkResolution()
         _uiState.update {
             it.copy(
                 selectedServerId = id,
@@ -511,6 +539,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
                 id = entry.id,
                 title = entry.title,
                 artworkUri = entry.artworkUri,
+                artworkCandidates = entry.artworkCandidates,
                 albumArtist = entry.albumArtist.ifBlank { entry.creator }.takeIf { it.isNotBlank() },
                 year = entry.year,
                 pageKind = if (entry.isAlbum) LibraryPageKind.ALBUM else LibraryPageKind.RESOLVING,
@@ -535,6 +564,89 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         libraryBrowseStore.storeViewState(key, viewState)
         _uiState.update {
             if (it.browsePageKey == key) it.copy(browseViewState = viewState) else it
+        }
+    }
+
+    fun resolveAlbumArtwork(pageKey: BrowsePageKey, targetSizePx: Int) {
+        val state = _uiState.value
+        if (
+            state.browsePageKey != pageKey ||
+            state.browseLoadStatus != BrowseLoadStatus.LOADED ||
+            state.path.lastOrNull()?.pageKind != LibraryPageKind.ALBUM
+        ) {
+            return
+        }
+        val target = targetSizePx.coerceAtLeast(1)
+        val location = state.path.last()
+        val tracks = state.entries.filterNot(MediaEntry::isContainer)
+        val candidates = buildList {
+            addAll(location.artworkCandidates)
+            location.artworkUri?.let { add(ArtworkCandidate(it)) }
+            tracks.forEach { track ->
+                addAll(track.artworkCandidates)
+                track.artworkUri?.let { add(ArtworkCandidate(it)) }
+            }
+        }
+        val identity = buildString {
+            append(pageKey)
+            append('|')
+            append(target)
+            candidates.forEach { append('|').append(it.uri).append('#').append(it.profileId) }
+            tracks.forEach { append('|').append(it.resourceUri).append('#').append(it.resourceSize) }
+        }
+        if (identity == albumArtworkRequestIdentity) return
+
+        albumArtworkRequestIdentity = identity
+        albumArtworkJob?.cancel()
+        val generation = ++albumArtworkGeneration
+        val currentDisplayUri = state.albumArtwork
+            ?.takeIf { it.pageKey == pageKey }
+            ?.displayUri
+            ?: selectThumbnailArtworkUri(location.artworkCandidates, location.artworkUri)
+            ?: tracks.firstNotNullOfOrNull(MediaEntry::thumbnailArtworkUri)
+        _uiState.update {
+            it.copy(
+                albumArtwork = AlbumArtworkUiState(
+                    pageKey = pageKey,
+                    targetSizePx = target,
+                    displayUri = currentDisplayUri,
+                ),
+            )
+        }
+        albumArtworkJob = viewModelScope.launch {
+            val resolved = try {
+                albumArtworkRepository.resolve(
+                    serverId = pageKey.serverId,
+                    artworkCandidates = candidates,
+                    tracks = tracks,
+                    targetSizePx = target,
+                )
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                Log.w(TAG, "Unable to resolve album artwork for ${pageKey.objectId}", error)
+                null
+            }
+            _uiState.update { latest ->
+                if (
+                    !shouldApplyAlbumArtworkResult(
+                        currentPageKey = latest.browsePageKey,
+                        resultPageKey = pageKey,
+                        currentGeneration = albumArtworkGeneration,
+                        resultGeneration = generation,
+                    )
+                ) {
+                    latest
+                } else {
+                    latest.copy(
+                        albumArtwork = AlbumArtworkUiState(
+                            pageKey = pageKey,
+                            targetSizePx = target,
+                            displayUri = resolved?.uri ?: currentDisplayUri,
+                        ),
+                    )
+                }
+            }
         }
     }
 
@@ -1102,6 +1214,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun showBrowsePage(key: BrowsePageKey, path: List<BrowseLocation>) {
+        cancelAlbumArtworkResolution()
         val cachedPage = libraryBrowseStore.page(key)
         val cachedEntries = cachedPage?.entries
         val resolvedPath = path.withResolvedLastLocation(cachedEntries)
@@ -1191,6 +1304,14 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun showError(message: String) = _uiState.update { it.copy(error = message) }
+
+    private fun cancelAlbumArtworkResolution() {
+        albumArtworkJob?.cancel()
+        albumArtworkJob = null
+        albumArtworkRequestIdentity = null
+        albumArtworkGeneration++
+        _uiState.update { it.copy(albumArtwork = null) }
+    }
 
     private suspend fun trackListenBrainzPlayback(snapshot: ListenBrainzStateSnapshot) {
         val preferences = snapshot.preferences
@@ -1465,6 +1586,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
 
     override fun onCleared() {
         lyricsJob?.cancel()
+        albumArtworkJob?.cancel()
         listenBrainzSubmissions.close()
         getApplication<Application>().unregisterReceiver(remoteMediaCommandReceiver)
         getApplication<Application>().startService(

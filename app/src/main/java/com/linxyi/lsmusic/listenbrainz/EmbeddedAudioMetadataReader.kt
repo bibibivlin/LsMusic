@@ -70,10 +70,13 @@ internal fun interface RandomAccessAudioSource {
     fun constrainToLength(length: Long) = Unit
 }
 
-private class HttpRangeAudioSource(private val uri: String) : RandomAccessAudioSource {
+internal class HttpRangeAudioSource(
+    private val uri: String,
+    declaredLength: Long? = null,
+) : RandomAccessAudioSource {
     private var cachedPosition = -1L
     private var cachedBytes = ByteArray(0)
-    private var knownLength: Long? = null
+    private var knownLength: Long? = declaredLength?.takeIf { it > 0L }
 
     override fun constrainToLength(length: Long) {
         if (length > 0L) knownLength = minOf(knownLength ?: length, length)
@@ -107,6 +110,7 @@ private class HttpRangeAudioSource(private val uri: String) : RandomAccessAudioS
             val status = connection.responseCode
             if (status !in 200..299) throw IOException("Audio source HTTP $status")
             val partial = status == HttpURLConnection.HTTP_PARTIAL
+            updateKnownLength(connection, partial)
             if (!partial && position > MAX_FALLBACK_SKIP) {
                 throw IOException("Audio source does not support byte ranges")
             }
@@ -133,6 +137,17 @@ private class HttpRangeAudioSource(private val uri: String) : RandomAccessAudioS
         } finally {
             connection.disconnect()
         }
+    }
+
+    private fun updateKnownLength(connection: HttpURLConnection, partial: Boolean) {
+        val reportedLength = if (partial) {
+            connection.getHeaderField("Content-Range")
+                ?.substringAfterLast('/', "")
+                ?.toLongOrNull()
+        } else {
+            connection.contentLengthLong.takeIf { it > 0L }
+        }
+        reportedLength?.let(::constrainToLength)
     }
 
     private fun java.io.InputStream.skipFully(byteCount: Long) {

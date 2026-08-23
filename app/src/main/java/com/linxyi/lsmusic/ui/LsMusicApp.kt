@@ -187,6 +187,7 @@ import com.linxyi.lsmusic.dlna.DlnaDevice
 import com.linxyi.lsmusic.dlna.MediaEntry
 import com.linxyi.lsmusic.dlna.RemotePlaybackState
 import com.linxyi.lsmusic.dlna.DlnaDeviceKind
+import com.linxyi.lsmusic.dlna.selectThumbnailArtworkUri
 import com.linxyi.lsmusic.lyrics.LyricsProviderId
 import com.linxyi.lsmusic.lyrics.LyricsTranslationMode
 import com.linxyi.lsmusic.ui.theme.LsMusicTheme
@@ -195,6 +196,7 @@ import coil3.compose.AsyncImage
 import coil3.SingletonImageLoader
 import coil3.request.Disposable
 import coil3.request.ImageRequest
+import coil3.request.crossfade
 import coil3.size.Precision
 import coil3.size.Scale
 import kotlinx.coroutines.flow.collect
@@ -220,6 +222,7 @@ private data class LibraryUiState(
     val servers: List<DlnaDevice>,
     val selectedServerId: String?,
     val browseLoadStatus: BrowseLoadStatus,
+    val albumArtwork: AlbumArtworkUiState?,
     val currentTrackId: String?,
     val playbackState: RemotePlaybackState,
 ) {
@@ -339,10 +342,10 @@ private fun AlbumArtworkPrefetchEffect(
                     forward = scrollingForward,
                 )
                 val visibleUris = entries.subList(firstVisible, lastVisible + 1)
-                    .mapNotNull { it.artworkUri?.takeIf(String::isNotBlank) }
+                    .mapNotNull { it.thumbnailArtworkUri?.takeIf(String::isNotBlank) }
                     .toSet()
                 val prefetchUris = prefetchIndices
-                    .mapNotNull { index -> entries.getOrNull(index)?.artworkUri?.takeIf(String::isNotBlank) }
+                    .mapNotNull { index -> entries.getOrNull(index)?.thumbnailArtworkUri?.takeIf(String::isNotBlank) }
                     .toSet()
                 val retainedUris = visibleUris + prefetchUris
 
@@ -430,6 +433,7 @@ fun LsMusicApp(viewModel: LsMusicViewModel) {
             onQueueAll = viewModel::addAllToQueue,
             onAlbumSort = viewModel::setAlbumSort,
             onSaveBrowseViewState = viewModel::saveBrowseViewState,
+            onResolveAlbumArtwork = viewModel::resolveAlbumArtwork,
             onTogglePlayback = viewModel::togglePlayback,
             onPrevious = viewModel::previous,
             onNext = viewModel::next,
@@ -481,6 +485,7 @@ private fun LsMusicContent(
     onQueueAll: (List<MediaEntry>) -> Unit,
     onAlbumSort: (AlbumSort) -> Unit,
     onSaveBrowseViewState: (BrowsePageKey, BrowseViewState) -> Unit,
+    onResolveAlbumArtwork: (BrowsePageKey, Int) -> Unit,
     onTogglePlayback: () -> Unit,
     onPrevious: () -> Unit,
     onNext: () -> Unit,
@@ -523,6 +528,7 @@ private fun LsMusicContent(
         state.servers,
         state.selectedServerId,
         state.browseLoadStatus,
+        state.albumArtwork,
         state.currentTrack?.id,
         state.playbackState,
     ) {
@@ -537,6 +543,7 @@ private fun LsMusicContent(
             servers = state.servers,
             selectedServerId = state.selectedServerId,
             browseLoadStatus = state.browseLoadStatus,
+            albumArtwork = state.albumArtwork,
             currentTrackId = state.currentTrack?.id,
             playbackState = state.playbackState,
         )
@@ -580,6 +587,7 @@ private fun LsMusicContent(
                             onQueueAll,
                             onAlbumSort,
                             onSaveBrowseViewState,
+                            onResolveAlbumArtwork,
                             bottomContentPadding,
                             onOpenSettings = { onDestination(AppDestination.SETTINGS) },
                         )
@@ -743,6 +751,7 @@ private fun LibraryScreen(
     onQueueAll: (List<MediaEntry>) -> Unit,
     onAlbumSort: (AlbumSort) -> Unit,
     onSaveBrowseViewState: (BrowsePageKey, BrowseViewState) -> Unit,
+    onResolveAlbumArtwork: (BrowsePageKey, Int) -> Unit,
     bottomContentPadding: Dp,
     onOpenSettings: () -> Unit,
 ) {
@@ -754,6 +763,7 @@ private fun LibraryScreen(
                 pageKey = pageKey,
                 initialViewState = state.browseViewState,
                 onSaveBrowseViewState = onSaveBrowseViewState,
+                onResolveAlbumArtwork = onResolveAlbumArtwork,
                 onPlay = onPlay,
                 onQueue = onQueue,
                 onPlayAll = onPlayAll,
@@ -1357,6 +1367,7 @@ private fun AlbumDetailScreen(
     pageKey: BrowsePageKey,
     initialViewState: BrowseViewState,
     onSaveBrowseViewState: (BrowsePageKey, BrowseViewState) -> Unit,
+    onResolveAlbumArtwork: (BrowsePageKey, Int) -> Unit,
     onPlay: (MediaEntry) -> Unit,
     onQueue: (MediaEntry) -> Unit,
     onPlayAll: (List<MediaEntry>) -> Unit,
@@ -1368,6 +1379,9 @@ private fun AlbumDetailScreen(
     val representativeTrack = tracks.firstOrNull()
     val currentLocation = state.path.lastOrNull()
     val title = currentLocation?.title ?: representativeTrack?.album.orEmpty()
+    val resolvedArtworkUri = state.albumArtwork
+        ?.takeIf { it.pageKey == pageKey }
+        ?.displayUri
     val headerArtworkEntry = currentLocation?.let { location ->
         MediaEntry(
             id = location.id,
@@ -1376,7 +1390,9 @@ private fun AlbumDetailScreen(
             creator = location.albumArtist.orEmpty(),
             albumArtist = location.albumArtist.orEmpty(),
             year = location.year,
-            artworkUri = location.artworkUri ?: representativeTrack?.artworkUri,
+            artworkUri = resolvedArtworkUri
+                ?: selectThumbnailArtworkUri(location.artworkCandidates, location.artworkUri)
+                ?: representativeTrack?.thumbnailArtworkUri,
             isContainer = true,
             isAlbum = true,
         )
@@ -1435,11 +1451,23 @@ private fun AlbumDetailScreen(
                         contentAlignment = Alignment.Center,
                     ) {
                         val artworkSize = minOf(maxWidth, maxHeight, LargeSquareContentMaxSize)
+                        val artworkSizePx = with(LocalDensity.current) { artworkSize.roundToPx() }
+                        LaunchedEffect(pageKey, artworkSizePx, state.entries, state.browseLoadStatus) {
+                            if (state.browseLoadStatus == BrowseLoadStatus.LOADED) {
+                                onResolveAlbumArtwork(pageKey, artworkSizePx)
+                            }
+                        }
                         ArtworkTile(
                             entry = entry,
                             size = artworkSize,
                             imageIdentity = pageKey,
+                            requestSizePx = artworkSizePx,
                             useCachedAlbumThumbnailAsPlaceholder = true,
+                            preferThumbnailSource = false,
+                            placeholderArtworkUri = currentLocation?.let { location ->
+                                selectThumbnailArtworkUri(location.artworkCandidates, location.artworkUri)
+                            } ?: representativeTrack?.thumbnailArtworkUri,
+                            filterQuality = FilterQuality.High,
                         )
                     }
                 }
@@ -3086,6 +3114,9 @@ private fun ArtworkTile(
     imageIdentity: Any = mediaEntryKey(entry),
     requestSizePx: Int? = null,
     useCachedAlbumThumbnailAsPlaceholder: Boolean = false,
+    preferThumbnailSource: Boolean = true,
+    placeholderArtworkUri: String? = null,
+    filterQuality: FilterQuality = FilterQuality.Low,
     cornerRadius: Dp? = null,
 ) {
     val context = LocalContext.current
@@ -3093,21 +3124,27 @@ private fun ArtworkTile(
         artworkPalettes[(entry.title.hashCode() and Int.MAX_VALUE) % artworkPalettes.size]
     }
     val placeholderBrush = remember(colors) { Brush.linearGradient(colors) }
+    val selectedArtworkUri = if (preferThumbnailSource) entry.thumbnailArtworkUri else entry.artworkUri
     val artworkModel = remember(
         context,
-        entry.artworkUri,
+        selectedArtworkUri,
         requestSizePx,
         useCachedAlbumThumbnailAsPlaceholder,
+        placeholderArtworkUri,
     ) {
-        entry.artworkUri?.takeIf(String::isNotBlank)?.let { uri ->
+        selectedArtworkUri?.takeIf(String::isNotBlank)?.let { uri ->
             when {
-                requestSizePx != null -> albumArtworkRequest(context, uri, requestSizePx)
                 useCachedAlbumThumbnailAsPlaceholder -> ImageRequest.Builder(context)
                     .data(uri)
-                    .placeholderMemoryCacheKey(albumArtworkThumbnailMemoryCacheKey(uri))
+                    .placeholderMemoryCacheKey(
+                        albumArtworkThumbnailMemoryCacheKey(placeholderArtworkUri ?: uri),
+                    )
+                    .apply { if (requestSizePx != null) size(requestSizePx) }
                     .scale(Scale.FILL)
                     .precision(Precision.INEXACT)
+                    .crossfade(180)
                     .build()
+                requestSizePx != null -> albumArtworkRequest(context, uri, requestSizePx)
                 else -> uri
             }
         }
@@ -3133,7 +3170,7 @@ private fun ArtworkTile(
         if (artworkModel != null) {
             key(
                 imageIdentity,
-                entry.artworkUri,
+                selectedArtworkUri,
                 requestSizePx,
                 useCachedAlbumThumbnailAsPlaceholder,
             ) {
@@ -3142,7 +3179,7 @@ private fun ArtworkTile(
                     contentDescription = "${entry.title} 封面",
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop,
-                    filterQuality = FilterQuality.Low,
+                    filterQuality = filterQuality,
                 )
             }
         }
@@ -3289,6 +3326,7 @@ private fun LibraryPreview() {
             onQueueAll = {},
             onAlbumSort = {},
             onSaveBrowseViewState = { _, _ -> },
+            onResolveAlbumArtwork = { _, _ -> },
             onTogglePlayback = {},
             onPrevious = {},
             onNext = {},

@@ -128,6 +128,13 @@ class DlnaController(context: Context) : AutoCloseable {
                 server.identity.descriptorURL.toURI().resolve(value.toString()).toString()
             }.getOrElse { value.toString() }
         }
+        fun artworkCandidates(value: DIDLObject): List<ArtworkCandidate> = rankArtworkCandidates(
+            value.getProperties(DIDLObject.Property.UPNP.ALBUM_ART_URI::class.java).mapNotNull { property ->
+                val uri = resolveServerUri(property.value) ?: return@mapNotNull null
+                val profileId = property.getAttribute("profileID")?.value?.value
+                ArtworkCandidate(uri = uri, profileId = profileId)
+            },
+        )
 
         upnp.controlPoint.execute(object : Browse(
             contentDirectory,
@@ -140,6 +147,7 @@ class DlnaController(context: Context) : AutoCloseable {
             override fun received(actionInvocation: ActionInvocation<*>, didl: DIDLContent) {
                 val rawDidl = actionInvocation.getOutput("Result")?.value?.toString()
                 val folders = didl.containers.map { container ->
+                    val artworkCandidates = artworkCandidates(container)
                     val artists = container.getPropertyValues(DIDLObject.Property.UPNP.ARTIST::class.java)
                     val albumArtist = artists.firstOrNull {
                         it.role.equals("AlbumArtist", ignoreCase = true)
@@ -156,15 +164,15 @@ class DlnaController(context: Context) : AutoCloseable {
                         year = parseAlbumYear(
                             container.getFirstPropertyValue(DIDLObject.Property.DC.DATE::class.java),
                         ),
-                        artworkUri = resolveServerUri(
-                            container.getFirstPropertyValue(DIDLObject.Property.UPNP.ALBUM_ART_URI::class.java),
-                        ),
+                        artworkUri = artworkCandidates.firstOrNull()?.uri,
+                        artworkCandidates = artworkCandidates,
                         isContainer = true,
                         isAlbum = mediaClass.startsWith("object.container.album"),
                         childCount = container.childCount,
                     )
                 }
                 val tracks = didl.items.mapNotNull { item ->
+                    val artworkCandidates = artworkCandidates(item)
                     val resource = item.resources.firstOrNull {
                         it.protocolInfo?.contentFormat?.startsWith("audio/", ignoreCase = true) == true
                     } ?: item.resources.firstOrNull()
@@ -198,10 +206,10 @@ class DlnaController(context: Context) : AutoCloseable {
                         trackNumber = item.getFirstPropertyValue(
                             DIDLObject.Property.UPNP.ORIGINAL_TRACK_NUMBER::class.java,
                         )?.toString()?.toIntOrNull(),
-                        artworkUri = resolveServerUri(
-                            item.getFirstPropertyValue(DIDLObject.Property.UPNP.ALBUM_ART_URI::class.java),
-                        ),
+                        artworkUri = artworkCandidates.firstOrNull()?.uri,
+                        artworkCandidates = artworkCandidates,
                         resourceUri = uri,
+                        resourceSize = selectedResource.size,
                         duration = selectedResource.duration,
                         mimeType = selectedResource.protocolInfo?.contentFormat,
                         protocolInfo = selectedResource.protocolInfo?.toString(),
