@@ -7,7 +7,9 @@ import com.linxyi.lsmusic.ui.BrowseViewState
 import com.linxyi.lsmusic.ui.LibraryBrowseStore
 import com.linxyi.lsmusic.ui.LibraryContentStatus
 import com.linxyi.lsmusic.ui.LibraryPageKind
+import com.linxyi.lsmusic.ui.albumArtworkRetryDelayMillis
 import com.linxyi.lsmusic.ui.directionalPrefetchRange
+import com.linxyi.lsmusic.ui.directionalPrefetchIndices
 import com.linxyi.lsmusic.ui.fastScrollPositionFraction
 import com.linxyi.lsmusic.ui.fastScrollTargetItemIndex
 import com.linxyi.lsmusic.ui.resolveLibraryContentStatus
@@ -167,6 +169,38 @@ class LibraryBrowseStoreTest {
                 forward = false,
             ).isEmpty(),
         )
+    }
+
+    @Test
+    fun directionalPrefetchIndices_ordersNearestItemsFirstInEitherDirection() {
+        assertEquals(
+            listOf(20, 21, 22, 23, 24),
+            directionalPrefetchIndices(
+                firstVisibleIndex = 10,
+                lastVisibleIndex = 19,
+                lastEntryIndex = 99,
+                prefetchCount = 5,
+                forward = true,
+            ),
+        )
+        assertEquals(
+            listOf(9, 8, 7, 6, 5),
+            directionalPrefetchIndices(
+                firstVisibleIndex = 10,
+                lastVisibleIndex = 19,
+                lastEntryIndex = 99,
+                prefetchCount = 5,
+                forward = false,
+            ),
+        )
+    }
+
+    @Test
+    fun albumArtworkRetryDelay_stopsAfterTwoFailures() {
+        assertEquals(350L, albumArtworkRetryDelayMillis(1))
+        assertEquals(1_000L, albumArtworkRetryDelayMillis(2))
+        assertEquals(null, albumArtworkRetryDelayMillis(0))
+        assertEquals(null, albumArtworkRetryDelayMillis(3))
     }
 
     @Test

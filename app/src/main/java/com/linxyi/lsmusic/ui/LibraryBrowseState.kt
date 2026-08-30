@@ -93,6 +93,29 @@ internal fun directionalPrefetchRange(
     }
 }
 
+internal fun directionalPrefetchIndices(
+    firstVisibleIndex: Int,
+    lastVisibleIndex: Int,
+    lastEntryIndex: Int,
+    prefetchCount: Int,
+    forward: Boolean,
+): List<Int> {
+    val range = directionalPrefetchRange(
+        firstVisibleIndex = firstVisibleIndex,
+        lastVisibleIndex = lastVisibleIndex,
+        lastEntryIndex = lastEntryIndex,
+        prefetchCount = prefetchCount,
+        forward = forward,
+    )
+    return if (forward) range.toList() else range.reversed().toList()
+}
+
+internal fun albumArtworkRetryDelayMillis(failureCount: Int): Long? = when (failureCount) {
+    1 -> 350L
+    2 -> 1_000L
+    else -> null
+}
+
 internal fun fastScrollPositionFraction(
     firstVisibleItemIndex: Int,
     visibleItemCount: Int,

@@ -134,6 +134,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -194,14 +195,18 @@ import com.linxyi.lsmusic.ui.theme.LsMusicTheme
 import com.linxyi.lsmusic.ui.theme.presetColorScheme
 import coil3.compose.AsyncImage
 import coil3.SingletonImageLoader
-import coil3.request.Disposable
 import coil3.request.ImageRequest
 import coil3.request.crossfade
 import coil3.size.Precision
 import coil3.size.Scale
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlin.math.roundToInt
 
 private data class DestinationItem(
@@ -247,7 +252,8 @@ private val LyricsProviderItemHeight = 52.dp
 private val LyricsProviderItemSpacing = 8.dp
 private const val ALBUM_DETAIL_HEADER_COUNT = 1
 private const val ALBUM_ART_PREFETCH_SCREENS = 2
-private const val MAX_ACTIVE_ART_PREFETCHES = 32
+private const val MAX_ACTIVE_ART_PREFETCHES = 4
+private const val ALBUM_ART_PREFETCH_RESUME_DELAY_MS = 150L
 private val LargeSquareContentMaxSize = 360.dp
 private val DefaultScreenBottomPadding = 32.dp
 private val MiniPlayerHeight = 68.dp
@@ -312,13 +318,16 @@ private fun AlbumArtworkPrefetchEffect(
     gridState: LazyGridState,
     requestSizePx: Int,
     enabled: Boolean,
+    paused: Boolean,
 ) {
     val context = LocalContext.current
     val imageLoader = remember(context) { SingletonImageLoader.get(context) }
 
-    LaunchedEffect(pageKey, entries, gridState, requestSizePx, enabled) {
-        if (!enabled) return@LaunchedEffect
-        val requests = LinkedHashMap<String, Disposable>()
+    LaunchedEffect(pageKey, entries, gridState, requestSizePx, enabled, paused) {
+        if (!enabled || paused) return@LaunchedEffect
+        delay(ALBUM_ART_PREFETCH_RESUME_DELAY_MS)
+        val requests = LinkedHashMap<String, Job>()
+        val requestSemaphore = Semaphore(MAX_ACTIVE_ART_PREFETCHES)
         var previousFirstEntryIndex = -1
         try {
             snapshotFlow {
@@ -334,7 +343,7 @@ private fun AlbumArtworkPrefetchEffect(
                 previousFirstEntryIndex = firstVisible
                 val visibleCount = (lastVisible - firstVisible + 1).coerceAtLeast(1)
                 val prefetchCount = (visibleCount * ALBUM_ART_PREFETCH_SCREENS).coerceIn(6, 24)
-                val prefetchIndices = directionalPrefetchRange(
+                val prefetchIndices = directionalPrefetchIndices(
                     firstVisibleIndex = firstVisible,
                     lastVisibleIndex = lastVisible,
                     lastEntryIndex = entries.lastIndex,
@@ -352,25 +361,30 @@ private fun AlbumArtworkPrefetchEffect(
                 val iterator = requests.iterator()
                 while (iterator.hasNext()) {
                     val request = iterator.next()
-                    if (request.value.isDisposed || request.key !in retainedUris) {
-                        if (!request.value.isDisposed) request.value.dispose()
+                    if (!request.value.isActive || request.key !in retainedUris) {
+                        request.value.cancel()
                         iterator.remove()
                     }
                 }
 
                 prefetchUris.forEach { uri ->
                     if (uri !in requests) {
-                        requests[uri] = imageLoader.enqueue(albumArtworkRequest(context, uri, requestSizePx))
+                        requests[uri] = launch {
+                            try {
+                                requestSemaphore.withPermit {
+                                    imageLoader.execute(albumArtworkRequest(context, uri, requestSizePx))
+                                }
+                            } catch (cancellation: CancellationException) {
+                                throw cancellation
+                            } catch (_: Exception) {
+                                // Prefetch failures are silent; visible AsyncImage requests can retry normally.
+                            }
+                        }
                     }
-                }
-                while (requests.size > MAX_ACTIVE_ART_PREFETCHES) {
-                    val eldest = requests.entries.iterator().next()
-                    if (!eldest.value.isDisposed) eldest.value.dispose()
-                    requests.remove(eldest.key)
                 }
             }
         } finally {
-            requests.values.forEach { if (!it.isDisposed) it.dispose() }
+            requests.values.forEach(Job::cancel)
         }
     }
 }
@@ -871,6 +885,7 @@ internal fun LibraryDirectoryScreen(
     )
     val searchFocusRequester = remember { FocusRequester() }
     val coroutineScope = rememberCoroutineScope()
+    var isFastScrollerDragging by remember { mutableStateOf(false) }
     val showFloatingSearchButton by remember {
         derivedStateOf {
             gridState.firstVisibleItemIndex > LIBRARY_SEARCH_ITEM_INDEX
@@ -957,6 +972,7 @@ internal fun LibraryDirectoryScreen(
             gridState = gridState,
             requestSizePx = artworkRequestSizePx,
             enabled = useGrid && isAlbumCollection && !state.isBrowsing && visibleEntries.isNotEmpty(),
+            paused = isFastScrollerDragging,
         )
 
         LazyVerticalGrid(
@@ -1129,6 +1145,7 @@ internal fun LibraryDirectoryScreen(
             ) {
                 LibraryFastScroller(
                     gridState = gridState,
+                    onDragStateChanged = { isFastScrollerDragging = it },
                     modifier = Modifier.fillMaxSize(),
                 )
             }
@@ -1163,6 +1180,7 @@ internal fun LibraryDirectoryScreen(
 @Composable
 private fun LibraryFastScroller(
     gridState: LazyGridState,
+    onDragStateChanged: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val layoutInfo = gridState.layoutInfo
@@ -1195,6 +1213,11 @@ private fun LibraryFastScroller(
         val currentMaximumThumbOffsetPx by rememberUpdatedState(maximumThumbOffsetPx)
         val currentVisibleItemCount by rememberUpdatedState(visibleItemCount)
         val currentTotalItemCount by rememberUpdatedState(totalItemCount)
+        val currentOnDragStateChanged by rememberUpdatedState(onDragStateChanged)
+
+        DisposableEffect(Unit) {
+            onDispose { currentOnDragStateChanged(false) }
+        }
 
         LaunchedEffect(requestedItemIndex) {
             val targetItemIndex = requestedItemIndex ?: return@LaunchedEffect
@@ -1220,6 +1243,7 @@ private fun LibraryFastScroller(
                 .pointerInput(gridState) {
                     detectVerticalDragGestures(
                         onDragStart = { position ->
+                            currentOnDragStateChanged(true)
                             val settledOffset = currentSettledThumbOffsetPx
                             val thumbEnd = settledOffset + currentThumbHeightPx
                             val startOffset = if (position.y in settledOffset..thumbEnd) {
@@ -1256,8 +1280,14 @@ private fun LibraryFastScroller(
                                 totalItemCount = currentTotalItemCount,
                             )
                         },
-                        onDragEnd = { draggedThumbOffsetPx = null },
-                        onDragCancel = { draggedThumbOffsetPx = null },
+                        onDragEnd = {
+                            draggedThumbOffsetPx = null
+                            currentOnDragStateChanged(false)
+                        },
+                        onDragCancel = {
+                            draggedThumbOffsetPx = null
+                            currentOnDragStateChanged(false)
+                        },
                     )
                 },
         ) {
@@ -1812,6 +1842,7 @@ private fun MediaGridCard(
             entry = entry,
             size = null,
             requestSizePx = artworkRequestSizePx,
+            retryTransientFailures = true,
             cornerRadius = artworkCornerRadius,
             modifier = Modifier.fillMaxWidth().aspectRatio(1f),
         )
@@ -3147,6 +3178,7 @@ private fun ArtworkTile(
     useCachedAlbumThumbnailAsPlaceholder: Boolean = false,
     preferThumbnailSource: Boolean = true,
     placeholderArtworkUri: String? = null,
+    retryTransientFailures: Boolean = false,
     filterQuality: FilterQuality = FilterQuality.Low,
     cornerRadius: Dp? = null,
 ) {
@@ -3156,6 +3188,28 @@ private fun ArtworkTile(
     }
     val placeholderBrush = remember(colors) { Brush.linearGradient(colors) }
     val selectedArtworkUri = if (preferThumbnailSource) entry.thumbnailArtworkUri else entry.artworkUri
+    var artworkRequestGeneration by remember(
+        imageIdentity,
+        selectedArtworkUri,
+        requestSizePx,
+    ) { mutableIntStateOf(0) }
+    var artworkFailureCount by remember(
+        imageIdentity,
+        selectedArtworkUri,
+        requestSizePx,
+    ) { mutableIntStateOf(0) }
+    var lastFailedGeneration by remember(
+        imageIdentity,
+        selectedArtworkUri,
+        requestSizePx,
+    ) { mutableStateOf<Int?>(null) }
+    LaunchedEffect(retryTransientFailures, artworkFailureCount) {
+        if (!retryTransientFailures) return@LaunchedEffect
+        val retryDelayMillis = albumArtworkRetryDelayMillis(artworkFailureCount)
+            ?: return@LaunchedEffect
+        delay(retryDelayMillis)
+        artworkRequestGeneration += 1
+    }
     val artworkModel = remember(
         context,
         selectedArtworkUri,
@@ -3204,6 +3258,7 @@ private fun ArtworkTile(
                 selectedArtworkUri,
                 requestSizePx,
                 useCachedAlbumThumbnailAsPlaceholder,
+                artworkRequestGeneration,
             ) {
                 AsyncImage(
                     model = artworkModel,
@@ -3211,6 +3266,19 @@ private fun ArtworkTile(
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop,
                     filterQuality = filterQuality,
+                    onSuccess = {
+                        artworkFailureCount = 0
+                        lastFailedGeneration = null
+                    },
+                    onError = {
+                        if (
+                            retryTransientFailures &&
+                            lastFailedGeneration != artworkRequestGeneration
+                        ) {
+                            lastFailedGeneration = artworkRequestGeneration
+                            artworkFailureCount += 1
+                        }
+                    },
                 )
             }
         }
