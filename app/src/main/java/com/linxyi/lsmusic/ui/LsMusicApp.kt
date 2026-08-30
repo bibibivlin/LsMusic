@@ -211,7 +211,7 @@ private data class DestinationItem(
 )
 
 @Immutable
-private data class LibraryUiState(
+internal data class LibraryUiState(
     val entries: List<MediaEntry>,
     val albumSort: AlbumSort,
     val path: List<BrowseLocation>,
@@ -826,8 +826,9 @@ private fun ResolvingLibraryPage(
 }
 
 @Composable
-private fun LibraryDirectoryScreen(
+internal fun LibraryDirectoryScreen(
     state: LibraryUiState,
+    modifier: Modifier = Modifier,
     pageKey: BrowsePageKey,
     initialViewState: BrowseViewState,
     onOpen: (MediaEntry) -> Unit,
@@ -910,8 +911,9 @@ private fun LibraryDirectoryScreen(
         }
     }
 
-    BoxWithConstraints {
+    BoxWithConstraints(modifier) {
         val gridSpacing = 12.dp
+        val density = LocalDensity.current
         val availableWidth = (maxWidth - 40.dp).coerceAtLeast(1.dp)
         val minimumCellWidth = state.preferences.gallerySize.minCellSize.dp
         val columnCount = if (useGrid) {
@@ -920,7 +922,34 @@ private fun LibraryDirectoryScreen(
             1
         }
         val artworkWidth = (availableWidth - gridSpacing * (columnCount - 1)) / columnCount
-        val artworkRequestSizePx = with(LocalDensity.current) { artworkWidth.roundToPx() }
+        val artworkRequestSizePx = with(density) { artworkWidth.roundToPx() }
+        val minimumFastScrollerTopInsetPx = with(density) { LibraryFastScrollerTopInset.roundToPx() }
+        val gridSpacingPx = with(density) { gridSpacing.roundToPx() }
+        val fastScrollerTopInsetPx by remember(
+            gridState,
+            minimumFastScrollerTopInsetPx,
+            gridSpacingPx,
+        ) {
+            derivedStateOf {
+                val layoutInfo = gridState.layoutInfo
+                val lastHeader = layoutInfo.visibleItemsInfo
+                    .firstOrNull { it.index == LIBRARY_GRID_HEADER_COUNT - 1 }
+                when {
+                    lastHeader != null -> maxOf(
+                        minimumFastScrollerTopInsetPx,
+                        lastHeader.offset.y + lastHeader.size.height + gridSpacingPx,
+                    )
+                    gridState.firstVisibleItemIndex >= LIBRARY_GRID_HEADER_COUNT ->
+                        minimumFastScrollerTopInsetPx
+                    else -> null
+                }
+            }
+        }
+        val fastScrollerTopInset = fastScrollerTopInsetPx
+            ?.let { insetPx -> with(density) { insetPx.toDp() } }
+            ?.takeIf { topInset ->
+                maxHeight - topInset - bottomContentPadding >= LibraryFastScrollerMinimumThumbHeight
+            }
 
         AlbumArtworkPrefetchEffect(
             pageKey = pageKey,
@@ -1084,23 +1113,25 @@ private fun LibraryDirectoryScreen(
             }
         }
 
-        AnimatedVisibility(
-            visible = showFastScroller,
-            modifier = Modifier
-                .align(Alignment.CenterEnd)
-                .fillMaxHeight()
-                .padding(
-                    top = LibraryFastScrollerTopInset,
-                    bottom = bottomContentPadding,
+        fastScrollerTopInset?.let { topInset ->
+            AnimatedVisibility(
+                visible = showFastScroller,
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .fillMaxHeight()
+                    .padding(
+                        top = topInset,
+                        bottom = bottomContentPadding,
+                    )
+                    .width(LibraryFastScrollerTouchWidth),
+                enter = fadeIn(),
+                exit = fadeOut(),
+            ) {
+                LibraryFastScroller(
+                    gridState = gridState,
+                    modifier = Modifier.fillMaxSize(),
                 )
-                .width(LibraryFastScrollerTouchWidth),
-            enter = fadeIn(),
-            exit = fadeOut(),
-        ) {
-            LibraryFastScroller(
-                gridState = gridState,
-                modifier = Modifier.fillMaxSize(),
-            )
+            }
         }
 
         AnimatedVisibility(
