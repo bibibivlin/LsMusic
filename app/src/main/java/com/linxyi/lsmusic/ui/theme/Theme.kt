@@ -25,7 +25,7 @@ fun LsMusicTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     // Dynamic color is available on Android 12+
     dynamicColor: Boolean = true,
-    presetPalette: PresetPalette = PresetPalette.VIOLET,
+    presetPalette: PresetPalette = PresetPalette.MIST,
     content: @Composable () -> Unit
 ) {
     val colorScheme = when {
@@ -60,6 +60,9 @@ internal fun presetColorScheme(
 ): ColorScheme = dynamicColorScheme(
     seedColor = Color(palette.seedArgb),
     isDark = darkTheme,
-    style = PaletteStyle.Expressive,
+    style = when (palette) {
+        PresetPalette.MIST -> PaletteStyle.TonalSpot
+        else -> PaletteStyle.Expressive
+    },
     specVersion = ColorSpec.SpecVersion.SPEC_2025,
 )

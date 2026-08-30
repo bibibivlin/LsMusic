@@ -23,6 +23,7 @@ enum class PresetPalette(
     val label: String,
     val seedArgb: Long,
 ) {
+    MIST("雾青", 0xFF5F7C74),
     VIOLET("紫罗兰", 0xFF6750A4),
     ROSE("玫瑰", 0xFFB3265E),
     ORANGE("暖橙", 0xFF8B5000),
@@ -36,7 +37,7 @@ data class AppPreferences(
     val useGridByDefault: Boolean = true,
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val useDynamicColor: Boolean = true,
-    val presetPalette: PresetPalette = PresetPalette.VIOLET,
+    val presetPalette: PresetPalette = PresetPalette.MIST,
     val lyricsEnabled: Boolean = false,
     val lyricsProviderOrder: List<LyricsProviderId> = LyricsProviderId.entries,
     val lyricsTranslationMode: LyricsTranslationMode = LyricsTranslationMode.ORIGINAL,
@@ -66,7 +67,7 @@ class AppPreferencesStore(context: Context) {
         useGridByDefault = preferences.getBoolean(KEY_GRID_DEFAULT, true),
         themeMode = preferences.enumValue(KEY_THEME_MODE, ThemeMode.SYSTEM),
         useDynamicColor = preferences.getBoolean(KEY_DYNAMIC_COLOR, true),
-        presetPalette = preferences.enumValue(KEY_PRESET_PALETTE, PresetPalette.VIOLET),
+        presetPalette = preferences.enumValue(KEY_PRESET_PALETTE, PresetPalette.MIST),
         lyricsEnabled = preferences.getBoolean(KEY_LYRICS_ENABLED, false),
         lyricsProviderOrder = parseLyricsProviderOrder(preferences.getString(KEY_LYRICS_PROVIDER_ORDER, null)),
         lyricsTranslationMode = preferences.enumValue(

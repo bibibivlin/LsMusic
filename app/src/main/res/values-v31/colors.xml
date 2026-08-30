@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Also tint the regular adaptive icon from the wallpaper-derived system palette.
+      This is a best-effort fallback for launchers that do not render the monochrome
+      themed-icon layer; launcher cache behavior is controlled by the OEM.
+    -->
+    <color name="launcher_icon_background">@android:color/system_neutral1_100</color>
+    <color name="launcher_icon_foreground">@android:color/system_accent1_600</color>
+</resources>

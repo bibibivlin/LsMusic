@@ -1,3 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- Static launcher fallback for platforms without a system Monet palette. -->
+    <color name="launcher_icon_background">#DEEAE5</color>
+    <color name="launcher_icon_foreground">#4F7068</color>
 </resources>
