@@ -200,6 +200,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
             rememberedServer = rememberedServer,
             rememberedRenderer = rememberedRenderer ?: LOCAL_RENDERER,
             browsePageKey = rememberedServer?.id?.let { BrowsePageKey(it, ROOT_OBJECT_ID) },
+            albumSort = preferenceStore.albumSort(rememberedServer?.id),
             preferences = preferenceStore.load(),
             pendingListens = pendingListenRepository.records.value,
             isPendingListensUploading = pendingListenRepository.isUploading.value,
@@ -352,6 +353,11 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
                         rememberedServer = liveServer ?: it.rememberedServer,
                         rememberedRenderer = liveRenderer ?: it.rememberedRenderer,
                         entries = if (serverChanged || !serverIsAvailable) emptyList() else it.entries,
+                        albumSort = if (serverChanged) {
+                            preferenceStore.albumSort(serverId)
+                        } else {
+                            it.albumSort
+                        },
                         path = if (serverChanged || !serverIsAvailable) {
                             listOf(BrowseLocation(ROOT_OBJECT_ID, "音乐库"))
                         } else {
@@ -497,6 +503,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
                 selectedServerId = id,
                 rememberedServer = device,
                 entries = emptyList(),
+                albumSort = preferenceStore.albumSort(id),
                 path = listOf(BrowseLocation(ROOT_OBJECT_ID, "音乐库")),
                 browsePageKey = BrowsePageKey(id, ROOT_OBJECT_ID),
                 browseViewState = BrowseViewState(),
@@ -1026,7 +1033,13 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         state.copy(playbackOrder = state.playbackOrder.toggleShuffle(state.currentTrack?.id))
     }
 
-    fun setAlbumSort(sort: AlbumSort) = _uiState.update { it.copy(albumSort = sort) }
+    fun setAlbumSort(sort: AlbumSort) {
+        val serverId = _uiState.value.selectedServerId ?: return
+        preferenceStore.saveAlbumSort(serverId, sort)
+        _uiState.update { state ->
+            if (state.selectedServerId == serverId) state.copy(albumSort = sort) else state
+        }
+    }
 
     fun setGallerySize(size: GallerySize) = updatePreferences { it.copy(gallerySize = size) }
 

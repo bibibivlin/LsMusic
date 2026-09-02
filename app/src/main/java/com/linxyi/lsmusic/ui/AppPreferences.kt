@@ -6,6 +6,7 @@ import com.linxyi.lsmusic.dlna.DlnaDeviceKind
 import com.linxyi.lsmusic.lyrics.LyricsProviderId
 import com.linxyi.lsmusic.lyrics.LyricsTranslationMode
 import com.linxyi.lsmusic.lyrics.normalizedProviderOrder
+import java.util.Locale
 
 enum class GallerySize(val label: String, val minCellSize: Int) {
     COMPACT("紧凑", 96),
@@ -58,9 +59,39 @@ internal fun parseLyricsProviderOrder(value: String?): List<LyricsProviderId> = 
 
 internal fun normalizedLyricsFontSizeSp(value: Int): Int = value.coerceIn(18, 40).let { it - it % 2 }
 
+internal class ServerAlbumSortPreferences(
+    private val readValue: (String) -> String?,
+    private val writeValue: (String, String) -> Unit,
+) {
+    fun load(serverId: String?): AlbumSort {
+        val key = preferenceKey(serverId) ?: return AlbumSort.SERVER_DEFAULT
+        val storedValue = readValue(key) ?: return AlbumSort.SERVER_DEFAULT
+        return AlbumSort.entries.firstOrNull { it.name == storedValue } ?: AlbumSort.SERVER_DEFAULT
+    }
+
+    fun save(serverId: String?, sort: AlbumSort) {
+        val key = preferenceKey(serverId) ?: return
+        writeValue(key, sort.name)
+    }
+
+    private fun preferenceKey(serverId: String?): String? = serverId
+        ?.trim()
+        ?.takeIf { it.isNotEmpty() }
+        ?.lowercase(Locale.ROOT)
+        ?.let { "$KEY_PREFIX$it" }
+
+    private companion object {
+        const val KEY_PREFIX = "album_sort_by_server_"
+    }
+}
+
 class AppPreferencesStore(context: Context) {
     private val preferences = context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
     private val secrets = context.getSharedPreferences(SECRETS_NAME, Context.MODE_PRIVATE)
+    private val serverAlbumSortPreferences = ServerAlbumSortPreferences(
+        readValue = { key -> preferences.getString(key, null) },
+        writeValue = { key, value -> preferences.edit().putString(key, value).apply() },
+    )
 
     fun load(): AppPreferences = AppPreferences(
         gallerySize = preferences.enumValue(KEY_GALLERY_SIZE, GallerySize.STANDARD),
@@ -116,6 +147,10 @@ class AppPreferencesStore(context: Context) {
         manufacturerKey = KEY_LAST_RENDERER_MANUFACTURER,
         modelKey = KEY_LAST_RENDERER_MODEL,
     )
+
+    fun albumSort(serverId: String?): AlbumSort = serverAlbumSortPreferences.load(serverId)
+
+    fun saveAlbumSort(serverId: String?, sort: AlbumSort) = serverAlbumSortPreferences.save(serverId, sort)
 
     fun save(value: AppPreferences) {
         preferences.edit()
