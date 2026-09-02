@@ -1,6 +1,26 @@
 # L's Music
 
+[![Android CI](https://github.com/bibibivlin/LsMusic/actions/workflows/android-ci.yml/badge.svg)](https://github.com/bibibivlin/LsMusic/actions/workflows/android-ci.yml)
+[![GitHub Release](https://img.shields.io/github/v/release/bibibivlin/LsMusic)](https://github.com/bibibivlin/LsMusic/releases/latest)
+![Android 12+](https://img.shields.io/badge/Android-12%2B-3DDC84?logo=android&logoColor=white)
+
 一个专注于音乐的 Android DLNA 控制器。手机不传输音频，而是负责浏览局域网音乐库、管理播放列表，并让 DLNA 播放设备直接从媒体服务器播放音乐。应用需要 Android 12 或更高版本。
+
+## 下载与安装
+
+正式版本发布在 [GitHub Releases](https://github.com/bibibivlin/LsMusic/releases)。下载名称形如 `LsMusic-v1.0.0.apk` 的安装包，并在 Android 系统提示时允许当前应用安装未知来源应用。Release 同时提供 `SHA256SUMS.txt`，可用于核对下载文件是否完整。
+
+```bash
+sha256sum -c SHA256SUMS.txt
+```
+
+每个正式 APK 都由 GitHub Actions 从对应标签构建，并附带可验证的构建来源证明：
+
+```bash
+gh attestation verify LsMusic-v1.0.0.apk -R bibibivlin/LsMusic
+```
+
+后续版本必须使用与已安装版本兼容的签名证书才能直接升级。请只从本仓库的 Releases 页面下载安装包。
 
 ## 功能
 
@@ -88,7 +108,7 @@ ListenBrainz 请求会跟随 Android 当前的默认网络，包括系统 VPN；
 
 生成的调试安装包位于 `app/build/outputs/apk/debug/app-debug.apk`。
 
-本地生成的 release APK 默认未签名。DLNA 设备发现和播放建议在真机及非隔离的局域网中验证。
+未提供发布签名环境变量时，本地生成的 release APK 默认未签名；正式标签由 GitHub Actions 使用受保护的发布凭据签名。DLNA 设备发现和播放建议在真机及非隔离的局域网中验证。
 
 ## 技术栈
 
@@ -104,3 +124,12 @@ Kotlin、Jetpack Compose、Material 3 Expressive、Media3、jUPnP / DLNA、Coil�
 - `app/src/main/java/com/linxyi/lsmusic/playback/`：本机与远程系统媒体会话
 - `app/src/main/java/com/linxyi/lsmusic/listenbrainz/`：播放跟踪、MusicBrainz 元数据与 ListenBrainz 上报
 - `app/src/main/java/com/linxyi/lsmusic/lyrics/`：在线歌词来源、匹配、解析与缓存
+
+## 项目信息
+
+- [隐私说明](PRIVACY.md)
+- [参与贡献](CONTRIBUTING.md)
+- [行为准则](CODE_OF_CONDUCT.md)
+- [安全问题报告](SECURITY.md)
+- [版本记录](CHANGELOG.md)
+- [第三方声明](THIRD_PARTY_NOTICES.md)
