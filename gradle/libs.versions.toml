@@ -16,7 +16,7 @@ jupnp = "3.0.4"
 jetty = "9.4.58.v20250814"
 slf4j = "2.0.17"
 media3 = "1.10.1"
-coil = "3.5.0"
+coil = "3.6.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
