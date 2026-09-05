@@ -2,8 +2,7 @@ package com.linxyi.lsmusic.listenbrainz
 
 import android.util.Log
 import com.linxyi.lsmusic.dlna.MediaEntry
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.CancellationException
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.net.HttpURLConnection
@@ -45,12 +44,15 @@ class EmbeddedAudioMetadataReader {
         val resourceUri = track.resourceUri?.takeIf { it.startsWith("http://") || it.startsWith("https://") }
             ?: return track
         synchronized(cache) { cache[resourceUri] }?.let { return it }
-        return withContext(Dispatchers.IO) {
+        return cancellableNetworkIo { cancellation ->
             runCatching {
-                EmbeddedAudioMetadataParser.parse(HttpRangeAudioSource(resourceUri)).applyTo(track)
+                EmbeddedAudioMetadataParser.parse(HttpRangeAudioSource(resourceUri, cancellation = cancellation)).applyTo(track).also {
+                    cancellation.checkActive()
+                }
             }.onSuccess { enriched ->
                 synchronized(cache) { cache[resourceUri] = enriched }
             }.onFailure { error ->
+                if (error is CancellationException) throw error
                 Log.w(TAG, "Unable to read embedded metadata for ${track.id}", error)
             }.getOrDefault(track)
         }
@@ -73,6 +75,7 @@ internal fun interface RandomAccessAudioSource {
 internal class HttpRangeAudioSource(
     private val uri: String,
     declaredLength: Long? = null,
+    private val cancellation: NetworkIoCancellation? = null,
 ) : RandomAccessAudioSource {
     private var cachedPosition = -1L
     private var cachedBytes = ByteArray(0)
@@ -83,6 +86,7 @@ internal class HttpRangeAudioSource(
     }
 
     override fun read(position: Long, length: Int): ByteArray {
+        cancellation?.checkActive()
         require(position >= 0L && length in 1..MAX_READ_SIZE)
         val effectiveLength = knownLength?.let { fileLength ->
             (fileLength - position).coerceIn(0L, length.toLong()).toInt()
@@ -107,6 +111,7 @@ internal class HttpRangeAudioSource(
             setRequestProperty("Range", "bytes=$position-$end")
         }
         try {
+            cancellation?.attach(connection)
             val status = connection.responseCode
             if (status !in 200..299) throw IOException("Audio source HTTP $status")
             val partial = status == HttpURLConnection.HTTP_PARTIAL
@@ -120,6 +125,7 @@ internal class HttpRangeAudioSource(
                 val buffer = ByteArray(minOf(8_192, length))
                 var remaining = length
                 while (remaining > 0) {
+                    cancellation?.checkActive()
                     val read = try {
                         input.read(buffer, 0, minOf(buffer.size, remaining))
                     } catch (error: IOException) {
@@ -135,6 +141,7 @@ internal class HttpRangeAudioSource(
                 output.toByteArray()
             }
         } finally {
+            cancellation?.detach(connection)
             connection.disconnect()
         }
     }

@@ -103,18 +103,22 @@ internal suspend fun processPendingListens(
 internal fun shouldContinuePendingListenBatchAfter(error: Throwable): Boolean =
     error is ListenBrainzHttpException && error.statusCode in RECORD_SPECIFIC_HTTP_STATUS_CODES
 
-class PendingListenRepository private constructor(context: Context) {
-    private val diskStore = PendingListenDiskStore(context.applicationContext)
+class PendingListenRepository internal constructor(
+    initialRecords: List<PendingListen>,
+    private val saveRecords: (List<PendingListen>) -> Unit,
+) {
+    private constructor(store: PendingListenDiskStore) : this(store.load(), store::save)
+    private constructor(context: Context) : this(PendingListenDiskStore(context.applicationContext))
     private val mutationLock = Any()
     private val uploadMutex = Mutex()
-    private val _records = MutableStateFlow(diskStore.load())
+    private val _records = MutableStateFlow(initialRecords)
     private val _isUploading = MutableStateFlow(false)
 
     val records: StateFlow<List<PendingListen>> = _records.asStateFlow()
     val isUploading: StateFlow<Boolean> = _isUploading.asStateFlow()
 
     suspend fun enqueue(record: PendingListen) = withContext(Dispatchers.IO) {
-        mutate { current -> current + record }
+        mutate { current -> if (current.any { it.id == record.id }) current else current + record }
     }
 
     suspend fun remove(id: String) = withContext(Dispatchers.IO) {
@@ -199,7 +203,7 @@ class PendingListenRepository private constructor(context: Context) {
         synchronized(mutationLock) {
             val updated = transform(_records.value)
             if (updated == _records.value) return
-            diskStore.save(updated)
+            saveRecords(updated)
             _records.value = updated
         }
     }

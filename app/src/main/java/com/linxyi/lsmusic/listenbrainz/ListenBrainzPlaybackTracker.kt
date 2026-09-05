@@ -44,6 +44,15 @@ class ListenBrainzPlaybackTracker {
     private var session: Session? = null
     private var naturallyCompletedKey: String? = null
 
+    /** Finalizes only the existing session; it cannot fabricate playback during initialization. */
+    fun finish(elapsedRealtimeMs: Long, reportingEnabled: Boolean): ListenBrainzPlaybackReport.Finished? {
+        val active = session ?: return null
+        active.accumulateUntil(elapsedRealtimeMs)
+        session = null
+        naturallyCompletedKey = active.key
+        return active.finishedReport().takeIf { reportingEnabled }
+    }
+
     fun observe(
         observation: ListenBrainzPlaybackObservation,
         elapsedRealtimeMs: Long,

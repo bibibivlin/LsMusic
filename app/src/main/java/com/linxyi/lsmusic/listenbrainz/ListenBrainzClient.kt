@@ -1,8 +1,6 @@
 package com.linxyi.lsmusic.listenbrainz
 
 import com.linxyi.lsmusic.dlna.MediaEntry
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
@@ -27,6 +25,8 @@ class ListenBrainzHttpException(
 class ListenBrainzResponseException(message: String) : IOException(message)
 
 private const val CLIENT_NAME = "L's Music"
+
+internal fun buildClearNowPlayingPayload(): JSONObject = JSONObject().put("client", CLIENT_NAME)
 
 internal data class ListenBrainzTrackPayloadFields(
     val artistName: String,
@@ -60,10 +60,13 @@ internal fun buildListenBrainzTrackPayloadFields(
     )
 }
 
-class ListenBrainzClient {
-    suspend fun validateToken(token: String): ListenBrainzTokenValidationResult = withContext(Dispatchers.IO) {
+class ListenBrainzClient(
+    private val connectionFactory: (URL) -> HttpURLConnection = { it.openConnection() as HttpURLConnection },
+) {
+    suspend fun validateToken(token: String): ListenBrainzTokenValidationResult = cancellableNetworkIo { cancellation ->
         val connection = openConnection(VALIDATE_TOKEN_URL, "GET", token)
         try {
+            cancellation.attach(connection)
             val status = connection.responseCode
             if (status !in 200..299) throw connection.httpException(status)
             val response = connection.inputStream.bufferedReader().use { it.readText() }
@@ -76,12 +79,32 @@ class ListenBrainzClient {
                 userName = json.optString("user_name").takeIf { it.isNotBlank() },
             )
         } finally {
+            cancellation.detach(connection)
             connection.disconnect()
         }
     }
 
     suspend fun submitNowPlaying(token: String, track: MediaEntry, durationMs: Long) {
         submit(token, "playing_now", trackPayload(track, durationMs, listenedMs = null))
+    }
+
+    suspend fun clearNowPlaying(token: String) = cancellableNetworkIo { cancellation ->
+        val connection = openConnection("https://api.listenbrainz.org/1/playing-now/delete", "POST", token).apply {
+            doOutput = true
+            setRequestProperty("Content-Type", "application/json; charset=utf-8")
+        }
+        try {
+            cancellation.attach(connection)
+            connection.outputStream.bufferedWriter(Charsets.UTF_8).use {
+                it.write(buildClearNowPlayingPayload().toString())
+            }
+            val status = connection.responseCode
+            // 404 means another client owns the status. Do not clear that client's playback.
+            if (status !in 200..299 && status != 404) throw connection.httpException(status)
+        } finally {
+            cancellation.detach(connection)
+            connection.disconnect()
+        }
     }
 
     suspend fun submitListen(
@@ -96,7 +119,7 @@ class ListenBrainzClient {
         submit(token, "single", listen)
     }
 
-    private suspend fun submit(token: String, listenType: String, listen: JSONObject) = withContext(Dispatchers.IO) {
+    private suspend fun submit(token: String, listenType: String, listen: JSONObject) = cancellableNetworkIo { cancellation ->
         val body = JSONObject()
             .put("listen_type", listenType)
             .put("payload", JSONArray().put(listen))
@@ -106,17 +129,19 @@ class ListenBrainzClient {
             setRequestProperty("Content-Type", "application/json; charset=utf-8")
         }
         try {
+            cancellation.attach(connection)
             connection.outputStream.bufferedWriter(Charsets.UTF_8).use { it.write(body) }
             val status = connection.responseCode
             if (status !in 200..299) throw connection.httpException(status)
             connection.inputStream?.close()
         } finally {
+            cancellation.detach(connection)
             connection.disconnect()
         }
     }
 
     private fun openConnection(url: String, method: String, token: String) =
-        (URL(url).openConnection() as HttpURLConnection).apply {
+        connectionFactory(URL(url)).apply {
             requestMethod = method
             connectTimeout = TIMEOUT_MS
             readTimeout = TIMEOUT_MS

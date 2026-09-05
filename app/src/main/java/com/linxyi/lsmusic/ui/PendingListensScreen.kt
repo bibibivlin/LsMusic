@@ -67,7 +67,7 @@ internal fun PendingListensScreen(
         item(key = "header") {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onBack) {
-                    Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回设置")
+                    Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回网络设置")
                 }
                 Text(
                     "待上传记录",
@@ -82,7 +82,7 @@ internal fun PendingListensScreen(
                     "没有待上传的 ListenBrainz 播放记录。"
                 } else {
                     "${records.size} 条记录保存在本机。自动重试和手动重试都会使用曲目实际开始播放的时间。" +
-                        if (canUpload) "" else " 请返回设置并启用 ListenBrainz、保存有效令牌。"
+                        if (canUpload) "" else " 请返回网络设置并启用 ListenBrainz、保存有效令牌。"
                 },
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

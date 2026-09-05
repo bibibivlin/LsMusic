@@ -28,6 +28,7 @@ class RemotePlaybackService : Service() {
     private var artworkUri: String? = null
     private var artwork: Bitmap? = null
     private var sessionData: SessionData? = null
+    private var destroyed = false
 
     override fun onCreate() {
         super.onCreate()
@@ -42,15 +43,23 @@ class RemotePlaybackService : Service() {
                 override fun onSkipToPrevious() = dispatchCommand(COMMAND_PREVIOUS)
                 override fun onSeekTo(pos: Long) = dispatchCommand(COMMAND_SEEK, pos)
             })
-            isActive = true
+            isActive = false
         }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_UPDATE -> updateSession(intent)
-            ACTION_COMMAND -> dispatchCommand(intent.getStringExtra(EXTRA_COMMAND), intent.getLongExtra(EXTRA_POSITION_MS, 0L))
+            ACTION_COMMAND -> if (sessionData != null) {
+                dispatchCommand(intent.getStringExtra(EXTRA_COMMAND), intent.getLongExtra(EXTRA_POSITION_MS, 0L))
+            } else {
+                stopSelf()
+            }
             ACTION_STOP_SERVICE -> {
+                destroyed = true
+                sessionData = null
+                artworkUri = null
+                mainHandler.removeCallbacksAndMessages(null)
                 mediaSession.isActive = false
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
@@ -62,12 +71,19 @@ class RemotePlaybackService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        destroyed = true
+        sessionData = null
+        artworkUri = null
+        mainHandler.removeCallbacksAndMessages(null)
         artworkExecutor.shutdownNow()
+        mediaSession.isActive = false
         mediaSession.release()
+        stopForeground(STOP_FOREGROUND_REMOVE)
         super.onDestroy()
     }
 
     private fun updateSession(intent: Intent) {
+        if (destroyed) return
         val data = SessionData(
             mediaId = intent.getStringExtra(EXTRA_MEDIA_ID).orEmpty(),
             mediaUri = intent.getStringExtra(EXTRA_MEDIA_URI).orEmpty(),
@@ -91,6 +107,7 @@ class RemotePlaybackService : Service() {
     }
 
     private fun publishSession(data: SessionData) {
+        if (destroyed) return
         mediaSession.setMetadata(
             MediaMetadata.Builder()
                 .putString(MediaMetadata.METADATA_KEY_MEDIA_ID, data.mediaId)
@@ -181,7 +198,7 @@ class RemotePlaybackService : Service() {
                 }
             }.getOrNull() ?: return@execute
             mainHandler.post {
-                if (artworkUri == uri) {
+                if (!destroyed && artworkUri == uri) {
                     artwork = bitmap
                     sessionData?.let(::publishSession)
                 }

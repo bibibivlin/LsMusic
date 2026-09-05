@@ -50,6 +50,9 @@ import com.linxyi.lsmusic.lyrics.NetEaseLyricsProvider
 import com.linxyi.lsmusic.lyrics.QqLyricsProvider
 import com.linxyi.lsmusic.lyrics.normalizedProviderOrder
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
@@ -62,8 +65,6 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
-
-enum class AppDestination { LIBRARY, QUEUE, NOW_PLAYING, SETTINGS, PENDING_LISTENS }
 
 enum class ListenBrainzTokenValidationStatus { IDLE, CHECKING, VALID, INVALID, ERROR }
 
@@ -130,6 +131,7 @@ private sealed interface ListenBrainzSubmission {
         override val token: String,
         val track: MediaEntry,
         val durationMs: Long,
+        val playbackGeneration: Long,
     ) : ListenBrainzSubmission
 }
 
@@ -167,6 +169,9 @@ data class LsMusicUiState(
     val browseLoadStatus: BrowseLoadStatus = BrowseLoadStatus.WAITING_FOR_DEVICE,
     val albumArtwork: AlbumArtworkUiState? = null,
     val error: String? = null,
+    val exitStatus: ExitStatus = ExitStatus.IDLE,
+    val exitError: String? = null,
+    val exitWarning: String? = null,
 ) {
     val currentTrack: MediaEntry?
         get() = queue.getOrNull(currentQueueIndex)
@@ -227,6 +232,33 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     private var pendingListenUploadJob: Job? = null
     private var lyricsJob: Job? = null
     private var albumArtworkJob: Job? = null
+    private var discoveryJob: Job? = null
+    private var playbackProgressJob: Job? = null
+    private var remoteSessionJob: Job? = null
+    private var nowPlayingJob: Job? = null
+    private var nowPlayingRequestJob: Job? = null
+    private var listenTrackingJob: Job? = null
+    private var localControllerReleased = false
+    private val unpersistedListens = linkedMapOf<String, PendingListen>()
+    private var lastFinishedListen: PendingListen? = null
+    private val exitRecordIds = linkedSetOf<String>()
+    private var exitRendererId: String? = null
+    private var exitPreferences = AppPreferences()
+    private val exiting: Boolean get() = _uiState.value.exitStatus != ExitStatus.IDLE
+    private val exitCoordinator = AppExitCoordinator(
+        scope = viewModelScope,
+        begin = ::beginExit,
+        stopPlayback = ::stopPlaybackForExit,
+        persist = ::persistExitRecords,
+        finishReporting = ::finishExitReporting,
+        onProgress = { progress ->
+            _uiState.update { it.copy(
+                exitStatus = progress.status,
+                exitError = progress.error,
+                exitWarning = progress.warning,
+            ) }
+        },
+    )
     private var albumArtworkGeneration = 0L
     private var albumArtworkRequestIdentity: String? = null
 
@@ -246,6 +278,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         override fun onPlaybackStateChanged(playbackState: Int) = updateLocalPlaybackState()
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+            if (exiting) return
             if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT) {
                 val currentTrackId = _uiState.value.currentTrack?.id
                 if (
@@ -279,7 +312,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         }
 
         override fun onPlayerError(error: PlaybackException) {
-            if (_uiState.value.selectedRendererId == LOCAL_RENDERER_ID) {
+            if (!exiting && _uiState.value.selectedRendererId == LOCAL_RENDERER_ID) {
                 _uiState.update { it.copy(playbackState = RemotePlaybackState.STOPPED) }
                 showError("本机播放失败：${error.localizedMessage}")
             }
@@ -297,17 +330,18 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
             {
                 runCatching { controllerFuture.get() }
                     .onSuccess { controller ->
+                        if (exiting || localControllerReleased) return@onSuccess
                         localController = controller
                         controller.addListener(localPlayerListener)
                         pendingLocalPlayback?.let { (queue, index) -> playLocally(controller, queue, index) }
                         updateLocalPlaybackState()
                     }
-                    .onFailure { showError("无法连接本机播放器：${it.localizedMessage}") }
+                    .onFailure { if (!exiting) showError("无法连接本机播放器：${it.localizedMessage}") }
             },
             ContextCompat.getMainExecutor(application),
         )
 
-        viewModelScope.launch {
+        discoveryJob = viewModelScope.launch {
             dlna.snapshot.collect { snapshot ->
                 val old = _uiState.value
                 val renderers = listOf(LOCAL_RENDERER) + snapshot.renderers
@@ -392,7 +426,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
             }
         }
 
-        viewModelScope.launch {
+        playbackProgressJob = viewModelScope.launch {
             while (isActive) {
                 refreshPlaybackProgress()
                 delay(if (_uiState.value.selectedRendererId == LOCAL_RENDERER_ID) 500L else 1_000L)
@@ -431,7 +465,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
                 }
         }
 
-        viewModelScope.launch {
+        remoteSessionJob = viewModelScope.launch {
             uiState.map { state ->
                 val track = state.currentTrack
                 RemoteMediaSessionSnapshot(
@@ -455,28 +489,28 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
             }.distinctUntilChanged().collect(::publishRemoteMediaSession)
         }
 
-        viewModelScope.launch {
+        nowPlayingJob = viewModelScope.launch {
             for (submission in listenBrainzSubmissions) {
-                runCatching {
-                    when (submission) {
-                        is ListenBrainzSubmission.NowPlaying -> {
-                            val track = embeddedAudioMetadataReader.enrich(submission.track)
-                            listenBrainzClient.submitNowPlaying(
-                                submission.token,
-                                track,
-                                submission.durationMs,
-                            )
+                nowPlayingRequestJob = launch {
+                    try {
+                        when (submission) {
+                            is ListenBrainzSubmission.NowPlaying -> {
+                                if (!canSubmitNowPlaying(submission)) return@launch
+                                val track = embeddedAudioMetadataReader.enrich(submission.track)
+                                if (!canSubmitNowPlaying(submission)) return@launch
+                                listenBrainzClient.submitNowPlaying(submission.token, track, submission.durationMs)
+                            }
                         }
+                    } catch (error: CancellationException) {
+                        throw error
+                    } catch (_: Exception) {
+                        // Transient now-playing failures are silent; eligible listens are durable.
                     }
-                }.onFailure {
-                    // playing_now is transient. A network failure here should not interrupt playback;
-                    // eligible permanent listens are persisted and retried through the pending queue.
-                    Log.w(TAG, "ListenBrainz now-playing submission failed", it)
-                }
+                }.also { it.join() }
             }
         }
 
-        viewModelScope.launch {
+        listenTrackingJob = viewModelScope.launch {
             uiState.map { state ->
                 ListenBrainzStateSnapshot(
                     track = state.currentTrack,
@@ -490,9 +524,12 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun refreshDevices() = dlna.refresh()
+    fun refreshDevices() {
+        if (!exiting) dlna.refresh()
+    }
 
     fun selectServer(id: String) {
+        if (exiting) return
         val device = _uiState.value.servers.firstOrNull { it.id == id } ?: return
         userSelectedServer = true
         preferenceStore.saveLastServer(device)
@@ -514,6 +551,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun selectRenderer(id: String) {
+        if (exiting) return
         val state = _uiState.value
         if (state.selectedRendererId == id) return
         val device = state.renderers.firstOrNull { it.id == id } ?: return
@@ -658,6 +696,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun playNow(track: MediaEntry) {
+        if (exiting) return
         val rendererId = _uiState.value.selectedRendererId
             ?: return showError("请先选择播放设备")
         val oldQueue = _uiState.value.queue
@@ -679,6 +718,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun addToQueue(track: MediaEntry) {
+        if (exiting) return
         if (track.isContainer || track.resourceUri == null) return
         if (_uiState.value.queue.any { it.id == track.id }) return
         _uiState.update { state -> state.copy(queue = state.queue + track) }
@@ -687,6 +727,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
 
     /** Replaces the controller queue and immediately starts the first playable track. */
     fun playAll(tracks: List<MediaEntry>) {
+        if (exiting) return
         val playable = tracks.filter { !it.isContainer && it.resourceUri != null }
         if (playable.isEmpty()) return showError("这里没有可播放的歌曲")
         val rendererId = _uiState.value.selectedRendererId ?: return showError("请先选择播放设备")
@@ -713,6 +754,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
 
     /** Appends every playable track, preserving the existing queue and playback. */
     fun addAllToQueue(tracks: List<MediaEntry>) {
+        if (exiting) return
         val playable = tracks.filter { !it.isContainer && it.resourceUri != null }
         if (playable.isEmpty()) return showError("这里没有可加入的歌曲")
         _uiState.update { state -> state.copy(queue = state.queue + playable) }
@@ -721,6 +763,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun togglePlayback() {
+        if (exiting) return
         val state = _uiState.value
         val rendererId = state.selectedRendererId ?: return showError("请先选择一台 DLNA 播放设备")
         val track = state.currentTrack ?: return showError("播放列表还是空的")
@@ -750,6 +793,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     fun previous() = playAt(_uiState.value.currentQueueIndex - 1)
 
     private fun advanceToNext(automatic: Boolean) {
+        if (exiting) return
         val state = _uiState.value
         val selection = selectNextTrack(
             queue = state.queue,
@@ -798,6 +842,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun playAt(index: Int, playbackOrder: PlaybackOrder? = null) {
+        if (exiting) return
         val state = _uiState.value
         val track = state.queue.getOrNull(index) ?: return
         val rendererId = state.selectedRendererId ?: return showError("请先选择播放设备")
@@ -816,6 +861,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun removeFromQueue(index: Int) {
+        if (exiting) return
         val currentState = _uiState.value
         val controller = localController
         val playerIndex = if (currentState.selectedRendererId == LOCAL_RENDERER_ID && controller != null) {
@@ -849,6 +895,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun moveQueueItem(fromIndex: Int, toIndex: Int) {
+        if (exiting) return
         _uiState.update { state ->
             if (fromIndex !in state.queue.indices || toIndex !in state.queue.indices || fromIndex == toIndex) {
                 return@update state
@@ -868,6 +915,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun clearQueue() {
+        if (exiting) return
         stopRenderer(_uiState.value.selectedRendererId)
         _uiState.update {
             it.copy(
@@ -883,6 +931,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun seekTo(positionMs: Long) {
+        if (exiting) return
         val state = _uiState.value
         val target = positionMs.coerceIn(0L, state.durationMs.coerceAtLeast(0L))
         _uiState.update { it.copy(positionMs = target) }
@@ -893,9 +942,12 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun setDestination(destination: AppDestination) = _uiState.update { it.copy(destination = destination) }
+    fun setDestination(destination: AppDestination) {
+        if (!exiting) _uiState.update { it.copy(destination = destination) }
+    }
 
     fun loadLyrics(forceRefresh: Boolean = false) {
+        if (exiting) return
         val state = _uiState.value
         if (!state.preferences.lyricsEnabled) return
         val track = state.currentTrack ?: return
@@ -1052,6 +1104,8 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     fun setPresetPalette(palette: PresetPalette) = updatePreferences { it.copy(presetPalette = palette) }
 
     fun setListenBrainzEnabled(enabled: Boolean) {
+        if (exiting) return
+        if (!enabled) cancelNowPlayingRequest()
         updatePreferences { it.copy(listenBrainzEnabled = enabled) }
         if (enabled && pendingListenRepository.records.value.isNotEmpty()) {
             ListenBrainzUploadScheduler.schedule(getApplication())
@@ -1063,10 +1117,12 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun validateAndSaveListenBrainzToken(token: String) {
+        if (exiting) return
         listenBrainzTokenValidationJob?.cancel()
         val normalized = token.trim()
         if (normalized.isEmpty()) {
             updatePreferences { it.copy(listenBrainzToken = "") }
+            cancelNowPlayingRequest()
             pendingListenUploadJob?.cancel()
             ListenBrainzUploadScheduler.cancel(getApplication())
             _uiState.update {
@@ -1089,6 +1145,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
             runCatching { listenBrainzClient.validateToken(normalized) }
                 .onSuccess { result ->
                     if (result.valid) {
+                        cancelNowPlayingRequest()
                         pendingListenUploadJob?.cancel()
                         ListenBrainzUploadScheduler.cancel(getApplication())
                         updatePreferences { it.copy(listenBrainzToken = normalized) }
@@ -1150,6 +1207,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     fun retryPendingListens(ids: Set<String>? = null) = startPendingListenUpload(ids, showFeedback = true)
 
     private fun startPendingListenUpload(ids: Set<String>? = null, showFeedback: Boolean) {
+        if (exiting) return
         val preferences = _uiState.value.preferences
         if (!preferences.listenBrainzEnabled) {
             if (showFeedback) showError("请先启用 ListenBrainz 播放记录")
@@ -1221,6 +1279,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     fun consumeError() = _uiState.update { it.copy(error = null) }
 
     private fun updatePreferences(transform: (AppPreferences) -> AppPreferences) {
+        if (exiting) return
         val updated = transform(_uiState.value.preferences)
         preferenceStore.save(updated)
         _uiState.update { it.copy(preferences = updated) }
@@ -1327,6 +1386,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private suspend fun trackListenBrainzPlayback(snapshot: ListenBrainzStateSnapshot) {
+        if (exiting) return
         val preferences = snapshot.preferences
         val configured = preferences.listenBrainzEnabled && preferences.listenBrainzToken.isNotBlank()
         listenBrainzPlaybackTracker.observe(
@@ -1347,6 +1407,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
                         token = preferences.listenBrainzToken,
                         track = report.track,
                         durationMs = report.durationMs,
+                        playbackGeneration = snapshot.playbackGeneration,
                     ),
                 )
                 is ListenBrainzPlaybackReport.Finished -> if (
@@ -1357,20 +1418,20 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
                         minimumPercent = preferences.listenBrainzMinimumPercent,
                     )
                 ) {
+                    val record = PendingListen.fromReport(report, System.currentTimeMillis() / 1_000L)
+                    lastFinishedListen = record
+                    unpersistedListens[record.id] = record
                     try {
-                        pendingListenRepository.enqueue(
-                            PendingListen.fromReport(
-                                report = report,
-                                queuedAtEpochSeconds = System.currentTimeMillis() / 1_000L,
-                            ),
-                        )
-                        ListenBrainzUploadScheduler.schedule(getApplication())
-                        startPendingListenUpload(showFeedback = false)
+                        pendingListenRepository.enqueue(record)
+                        unpersistedListens.remove(record.id)
+                        if (!exiting) {
+                            ListenBrainzUploadScheduler.schedule(getApplication())
+                            startPendingListenUpload(showFeedback = false)
+                        }
                     } catch (error: CancellationException) {
                         throw error
-                    } catch (error: Throwable) {
-                        Log.e(TAG, "Unable to persist pending ListenBrainz listen", error)
-                        showError("无法保存待上传的 ListenBrainz 记录：${error.localizedMessage}")
+                    } catch (_: Exception) {
+                        showError("无法保存待上传的 ListenBrainz 记录，请检查设备存储空间")
                     }
                 }
             }
@@ -1378,6 +1439,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun playOnRenderer(rendererId: String, track: MediaEntry) {
+        if (exiting) return
         if (rendererId == LOCAL_RENDERER_ID) {
             val state = _uiState.value
             val controller = localController
@@ -1420,6 +1482,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun handleRemoteMediaCommand(command: String?, positionMs: Long) {
+        if (exiting) return
         val state = _uiState.value
         val rendererId = state.selectedRendererId
             ?.takeUnless { it == LOCAL_RENDERER_ID }
@@ -1451,6 +1514,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun publishRemoteMediaSession(snapshot: RemoteMediaSessionSnapshot) {
+        if (exiting) return
         val app = getApplication<Application>()
         if (!snapshot.isActive) {
             if (remoteSessionServiceStarted) {
@@ -1484,6 +1548,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun playLocally(controller: MediaController, queue: List<MediaEntry>, index: Int) {
+        if (exiting) return
         pendingLocalPlayback = null
         localPlaybackReadyTrackId = null
         if (index !in queue.indices) return
@@ -1514,6 +1579,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun updateLocalPlaybackState() {
+        if (exiting) return
         val controller = localController ?: return
         if (_uiState.value.selectedRendererId != LOCAL_RENDERER_ID) return
         if (
@@ -1536,6 +1602,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun refreshPlaybackProgress() {
+        if (exiting) return
         val state = _uiState.value
         val rendererId = state.selectedRendererId ?: return
         if (rendererId == LOCAL_RENDERER_ID) {
@@ -1546,7 +1613,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
                 viewModelScope.launch {
                     val positionMs = parseTimeMs(position)
                     _uiState.update {
-                        if (it.selectedRendererId == rendererId && it.currentTrack?.id == requestedTrackId) {
+                        if (!exiting && it.selectedRendererId == rendererId && it.currentTrack?.id == requestedTrackId) {
                             remoteLastObservedPositionMs?.let { previousPositionMs ->
                                 if (positionMs > previousPositionMs) remotePlaybackObservedProgress = true
                             }
@@ -1565,7 +1632,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
                 viewModelScope.launch {
                     val current = _uiState.value
                     if (
-                        current.selectedRendererId != rendererId ||
+                        exiting || current.selectedRendererId != rendererId ||
                         current.currentTrack?.id != requestedTrackId
                     ) return@launch
                     when (transportState?.uppercase()) {
@@ -1586,6 +1653,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun refreshLocalProgress(controller: MediaController) {
+        if (exiting) return
         if (_uiState.value.selectedRendererId != LOCAL_RENDERER_ID) return
         _uiState.update {
             it.copy(
@@ -1597,15 +1665,156 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun exitApp() = exitCoordinator.exit()
+
+    private fun beginExit() {
+        val state = _uiState.value
+        exitPreferences = state.preferences
+        exitRendererId = remoteRendererToStopOnExit(state)
+        val configured = exitPreferences.listenBrainzEnabled && exitPreferences.listenBrainzToken.isNotBlank()
+        listenTrackingJob?.cancel()
+        // Natural completion may already have persisted this listen just before exit cancelled
+        // its foreground upload. Reuse that record instead of losing the short upload attempt.
+        lastFinishedListen?.takeIf {
+            it.track.id == state.currentTrack?.id && it.track.resourceUri == state.currentTrack?.resourceUri
+        }?.let { exitRecordIds += it.id }
+        listenBrainzPlaybackTracker.finish(SystemClock.elapsedRealtime(), configured)?.let { report ->
+            if (shouldSubmitListen(
+                    listenedMs = report.listenedMs,
+                    durationMs = report.durationMs,
+                    minimumSeconds = exitPreferences.listenBrainzMinimumSeconds,
+                    minimumPercent = exitPreferences.listenBrainzMinimumPercent,
+                )
+            ) {
+                val record = PendingListen.fromReport(report, System.currentTimeMillis() / 1_000L)
+                unpersistedListens[record.id] = record
+            }
+        }
+        exitRecordIds.addAll(unpersistedListens.keys)
+        nowPlayingJob?.cancel()
+        cancelNowPlayingRequest()
+        listenBrainzSubmissions.cancel()
+        listenBrainzTokenValidationJob?.cancel()
+        pendingListenUploadJob?.cancel()
+        ListenBrainzUploadScheduler.cancel(getApplication())
+        discoveryJob?.cancel()
+        playbackProgressJob?.cancel()
+        remoteSessionJob?.cancel()
+        lyricsJob?.cancel()
+        albumArtworkJob?.cancel()
+        dlna.beginShutdown()
+        pendingLocalPlayback = null
+        localPlaybackReadyTrackId = null
+        localController?.removeListener(localPlayerListener)
+        localController?.stop()
+        localController?.clearMediaItems()
+        releaseLocalController()
+        val application = getApplication<Application>()
+        application.startService(
+            Intent(application, LocalPlaybackService::class.java).setAction(LocalPlaybackService.ACTION_SHUTDOWN),
+        )
+        application.stopService(Intent(application, RemotePlaybackService::class.java))
+        remoteSessionServiceStarted = false
+        _uiState.update {
+            it.copy(
+                queue = emptyList(),
+                currentQueueIndex = -1,
+                playbackState = RemotePlaybackState.STOPPED,
+                positionMs = 0L,
+                bufferedPositionMs = 0L,
+            )
+        }
+    }
+
+    private suspend fun stopPlaybackForExit(): Boolean {
+        try {
+            val rendererId = exitRendererId ?: return true
+            return suspendCancellableCoroutine { continuation ->
+                dlna.stop(rendererId,
+                    onComplete = { if (continuation.isActive) continuation.resume(true) },
+                    onError = { if (continuation.isActive) continuation.resume(false) },
+                )
+            }
+        } finally {
+            dlna.close()
+        }
+    }
+
+    private suspend fun persistExitRecords() {
+        unpersistedListens.values.toList().forEach { record ->
+            pendingListenRepository.enqueue(record)
+            unpersistedListens.remove(record.id)
+        }
+    }
+
+    private suspend fun finishExitReporting(persisted: Boolean) {
+        val preferences = exitPreferences
+        if (!preferences.listenBrainzEnabled || preferences.listenBrainzToken.isBlank()) return
+        try {
+            supervisorScope {
+                launch {
+                    try {
+                        listenBrainzClient.clearNowPlaying(preferences.listenBrainzToken)
+                    } catch (error: CancellationException) {
+                        throw error
+                    } catch (_: Exception) {
+                        // Ephemeral status will expire if the server cannot be reached.
+                    }
+                }
+                if (persisted && exitRecordIds.isNotEmpty()) {
+                    launch {
+                        try {
+                            pendingListenRepository.upload(
+                                token = preferences.listenBrainzToken,
+                                ids = exitRecordIds,
+                                client = listenBrainzClient,
+                                metadataReader = embeddedAudioMetadataReader,
+                            )
+                        } catch (error: CancellationException) {
+                            throw error
+                        } catch (_: Exception) {
+                            // The saved records are retried by the existing background scheduler.
+                        }
+                    }
+                }
+            }
+        } finally {
+            if (pendingListenRepository.records.value.isNotEmpty()) {
+                ListenBrainzUploadScheduler.schedule(getApplication())
+            }
+        }
+    }
+
+    private fun canSubmitNowPlaying(submission: ListenBrainzSubmission.NowPlaying): Boolean {
+        val current = _uiState.value
+        return !exiting && current.preferences.listenBrainzEnabled &&
+            current.preferences.listenBrainzToken == submission.token &&
+            current.playbackGeneration == submission.playbackGeneration &&
+            current.currentTrack?.id == submission.track.id &&
+            current.playbackState == RemotePlaybackState.PLAYING
+    }
+
+    private fun cancelNowPlayingRequest() {
+        nowPlayingRequestJob?.cancel()
+        while (listenBrainzSubmissions.tryReceive().isSuccess) { /* Discard obsolete reports. */ }
+    }
+
+    private fun releaseLocalController() {
+        if (localControllerReleased) return
+        localControllerReleased = true
+        localController?.removeListener(localPlayerListener)
+        localController = null
+        MediaController.releaseFuture(controllerFuture)
+    }
+
     override fun onCleared() {
         lyricsJob?.cancel()
         albumArtworkJob?.cancel()
-        listenBrainzSubmissions.close()
+        nowPlayingJob?.cancel()
+        listenBrainzSubmissions.cancel()
         getApplication<Application>().unregisterReceiver(remoteMediaCommandReceiver)
-        getApplication<Application>().startService(
-            Intent(getApplication(), RemotePlaybackService::class.java).setAction(RemotePlaybackService.ACTION_STOP_SERVICE),
-        )
-        MediaController.releaseFuture(controllerFuture)
+        getApplication<Application>().stopService(Intent(getApplication(), RemotePlaybackService::class.java))
+        releaseLocalController()
         dlna.close()
     }
 

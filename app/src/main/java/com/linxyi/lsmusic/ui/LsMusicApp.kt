@@ -139,6 +139,7 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -245,11 +246,9 @@ private val LibraryFastScrollerTouchWidth = 48.dp
 private val LibraryFastScrollerMinimumThumbHeight = 48.dp
 private val ReorderEdgeScrollSize = 72.dp
 private val ReorderMaximumScrollPerFrame = 20.dp
-private val ReorderVisualPadding = 8.dp
+internal val ReorderVisualPadding = 8.dp
 private const val ReorderPlacementAnimationDurationMillis = 110
 private const val QueuePostDragClickSuppressionMs = 450L
-private val LyricsProviderItemHeight = 52.dp
-private val LyricsProviderItemSpacing = 8.dp
 private const val ALBUM_DETAIL_HEADER_COUNT = 1
 private const val ALBUM_ART_PREFETCH_SCREENS = 2
 private const val MAX_ACTIVE_ART_PREFETCHES = 4
@@ -261,7 +260,7 @@ private val MiniPlayerBottomSpacing = 12.dp
 private val MiniPlayerContentInset = MiniPlayerHeight + MiniPlayerBottomSpacing
 private val MiniPlayerMaxWidth = 720.dp
 
-private fun LazyItemScope.reorderPlacementModifier(dragged: Boolean): Modifier =
+internal fun LazyItemScope.reorderPlacementModifier(dragged: Boolean): Modifier =
     if (dragged) {
         Modifier
     } else {
@@ -421,16 +420,18 @@ fun LsMusicApp(viewModel: LsMusicViewModel) {
         }
 
         BackHandler(
-            enabled = state.destination == AppDestination.PENDING_LISTENS ||
+            enabled = state.exitStatus != ExitStatus.IDLE || state.destination.settingsParent != null ||
                 (state.destination == AppDestination.LIBRARY && state.path.size > 1),
         ) {
-            if (state.destination == AppDestination.PENDING_LISTENS) {
-                viewModel.setDestination(AppDestination.SETTINGS)
+            if (state.exitStatus != ExitStatus.IDLE) return@BackHandler
+            if (state.destination.settingsParent != null) {
+                viewModel.setDestination(requireNotNull(state.destination.settingsParent))
             } else {
                 viewModel.navigateTo(state.path.lastIndex - 1)
             }
         }
 
+        ExitProgressDialog(state.exitStatus, state.exitError, viewModel::exitApp)
         LsMusicContent(
             state = state,
             snackbar = snackbar,
@@ -478,12 +479,13 @@ fun LsMusicApp(viewModel: LsMusicViewModel) {
             onRetryPendingListens = viewModel::retryPendingListens,
             onRemovePendingListen = viewModel::removePendingListen,
             onClearPendingListens = viewModel::clearPendingListens,
+            onExit = viewModel::exitApp,
         )
     }
 }
 
 @Composable
-private fun LsMusicContent(
+internal fun LsMusicContent(
     state: LsMusicUiState,
     snackbar: SnackbarHostState,
     onDestination: (AppDestination) -> Unit,
@@ -530,7 +532,9 @@ private fun LsMusicContent(
     onRetryPendingListens: (Set<String>?) -> Unit,
     onRemovePendingListen: (String) -> Unit,
     onClearPendingListens: () -> Unit,
+    onExit: () -> Unit = {},
 ) {
+    val destinationStateHolder = rememberSaveableStateHolder()
     val libraryState = remember(
         state.entries,
         state.albumSort,
@@ -589,74 +593,88 @@ private fun LsMusicContent(
                 // Avoid AnimatedContent's intermediate size constraints, which make it visibly resize
                 // once while navigating from another destination on large and foldable screens.
                 Box(Modifier.fillMaxSize().padding(padding)) {
-                    when (state.destination) {
-                        AppDestination.LIBRARY -> LibraryScreen(
-                            libraryState,
-                            onOpen,
-                            onNavigateTo,
-                            onPlay,
-                            onQueue,
-                            onPlayAll,
-                            onShufflePlay,
-                            onQueueAll,
-                            onAlbumSort,
-                            onSaveBrowseViewState,
-                            onResolveAlbumArtwork,
-                            bottomContentPadding,
-                            onOpenSettings = { onDestination(AppDestination.SETTINGS) },
-                        )
-                        AppDestination.QUEUE -> QueueScreen(
-                            state,
-                            onPlay,
-                            onRemoveQueue,
-                            onMoveQueue,
-                            onClearQueue,
-                            bottomContentPadding,
-                        )
-                        AppDestination.NOW_PLAYING -> NowPlayingScreen(
-                            state = state,
-                            onTogglePlayback = onTogglePlayback,
-                            onPrevious = onPrevious,
-                            onNext = onNext,
-                            onCycleRepeat = onCycleRepeat,
-                            onToggleShuffle = onToggleShuffle,
-                            onSeek = onSeek,
-                            onLoadLyrics = onLoadLyrics,
-                            onRetryLyrics = onRetryLyrics,
-                        )
-                        AppDestination.SETTINGS -> SettingsScreen(
-                            state = state,
-                            preferences = state.preferences,
-                            onRefresh = onRefresh,
-                            onSelectServer = onSelectServer,
-                            onSelectRenderer = onSelectRenderer,
-                            onGallerySize = onGallerySize,
-                            onDefaultGridLayout = onDefaultGridLayout,
-                            onThemeMode = onThemeMode,
-                            onDynamicColor = onDynamicColor,
-                            onPresetPalette = onPresetPalette,
-                            onLyricsEnabled = onLyricsEnabled,
-                            onLyricsProviderOrder = onLyricsProviderOrder,
-                            onLyricsTranslationMode = onLyricsTranslationMode,
-                            onLyricsSourceVisible = onLyricsSourceVisible,
-                            onLyricsEffectsEnabled = onLyricsEffectsEnabled,
-                            onLyricsFontSizeSp = onLyricsFontSizeSp,
-                            onClearLyricsCache = onClearLyricsCache,
-                            onListenBrainzEnabled = onListenBrainzEnabled,
-                            onListenBrainzToken = onListenBrainzToken,
-                            onListenBrainzMinimumSeconds = onListenBrainzMinimumSeconds,
-                            onListenBrainzMinimumPercent = onListenBrainzMinimumPercent,
-                            onOpenPendingListens = { onDestination(AppDestination.PENDING_LISTENS) },
-                            bottomContentPadding = bottomContentPadding,
-                        )
-                        AppDestination.PENDING_LISTENS -> PendingListensScreen(
-                            state = state,
-                            onBack = { onDestination(AppDestination.SETTINGS) },
-                            onRetry = onRetryPendingListens,
-                            onRemove = onRemovePendingListen,
-                            onClear = onClearPendingListens,
-                            bottomContentPadding = bottomContentPadding,
-                        )
+                    destinationStateHolder.SaveableStateProvider(state.destination.navigationDestination.name) {
+                        when (state.destination) {
+                            AppDestination.LIBRARY -> LibraryScreen(
+                                libraryState,
+                                onOpen,
+                                onNavigateTo,
+                                onPlay,
+                                onQueue,
+                                onPlayAll,
+                                onShufflePlay,
+                                onQueueAll,
+                                onAlbumSort,
+                                onSaveBrowseViewState,
+                                onResolveAlbumArtwork,
+                                bottomContentPadding,
+                                onOpenSettings = { onDestination(AppDestination.SETTINGS) },
+                            )
+                            AppDestination.QUEUE -> QueueScreen(
+                                state,
+                                onPlay,
+                                onRemoveQueue,
+                                onMoveQueue,
+                                onClearQueue,
+                                bottomContentPadding,
+                            )
+                            AppDestination.NOW_PLAYING -> NowPlayingScreen(
+                                state = state,
+                                onTogglePlayback = onTogglePlayback,
+                                onPrevious = onPrevious,
+                                onNext = onNext,
+                                onCycleRepeat = onCycleRepeat,
+                                onToggleShuffle = onToggleShuffle,
+                                onSeek = onSeek,
+                                onLoadLyrics = onLoadLyrics,
+                                onRetryLyrics = onRetryLyrics,
+                            )
+                            AppDestination.SETTINGS,
+                            AppDestination.SETTINGS_APPEARANCE,
+                            AppDestination.SETTINGS_LYRICS,
+                            AppDestination.SETTINGS_NETWORK,
+                            AppDestination.SETTINGS_ABOUT,
+                            AppDestination.PENDING_LISTENS -> SettingsPageTransition(state.destination) { page ->
+                                if (page == AppDestination.PENDING_LISTENS) {
+                                    PendingListensScreen(
+                                        state = state,
+                                        onBack = { onDestination(AppDestination.SETTINGS_NETWORK) },
+                                        onRetry = onRetryPendingListens,
+                                        onRemove = onRemovePendingListen,
+                                        onClear = onClearPendingListens,
+                                        bottomContentPadding = bottomContentPadding,
+                                    )
+                                } else {
+                                    SettingsScreen(
+                                        state = state.copy(destination = page),
+                                        preferences = state.preferences,
+                                        onRefresh = onRefresh,
+                                        onSelectServer = onSelectServer,
+                                        onSelectRenderer = onSelectRenderer,
+                                        onGallerySize = onGallerySize,
+                                        onDefaultGridLayout = onDefaultGridLayout,
+                                        onThemeMode = onThemeMode,
+                                        onDynamicColor = onDynamicColor,
+                                        onPresetPalette = onPresetPalette,
+                                        onLyricsEnabled = onLyricsEnabled,
+                                        onLyricsProviderOrder = onLyricsProviderOrder,
+                                        onLyricsTranslationMode = onLyricsTranslationMode,
+                                        onLyricsSourceVisible = onLyricsSourceVisible,
+                                        onLyricsEffectsEnabled = onLyricsEffectsEnabled,
+                                        onLyricsFontSizeSp = onLyricsFontSizeSp,
+                                        onClearLyricsCache = onClearLyricsCache,
+                                        onListenBrainzEnabled = onListenBrainzEnabled,
+                                        onListenBrainzToken = onListenBrainzToken,
+                                        onListenBrainzMinimumSeconds = onListenBrainzMinimumSeconds,
+                                        onListenBrainzMinimumPercent = onListenBrainzMinimumPercent,
+                                        onOpenPendingListens = { onDestination(AppDestination.PENDING_LISTENS) },
+                                        onNavigate = onDestination,
+                                        onExit = onExit,
+                                        bottomContentPadding = bottomContentPadding,
+                                    )
+                                }
+                            }
+                        }
                     }
                     if (showMiniPlayer) {
                         MiniPlayer(
@@ -684,11 +702,7 @@ private fun LsMusicContent(
 
 @Composable
 private fun AppNavigationBar(selected: AppDestination, onDestination: (AppDestination) -> Unit) {
-    val selectedNavigationDestination = if (selected == AppDestination.PENDING_LISTENS) {
-        AppDestination.SETTINGS
-    } else {
-        selected
-    }
+    val selectedNavigationDestination = selected.navigationDestination
     Box(
         Modifier.fillMaxWidth()
             .background(MaterialTheme.colorScheme.surfaceContainer)
@@ -725,11 +739,7 @@ private fun SystemNavigationBarAppearance() {
 
 @Composable
 private fun AppNavigationRail(selected: AppDestination, onDestination: (AppDestination) -> Unit) {
-    val selectedNavigationDestination = if (selected == AppDestination.PENDING_LISTENS) {
-        AppDestination.SETTINGS
-    } else {
-        selected
-    }
+    val selectedNavigationDestination = selected.navigationDestination
     NavigationRail(Modifier.fillMaxHeight().width(132.dp)) {
         Spacer(Modifier.height(24.dp))
         AlbumMark(54.dp)
@@ -1661,7 +1671,7 @@ private fun TrackCollectionRow(
 }
 
 @Composable
-private fun DeviceStrip(
+internal fun DeviceStrip(
     state: LsMusicUiState,
     onSelectServer: (String) -> Unit,
     onSelectRenderer: (String) -> Unit,
@@ -1933,600 +1943,6 @@ private fun albumDetails(entry: MediaEntry): String = listOfNotNull(
     entry.year?.toString(),
     entry.childCount?.let { "$it 项" },
 ).joinToString(" · ").ifBlank { "专辑" }
-
-@Composable
-private fun SettingsScreen(
-    state: LsMusicUiState,
-    preferences: AppPreferences,
-    onRefresh: () -> Unit,
-    onSelectServer: (String) -> Unit,
-    onSelectRenderer: (String) -> Unit,
-    onGallerySize: (GallerySize) -> Unit,
-    onDefaultGridLayout: (Boolean) -> Unit,
-    onThemeMode: (ThemeMode) -> Unit,
-    onDynamicColor: (Boolean) -> Unit,
-    onPresetPalette: (PresetPalette) -> Unit,
-    onLyricsEnabled: (Boolean) -> Unit,
-    onLyricsProviderOrder: (List<LyricsProviderId>) -> Unit,
-    onLyricsTranslationMode: (LyricsTranslationMode) -> Unit,
-    onLyricsSourceVisible: (Boolean) -> Unit,
-    onLyricsEffectsEnabled: (Boolean) -> Unit,
-    onLyricsFontSizeSp: (Int) -> Unit,
-    onClearLyricsCache: () -> Unit,
-    onListenBrainzEnabled: (Boolean) -> Unit,
-    onListenBrainzToken: (String) -> Unit,
-    onListenBrainzMinimumSeconds: (Int) -> Unit,
-    onListenBrainzMinimumPercent: (Int) -> Unit,
-    onOpenPendingListens: () -> Unit,
-    bottomContentPadding: Dp,
-) {
-    var listenBrainzTokenDraft by rememberSaveable(preferences.listenBrainzToken) {
-        mutableStateOf(preferences.listenBrainzToken)
-    }
-    val normalizedTokenDraft = listenBrainzTokenDraft.trim()
-    val tokenValidation = state.listenBrainzTokenValidation
-    val validationAppliesToDraft = tokenValidation.checkedToken == normalizedTokenDraft &&
-        normalizedTokenDraft.isNotEmpty()
-    val tokenValidationStatus = if (validationAppliesToDraft) {
-        tokenValidation.status
-    } else {
-        ListenBrainzTokenValidationStatus.IDLE
-    }
-    val isCheckingToken = tokenValidationStatus == ListenBrainzTokenValidationStatus.CHECKING
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(20.dp, 24.dp, 20.dp, bottomContentPadding),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
-    ) {
-        item { Text("设置", style = MaterialTheme.typography.headlineLarge) }
-        item {
-            Text("播放与设备", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
-        }
-        item {
-            SettingCard(
-                title = "媒体库与播放设备",
-                description = if (state.isSearching) "正在扫描局域网内的 DLNA 设备…" else "选择音乐来源和播放目标。",
-            ) {
-                DeviceStrip(
-                    state = state,
-                    onSelectServer = onSelectServer,
-                    onSelectRenderer = onSelectRenderer,
-                )
-                Spacer(Modifier.height(12.dp))
-                FilledTonalButton(onClick = onRefresh, modifier = Modifier.fillMaxWidth()) {
-                    Icon(Icons.Rounded.Refresh, null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("扫描局域网设备")
-                }
-            }
-        }
-        item {
-            Text("界面", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
-        }
-        item {
-            SettingCard(
-                title = "封面大小",
-                description = "画廊会根据屏幕可用宽度自动增加列数。",
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    GallerySize.entries.forEach { size ->
-                        FilterChip(
-                            selected = preferences.gallerySize == size,
-                            onClick = { onGallerySize(size) },
-                            label = { Text(size.label) },
-                        )
-                    }
-                }
-            }
-        }
-        item {
-            SwitchSettingCard(
-                title = "默认媒体库布局",
-                description = if (preferences.useGridByDefault) "优先使用封面画廊。" else "优先使用紧凑列表。",
-                checked = preferences.useGridByDefault,
-                onCheckedChange = onDefaultGridLayout,
-            )
-        }
-        item {
-            DynamicColorSettingCard(
-                useDynamicColor = preferences.useDynamicColor,
-                selectedPalette = preferences.presetPalette,
-                onDynamicColorChange = onDynamicColor,
-                onPresetPalette = onPresetPalette,
-            )
-        }
-        item {
-            SettingCard(
-                title = "颜色模式",
-                description = "选择应用的明暗外观。",
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    ThemeMode.entries.forEach { mode ->
-                        FilterChip(
-                            selected = preferences.themeMode == mode,
-                            onClick = { onThemeMode(mode) },
-                            label = { Text(mode.label) },
-                        )
-                    }
-                }
-            }
-        }
-        item {
-            Text("歌词", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
-        }
-        item {
-            SwitchSettingCard(
-                title = "在线获取歌词",
-                description = if (preferences.lyricsEnabled) {
-                    "打开播放页歌词面板时，从在线来源查找歌词。"
-                } else {
-                    "关闭后播放页不会显示歌词入口，也不会读取歌词缓存或访问歌词服务。"
-                },
-                checked = preferences.lyricsEnabled,
-                onCheckedChange = onLyricsEnabled,
-            )
-        }
-        item {
-            SettingCard(
-                title = "歌词来源优先级",
-                description = "按顺序查找网易云音乐和 QQ 音乐。长按拖动手柄调整优先级。",
-            ) {
-                LyricsProviderOrderSetting(
-                    order = preferences.lyricsProviderOrder,
-                    enabled = preferences.lyricsEnabled,
-                    onOrderChange = onLyricsProviderOrder,
-                )
-            }
-        }
-        item {
-            SettingCard(
-                title = "歌词翻译",
-                description = "仅中文在没有译文时自动显示原文。",
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    LyricsTranslationMode.entries.forEach { mode ->
-                        FilterChip(
-                            selected = preferences.lyricsTranslationMode == mode,
-                            onClick = { onLyricsTranslationMode(mode) },
-                            enabled = preferences.lyricsEnabled,
-                            label = { Text(mode.label) },
-                        )
-                    }
-                }
-            }
-        }
-        item {
-            SwitchSettingCard(
-                title = "显示歌词来源",
-                description = "在歌词区域底部显示当前使用的在线来源。",
-                checked = preferences.lyricsSourceVisible,
-                enabled = preferences.lyricsEnabled,
-                onCheckedChange = onLyricsSourceVisible,
-            )
-        }
-        item {
-            SwitchSettingCard(
-                title = "歌词特效",
-                description = "启用模糊渐变、缩放、错峰位移和逐字扫光；关闭可降低图形负载。",
-                checked = preferences.lyricsEffectsEnabled,
-                enabled = preferences.lyricsEnabled,
-                onCheckedChange = onLyricsEffectsEnabled,
-            )
-        }
-        item {
-            SettingCard(
-                title = "歌词字体大小",
-                description = "当前 ${preferences.lyricsFontSizeSp}sp，可在 18–40sp 间调整。",
-            ) {
-                Slider(
-                    value = preferences.lyricsFontSizeSp.toFloat(),
-                    onValueChange = { onLyricsFontSizeSp((it / 2f).roundToInt() * 2) },
-                    enabled = preferences.lyricsEnabled,
-                    valueRange = 18f..40f,
-                    steps = 10,
-                )
-            }
-        }
-        item {
-            SettingCard(
-                title = "歌词缓存",
-                description = "网络歌词缓存在可被系统回收的应用缓存目录中，成功结果保留 30 天。",
-            ) {
-                Text(
-                    "当前占用：${formatByteSize(state.lyricsCacheBytes)}",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.height(10.dp))
-                OutlinedButton(
-                    onClick = onClearLyricsCache,
-                    enabled = !state.isClearingLyricsCache,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text(if (state.isClearingLyricsCache) "正在清除…" else "清除歌词缓存")
-                }
-            }
-        }
-        item {
-            Text("网络", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
-        }
-        item {
-            SwitchSettingCard(
-                title = "ListenBrainz 播放记录",
-                description = if (preferences.listenBrainzEnabled) {
-                    if (preferences.listenBrainzToken.isBlank()) "请填写 API 令牌后开始上报。" else "上报正在播放和满足规则的播放记录。"
-                } else {
-                    "关闭时不会向 ListenBrainz 发送任何播放信息。"
-                },
-                checked = preferences.listenBrainzEnabled,
-                onCheckedChange = onListenBrainzEnabled,
-            )
-        }
-        if (state.pendingListens.isNotEmpty()) {
-            item {
-                SettingCard(
-                    title = "待上传记录",
-                    description = "${state.pendingListens.size} 条播放记录尚未上传成功，已安全保存在本机。",
-                ) {
-                    FilledTonalButton(
-                        onClick = onOpenPendingListens,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Icon(Icons.AutoMirrored.Rounded.PlaylistPlay, null)
-                        Spacer(Modifier.width(8.dp))
-                        Text("查看并管理")
-                    }
-                }
-            }
-        }
-        item {
-            SettingCard(
-                title = "ListenBrainz API",
-                description = "令牌仅保存在本机且不会进入系统备份。可在 ListenBrainz 账户设置中获取。",
-            ) {
-                OutlinedTextField(
-                    value = listenBrainzTokenDraft,
-                    onValueChange = { listenBrainzTokenDraft = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("用户令牌（API Token）") },
-                    singleLine = true,
-                    enabled = !isCheckingToken,
-                    visualTransformation = PasswordVisualTransformation(),
-                )
-                Spacer(Modifier.height(10.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    if (isCheckingToken) {
-                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                        Spacer(Modifier.width(8.dp))
-                    }
-                    Text(
-                        text = when {
-                            validationAppliesToDraft -> tokenValidation.message.orEmpty()
-                            normalizedTokenDraft.isEmpty() && preferences.listenBrainzToken.isNotBlank() ->
-                                "保存后将清除当前令牌。"
-                            normalizedTokenDraft == preferences.listenBrainzToken && normalizedTokenDraft.isNotEmpty() ->
-                                "当前令牌已保存；可重新校验令牌和网络连接。"
-                            normalizedTokenDraft.isNotEmpty() -> "此令牌尚未校验，校验成功后才会保存。"
-                            else -> "请输入 ListenBrainz 用户令牌。"
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = when (tokenValidationStatus) {
-                            ListenBrainzTokenValidationStatus.VALID -> MaterialTheme.colorScheme.primary
-                            ListenBrainzTokenValidationStatus.INVALID,
-                            ListenBrainzTokenValidationStatus.ERROR -> MaterialTheme.colorScheme.error
-                            else -> MaterialTheme.colorScheme.onSurfaceVariant
-                        },
-                    )
-                }
-                Spacer(Modifier.height(10.dp))
-                FilledTonalButton(
-                    onClick = { onListenBrainzToken(normalizedTokenDraft) },
-                    enabled = !isCheckingToken && (
-                        normalizedTokenDraft.isNotEmpty() || preferences.listenBrainzToken.isNotBlank()
-                    ),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text(
-                        when {
-                            isCheckingToken -> "正在校验…"
-                            normalizedTokenDraft.isEmpty() -> "清除令牌"
-                            normalizedTokenDraft == preferences.listenBrainzToken -> "重新校验令牌"
-                            else -> "校验并保存"
-                        },
-                    )
-                }
-            }
-        }
-        item {
-            SettingCard(
-                title = "上传规则",
-                description = "播放时长或播放百分比任一达到设定值，曲目结束后即正式记录。",
-            ) {
-                Text("最小播放时长：${formatRuleDuration(preferences.listenBrainzMinimumSeconds)}")
-                Slider(
-                    value = preferences.listenBrainzMinimumSeconds.toFloat(),
-                    onValueChange = { onListenBrainzMinimumSeconds((it / 30f).roundToInt() * 30) },
-                    valueRange = 30f..600f,
-                    steps = 18,
-                )
-                Spacer(Modifier.height(8.dp))
-                Text("最小播放百分比：${preferences.listenBrainzMinimumPercent}%")
-                Slider(
-                    value = preferences.listenBrainzMinimumPercent.toFloat(),
-                    onValueChange = { onListenBrainzMinimumPercent((it / 5f).roundToInt() * 5) },
-                    valueRange = 10f..100f,
-                    steps = 17,
-                )
-                Text(
-                    "当前规则：播放 ${formatRuleDuration(preferences.listenBrainzMinimumSeconds)}，或达到曲目时长的 ${preferences.listenBrainzMinimumPercent}%。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-        item {
-            Text(
-                "播放记录仅在启用 ListenBrainz 并填写令牌后上报。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(start = 4.dp, top = 8.dp, end = 4.dp),
-            )
-        }
-    }
-}
-
-private fun formatRuleDuration(seconds: Int): String {
-    val minutes = seconds / 60
-    val remainingSeconds = seconds % 60
-    return when {
-        minutes == 0 -> "${remainingSeconds} 秒"
-        remainingSeconds == 0 -> "${minutes} 分钟"
-        else -> "${minutes} 分 ${remainingSeconds} 秒"
-    }
-}
-
-private fun formatByteSize(bytes: Long): String = when {
-    bytes >= 1024L * 1024L -> "%.1f MiB".format(bytes / (1024.0 * 1024.0))
-    bytes >= 1024L -> "%.1f KiB".format(bytes / 1024.0)
-    else -> "$bytes B"
-}
-
-@Composable
-private fun LyricsProviderOrderSetting(
-    order: List<LyricsProviderId>,
-    enabled: Boolean,
-    onOrderChange: (List<LyricsProviderId>) -> Unit,
-) {
-    var displayedOrder by remember(order) { mutableStateOf(order) }
-    val listState = rememberLazyListState()
-    val reorderState = remember(listState) {
-        LazyListReorderState(listState = listState, itemIndexOffset = 0)
-    }
-    reorderState.onMove = { fromIndex, toIndex ->
-        displayedOrder = moveListItem(displayedOrder, fromIndex, toIndex)
-    }
-    val commitOrder = {
-        if (displayedOrder != order) onOrderChange(displayedOrder)
-    }
-    val listHeight = LyricsProviderItemHeight * displayedOrder.size +
-        LyricsProviderItemSpacing * (displayedOrder.size - 1).coerceAtLeast(0) +
-        ReorderVisualPadding * 2
-
-    LazyColumn(
-        state = listState,
-        modifier = Modifier.fillMaxWidth().height(listHeight),
-        contentPadding = PaddingValues(vertical = ReorderVisualPadding),
-        verticalArrangement = Arrangement.spacedBy(LyricsProviderItemSpacing),
-        userScrollEnabled = false,
-    ) {
-        itemsIndexed(displayedOrder, key = { _, provider -> provider.name }) { _, provider ->
-            val itemKey = provider.name
-            val dragged = reorderState.isDragging(itemKey)
-            val pinnableContainer = LocalPinnableContainer.current
-            val scale by animateFloatAsState(if (dragged) 1.035f else 1f, label = "歌词来源拖动缩放")
-            val elevation by animateDpAsState(if (dragged) 4.dp else 0.dp, label = "歌词来源拖动阴影")
-            val containerColor by animateColorAsState(
-                if (dragged) MaterialTheme.colorScheme.primaryContainer
-                else MaterialTheme.colorScheme.surfaceContainerHigh,
-                label = "歌词来源拖动颜色",
-            )
-            Surface(
-                modifier = reorderPlacementModifier(dragged)
-                    .fillMaxWidth()
-                    .zIndex(if (dragged) 1f else 0f)
-                    .graphicsLayer {
-                        translationY = if (dragged) reorderState.draggedItemOffset else 0f
-                        scaleX = scale
-                        scaleY = scale
-                    },
-                shape = RoundedCornerShape(18.dp),
-                color = containerColor,
-                shadowElevation = elevation,
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Icon(
-                        Icons.Rounded.DragHandle,
-                        "拖动调整 ${provider.label} 优先级",
-                        modifier = Modifier
-                            .size(40.dp)
-                            .lazyListReorderHandle(
-                                enabled = enabled,
-                                itemKey = itemKey,
-                                reorderState = reorderState,
-                                pinnableContainer = pinnableContainer,
-                                onDragEnd = commitOrder,
-                                onDragCancel = commitOrder,
-                            )
-                            .padding(8.dp),
-                        tint = if (enabled) {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        } else {
-                            MaterialTheme.colorScheme.onSurface.copy(alpha = .38f)
-                        },
-                    )
-                    Text(provider.label, modifier = Modifier.weight(1f))
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun SettingCard(
-    title: String,
-    description: String,
-    content: @Composable () -> Unit,
-) {
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(26.dp),
-        color = MaterialTheme.colorScheme.surfaceContainer,
-    ) {
-        Column(Modifier.padding(18.dp)) {
-            Text(title, style = MaterialTheme.typography.titleMedium)
-            Spacer(Modifier.height(4.dp))
-            Text(description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Spacer(Modifier.height(14.dp))
-            content()
-        }
-    }
-}
-
-@Composable
-private fun SwitchSettingCard(
-    title: String,
-    description: String,
-    checked: Boolean,
-    enabled: Boolean = true,
-    onCheckedChange: (Boolean) -> Unit,
-) {
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(26.dp),
-        color = MaterialTheme.colorScheme.surfaceContainer,
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 18.dp, vertical = 16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text(title, style = MaterialTheme.typography.titleMedium)
-                Spacer(Modifier.height(4.dp))
-                Text(description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            Spacer(Modifier.width(16.dp))
-            Switch(checked = checked, onCheckedChange = onCheckedChange, enabled = enabled)
-        }
-    }
-}
-
-@Composable
-private fun DynamicColorSettingCard(
-    useDynamicColor: Boolean,
-    selectedPalette: PresetPalette,
-    onDynamicColorChange: (Boolean) -> Unit,
-    onPresetPalette: (PresetPalette) -> Unit,
-) {
-    val previews = remember {
-        PresetPalette.entries.associateWith { palette ->
-            presetColorScheme(palette, darkTheme = false).let { it.primary to it.onPrimary }
-        }
-    }
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(26.dp),
-        color = MaterialTheme.colorScheme.surfaceContainer,
-    ) {
-        Column(Modifier.padding(horizontal = 18.dp, vertical = 16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("动态配色", style = MaterialTheme.typography.titleMedium)
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        text = if (useDynamicColor) {
-                            "使用系统从壁纸生成的配色。"
-                        } else {
-                            "选择 Material 3 Expressive 预设配色。"
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                Spacer(Modifier.width(16.dp))
-                Switch(checked = useDynamicColor, onCheckedChange = onDynamicColorChange)
-            }
-            AnimatedVisibility(visible = !useDynamicColor) {
-                Column {
-                    Spacer(Modifier.height(16.dp))
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    Spacer(Modifier.height(14.dp))
-                    Text(
-                        "预设配色",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Spacer(Modifier.height(10.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        PresetPalette.entries.forEach { palette ->
-                            val selected = palette == selectedPalette
-                            val (accent, onAccent) = previews.getValue(palette)
-                            Surface(
-                                modifier = Modifier
-                                    .size(48.dp)
-                                    .selectable(
-                                        selected = selected,
-                                        role = Role.RadioButton,
-                                        onClick = { onPresetPalette(palette) },
-                                    )
-                                    .semantics {
-                                        contentDescription = "${palette.label}配色"
-                                    },
-                                shape = CircleShape,
-                                color = accent,
-                                border = BorderStroke(
-                                    width = if (selected) 3.dp else 1.dp,
-                                    color = if (selected) {
-                                        MaterialTheme.colorScheme.onSurface
-                                    } else {
-                                        MaterialTheme.colorScheme.outlineVariant
-                                    },
-                                ),
-                            ) {
-                                if (selected) {
-                                    Box(contentAlignment = Alignment.Center) {
-                                        Icon(
-                                            imageVector = Icons.Rounded.Check,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(22.dp),
-                                            tint = onAccent,
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
 
 @Immutable
 private data class QueueDisplayItem(

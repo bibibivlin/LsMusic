@@ -1,5 +1,6 @@
 package com.linxyi.lsmusic.playback
 
+import android.content.Intent
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.exoplayer.ExoPlayer
@@ -26,12 +27,32 @@ class LocalPlaybackService : MediaSessionService() {
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = mediaSession
 
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_SHUTDOWN) {
+            releasePlayback()
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        return super.onStartCommand(intent, flags, startId)
+    }
+
     override fun onDestroy() {
+        releasePlayback()
+        super.onDestroy()
+    }
+
+    private fun releasePlayback() {
         mediaSession?.run {
+            player.stop()
+            player.clearMediaItems()
             player.release()
             release()
         }
         mediaSession = null
-        super.onDestroy()
+    }
+
+    companion object {
+        const val ACTION_SHUTDOWN = "com.linxyi.lsmusic.action.SHUTDOWN_LOCAL_PLAYBACK"
     }
 }

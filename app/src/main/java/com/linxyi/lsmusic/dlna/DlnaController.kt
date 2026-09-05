@@ -37,11 +37,14 @@ class DlnaController(context: Context) : AutoCloseable {
     private val devices = ConcurrentHashMap<String, RemoteDevice>()
     private val rawSoapRendererIds: MutableSet<String> = ConcurrentHashMap.newKeySet()
     private val commandExecutor = Executors.newSingleThreadExecutor()
+    private val shutdownExecutor = Executors.newSingleThreadExecutor()
     private val _snapshot = MutableStateFlow(DlnaSnapshot(isSearching = true))
     val snapshot: StateFlow<DlnaSnapshot> = _snapshot.asStateFlow()
 
     private var service: AndroidUpnpService? = null
     private var bound = false
+    @Volatile private var stopping = false
+    @Volatile private var closed = false
 
     private val registryListener = object : DefaultRegistryListener() {
         override fun remoteDeviceAdded(registry: Registry, device: RemoteDevice) = addDevice(device)
@@ -68,6 +71,7 @@ class DlnaController(context: Context) : AutoCloseable {
 
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName, binder: IBinder) {
+            if (closed) return
             val upnp = binder as? AndroidUpnpService
             if (upnp == null) {
                 reportServiceError("DLNA 服务返回了无法识别的连接")
@@ -106,6 +110,7 @@ class DlnaController(context: Context) : AutoCloseable {
     }
 
     fun refresh() {
+        if (stopping || closed) return
         _snapshot.value = _snapshot.value.copy(isSearching = true, error = null)
         service?.controlPoint?.search()
         mainHandler.removeCallbacksAndMessages(null)
@@ -244,6 +249,7 @@ class DlnaController(context: Context) : AutoCloseable {
         onComplete: () -> Unit = {},
         onError: (String) -> Unit = {},
     ) {
+        if (stopping || closed) return
         val uri = track.resourceUri ?: return onError("曲目没有可播放的资源地址")
         val metadata = track.didlMetadata?.takeIf { it.isNotBlank() } ?: createDidlMetadata(track, uri)
         setTrackUri(rendererId, uri, metadata, playImmediately, onComplete, onError)
@@ -259,6 +265,7 @@ class DlnaController(context: Context) : AutoCloseable {
         retriesRemaining: Int = 1,
         transitionRecoveryRemaining: Int = 1,
     ) {
+        if (stopping || closed) return
         val renderer = devices[rendererId]
         val avTransport = renderer?.findService(AV_TRANSPORT)
         if (renderer != null && avTransport != null && shouldUseRawSoap(rendererId)) {
@@ -361,6 +368,7 @@ class DlnaController(context: Context) : AutoCloseable {
         retriesRemaining: Int,
         transitionRecoveryRemaining: Int,
     ) {
+        if (stopping || closed) return
         val endpoint = if (controlUri.isAbsolute) controlUri else descriptorUri.resolve(controlUri)
         commandExecutor.execute {
             val result = runCatching {
@@ -376,6 +384,7 @@ class DlnaController(context: Context) : AutoCloseable {
                 )
             }
             result.onSuccess {
+                if (stopping || closed) return@onSuccess
                 rememberRawSoapRenderer(rendererId, "SetAVTransportURI")
                 if (playImmediately) {
                     mainHandler.postDelayed({ play(rendererId, onComplete, onError) }, PLAY_AFTER_SET_DELAY_MS)
@@ -383,6 +392,7 @@ class DlnaController(context: Context) : AutoCloseable {
                     onComplete()
                 }
             }.onFailure { failure ->
+                if (stopping || closed) return@onFailure
                 val error = "SetAVTransportURI 失败：${failure.localizedMessage ?: "无法连接播放设备"}"
                 Log.w(TAG, "Raw SetAVTransportURI failed on $rendererId: $error", failure)
                 if (transitionRecoveryRemaining > 0 && AvTransportSoap.isTransitionUnavailable(error)) {
@@ -432,6 +442,7 @@ class DlnaController(context: Context) : AutoCloseable {
         retriesRemaining: Int,
         transitionRecoveryRemaining: Int,
     ) {
+        if (stopping || closed) return
         Log.i(TAG, "SetAVTransportURI is unavailable in the current state on $rendererId; stopping before retry")
         stop(
             rendererId = rendererId,
@@ -457,6 +468,7 @@ class DlnaController(context: Context) : AutoCloseable {
     }
 
     fun play(rendererId: String, onComplete: () -> Unit = {}, onError: (String) -> Unit = {}) {
+        if (stopping || closed) return
         executeTransportAction(
             rendererId = rendererId,
             actionName = "Play",
@@ -490,6 +502,7 @@ class DlnaController(context: Context) : AutoCloseable {
         onSuccess: () -> Unit = {},
         onError: (String) -> Unit = {},
     ) {
+        if (closed || (stopping && actionName != "Stop")) return
         val renderer = devices[rendererId] ?: return onError("所选播放设备不再可用")
         val avTransport = renderer.findService(AV_TRANSPORT)
             ?: return onError("播放设备不支持 AVTransport")
@@ -521,12 +534,14 @@ class DlnaController(context: Context) : AutoCloseable {
         onSuccess: () -> Unit = {},
         onError: (String) -> Unit = {},
     ) {
+        if (closed || (stopping && actionName != "Stop")) return
         val renderer = devices[rendererId] ?: return onError("所选播放设备不再可用")
         val avTransport = renderer.findService(AV_TRANSPORT)
             ?: return onError("播放设备不支持 AVTransport")
         val controlUri = avTransport.controlURI
         val endpoint = if (controlUri.isAbsolute) controlUri else renderer.identity.descriptorURL.toURI().resolve(controlUri)
-        commandExecutor.execute {
+        val executor = if (stopping && actionName == "Stop") shutdownExecutor else commandExecutor
+        executor.execute {
             runCatching {
                 sendRawSoapAction(
                     endpoint = endpoint,
@@ -721,6 +736,7 @@ class DlnaController(context: Context) : AutoCloseable {
         actionName: String,
         inputs: Map<String, String>,
     ): String {
+        check(!closed && (!stopping || actionName == "Stop")) { "DLNA controller is stopping" }
         val payload = AvTransportSoap.envelope(serviceType, actionName, inputs).toByteArray(Charsets.UTF_8)
         val connection = URL(endpoint.toString()).openConnection() as HttpURLConnection
         return try {
@@ -764,6 +780,7 @@ class DlnaController(context: Context) : AutoCloseable {
         onSuccess: () -> Unit = {},
         onError: (String) -> Unit = {},
     ) {
+        if (closed || (stopping && actionName != "Stop")) return
         val upnp = service ?: return onError("DLNA 服务尚未就绪")
         val remoteService = devices[rendererId]?.findService(UDAServiceType(serviceName))
             ?: return onError("播放设备不支持 $serviceName")
@@ -776,13 +793,16 @@ class DlnaController(context: Context) : AutoCloseable {
             return onError(error.localizedMessage ?: "无法创建播放命令")
         }
         upnp.controlPoint.execute(object : ActionCallback(invocation) {
-            override fun success(invocation: ActionInvocation<*>) = onSuccess()
+            override fun success(invocation: ActionInvocation<*>) {
+                if (!closed && (!stopping || actionName == "Stop")) onSuccess()
+            }
 
             override fun failure(
                 invocation: ActionInvocation<*>,
                 operation: UpnpResponse?,
                 defaultMsg: String,
             ) {
+                if (closed || (stopping && actionName != "Stop")) return
                 Log.w(TAG, "$actionName failed on $rendererId: $defaultMsg")
                 onError("$actionName 失败：$defaultMsg")
             }
@@ -829,10 +849,20 @@ class DlnaController(context: Context) : AutoCloseable {
         )
     }
 
+    /** Fence delayed Play/retry callbacks before issuing the last Stop. */
+    fun beginShutdown() {
+        stopping = true
+        mainHandler.removeCallbacksAndMessages(null)
+    }
+
     override fun close() {
+        if (closed) return
+        closed = true
+        beginShutdown()
         mainHandler.removeCallbacksAndMessages(null)
         rawSoapRendererIds.clear()
         commandExecutor.shutdownNow()
+        shutdownExecutor.shutdownNow()
         service?.registry?.removeListener(registryListener)
         if (bound) appContext.unbindService(connection)
         bound = false
