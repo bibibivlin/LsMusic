@@ -1,5 +1,8 @@
 package com.linxyi.lsmusic.ui
 
+import androidx.annotation.StringRes
+import com.linxyi.lsmusic.R
+
 enum class AppDestination {
     LIBRARY, QUEUE, NOW_PLAYING, SETTINGS,
     SETTINGS_APPEARANCE, SETTINGS_LYRICS, SETTINGS_NETWORK, SETTINGS_ABOUT, PENDING_LISTENS;
@@ -14,13 +17,24 @@ enum class AppDestination {
     val navigationDestination: AppDestination
         get() = if (settingsParent != null) SETTINGS else this
 
-    val settingsTitle: String
+    @get:StringRes
+    val settingsTitleRes: Int
         get() = when (this) {
-            SETTINGS_APPEARANCE -> "界面"
-            SETTINGS_LYRICS -> "歌词"
-            SETTINGS_NETWORK -> "网络"
-            SETTINGS_ABOUT -> "关于"
-            else -> "设置"
+            SETTINGS_APPEARANCE -> R.string.settings_appearance
+            SETTINGS_LYRICS -> R.string.settings_lyrics
+            SETTINGS_NETWORK -> R.string.settings_network
+            SETTINGS_ABOUT -> R.string.settings_about
+            else -> R.string.nav_settings
+        }
+
+    @get:StringRes
+    val navigationLabelRes: Int
+        get() = when (this) {
+            LIBRARY -> R.string.nav_library
+            QUEUE -> R.string.nav_queue
+            NOW_PLAYING -> R.string.nav_now_playing
+            SETTINGS -> R.string.nav_settings
+            else -> R.string.nav_settings
         }
 }
 

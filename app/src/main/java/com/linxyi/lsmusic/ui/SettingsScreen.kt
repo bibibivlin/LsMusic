@@ -79,6 +79,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.core.graphics.drawable.toBitmap
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.runtime.setValue
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
@@ -88,6 +89,9 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.TextButton
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.res.pluralStringResource
+import com.linxyi.lsmusic.R
 
 @Composable
 internal fun SettingsScreen(
@@ -130,21 +134,23 @@ internal fun SettingsScreen(
         ListenBrainzTokenValidationStatus.IDLE
     }
     val isCheckingToken = tokenValidationStatus == ListenBrainzTokenValidationStatus.CHECKING
+    val resources = LocalResources.current
     LazyColumn(
         modifier = Modifier.fillMaxSize().testTag("settings-list"),
         contentPadding = PaddingValues(20.dp, 24.dp, 20.dp, bottomContentPadding),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         item(key = "header", contentType = "header") {
-            SettingsHeader(state.destination.settingsTitle, state.destination.settingsParent != null) {
+            SettingsHeader(stringResource(state.destination.settingsTitleRes), state.destination.settingsParent != null) {
                 state.destination.settingsParent?.let(onNavigate)
             }
         }
         if (state.destination == AppDestination.SETTINGS) {
             item {
                 SettingCard(
-                    title = "媒体库与播放设备",
-                    description = if (state.isSearching) "正在扫描局域网内的 DLNA 设备…" else "选择音乐来源和播放目标。",
+                    title = stringResource(R.string.settings_devices_title),
+                    description = if (state.isSearching) stringResource(R.string.settings_scanning_devices)
+                    else stringResource(R.string.settings_choose_source),
                 ) {
                     DeviceStrip(
                         state = state,
@@ -155,7 +161,7 @@ internal fun SettingsScreen(
                     FilledTonalButton(onClick = onRefresh, modifier = Modifier.fillMaxWidth()) {
                         Icon(Icons.Rounded.Refresh, null)
                         Spacer(Modifier.width(8.dp))
-                        Text("扫描局域网设备")
+                        Text(stringResource(R.string.scan_local_network))
                     }
                 }
             }
@@ -167,15 +173,15 @@ internal fun SettingsScreen(
                 ) {
                     Icon(Icons.AutoMirrored.Rounded.ExitToApp, null)
                     Spacer(Modifier.width(8.dp))
-                    Text("退出")
+                    Text(stringResource(R.string.exit))
                 }
             }
         }
         if (state.destination == AppDestination.SETTINGS_APPEARANCE) {
             item {
                 SettingCard(
-                    title = "封面大小",
-                    description = "画廊会根据屏幕可用宽度自动增加列数。",
+                    title = stringResource(R.string.settings_gallery_size),
+                    description = stringResource(R.string.settings_gallery_description),
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
@@ -185,7 +191,7 @@ internal fun SettingsScreen(
                             FilterChip(
                                 selected = preferences.gallerySize == size,
                                 onClick = { onGallerySize(size) },
-                                label = { Text(size.label) },
+                                label = { Text(size.displayName()) },
                             )
                         }
                     }
@@ -193,8 +199,9 @@ internal fun SettingsScreen(
             }
             item {
                 SwitchSettingCard(
-                    title = "默认媒体库布局",
-                    description = if (preferences.useGridByDefault) "优先使用封面画廊。" else "优先使用紧凑列表。",
+                    title = stringResource(R.string.settings_default_layout),
+                    description = if (preferences.useGridByDefault) stringResource(R.string.settings_grid_preferred)
+                    else stringResource(R.string.settings_list_preferred),
                     checked = preferences.useGridByDefault,
                     onCheckedChange = onDefaultGridLayout,
                 )
@@ -209,8 +216,8 @@ internal fun SettingsScreen(
             }
             item {
                 SettingCard(
-                    title = "颜色模式",
-                    description = "选择应用的明暗外观。",
+                    title = stringResource(R.string.settings_color_mode),
+                    description = stringResource(R.string.settings_color_mode_description),
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
@@ -220,7 +227,7 @@ internal fun SettingsScreen(
                             FilterChip(
                                 selected = preferences.themeMode == mode,
                                 onClick = { onThemeMode(mode) },
-                                label = { Text(mode.label) },
+                                label = { Text(mode.displayName()) },
                             )
                         }
                     }
@@ -230,11 +237,11 @@ internal fun SettingsScreen(
         if (state.destination == AppDestination.SETTINGS_LYRICS) {
             item {
                 SwitchSettingCard(
-                    title = "在线获取歌词",
+                    title = stringResource(R.string.settings_online_lyrics),
                     description = if (preferences.lyricsEnabled) {
-                        "打开播放页歌词面板时，从在线来源查找歌词。"
+                        stringResource(R.string.settings_online_lyrics_enabled)
                     } else {
-                        "关闭后播放页不会显示歌词入口，也不会读取歌词缓存或访问歌词服务。"
+                        stringResource(R.string.settings_online_lyrics_disabled)
                     },
                     checked = preferences.lyricsEnabled,
                     onCheckedChange = onLyricsEnabled,
@@ -242,8 +249,8 @@ internal fun SettingsScreen(
             }
             item {
                 SettingCard(
-                    title = "歌词来源优先级",
-                    description = "按顺序查找网易云音乐和 QQ 音乐。长按拖动手柄调整优先级。",
+                    title = stringResource(R.string.settings_lyrics_provider_order),
+                    description = stringResource(R.string.settings_lyrics_provider_order_description),
                 ) {
                     LyricsProviderOrderSetting(
                         order = preferences.lyricsProviderOrder,
@@ -254,8 +261,8 @@ internal fun SettingsScreen(
             }
             item {
                 SettingCard(
-                    title = "歌词翻译",
-                    description = "仅中文在没有译文时自动显示原文。",
+                    title = stringResource(R.string.settings_lyrics_translation),
+                    description = stringResource(R.string.settings_lyrics_translation_description),
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
@@ -266,7 +273,7 @@ internal fun SettingsScreen(
                                 selected = preferences.lyricsTranslationMode == mode,
                                 onClick = { onLyricsTranslationMode(mode) },
                                 enabled = preferences.lyricsEnabled,
-                                label = { Text(mode.label) },
+                                label = { Text(mode.displayName()) },
                             )
                         }
                     }
@@ -274,8 +281,8 @@ internal fun SettingsScreen(
             }
             item {
                 SwitchSettingCard(
-                    title = "显示歌词来源",
-                    description = "在歌词区域底部显示当前使用的在线来源。",
+                    title = stringResource(R.string.settings_show_lyrics_source),
+                    description = stringResource(R.string.settings_show_lyrics_source_description),
                     checked = preferences.lyricsSourceVisible,
                     enabled = preferences.lyricsEnabled,
                     onCheckedChange = onLyricsSourceVisible,
@@ -283,8 +290,8 @@ internal fun SettingsScreen(
             }
             item {
                 SwitchSettingCard(
-                    title = "歌词特效",
-                    description = "启用模糊渐变、缩放、错峰位移和逐字扫光；关闭可降低图形负载。",
+                    title = stringResource(R.string.settings_lyrics_effects),
+                    description = stringResource(R.string.settings_lyrics_effects_description),
                     checked = preferences.lyricsEffectsEnabled,
                     enabled = preferences.lyricsEnabled,
                     onCheckedChange = onLyricsEffectsEnabled,
@@ -292,8 +299,8 @@ internal fun SettingsScreen(
             }
             item {
                 SettingCard(
-                    title = "歌词字体大小",
-                    description = "当前 ${preferences.lyricsFontSizeSp}sp，可在 18–40sp 间调整。",
+                    title = stringResource(R.string.settings_lyrics_font_size),
+                    description = stringResource(R.string.settings_lyrics_font_size_description, preferences.lyricsFontSizeSp),
                 ) {
                     Slider(
                         value = preferences.lyricsFontSizeSp.toFloat(),
@@ -306,11 +313,11 @@ internal fun SettingsScreen(
             }
             item {
                 SettingCard(
-                    title = "歌词缓存",
-                    description = "网络歌词缓存在可被系统回收的应用缓存目录中，成功结果保留 30 天。",
+                    title = stringResource(R.string.settings_lyrics_cache),
+                    description = stringResource(R.string.settings_lyrics_cache_description),
                 ) {
                     Text(
-                        "当前占用：${formatByteSize(state.lyricsCacheBytes)}",
+                        stringResource(R.string.cache_usage, formatByteSize(state.lyricsCacheBytes)),
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Spacer(Modifier.height(10.dp))
@@ -319,7 +326,8 @@ internal fun SettingsScreen(
                         enabled = !state.isClearingLyricsCache,
                         modifier = Modifier.fillMaxWidth(),
                     ) {
-                        Text(if (state.isClearingLyricsCache) "正在清除…" else "清除歌词缓存")
+                        Text(if (state.isClearingLyricsCache) stringResource(R.string.clearing_lyrics_cache)
+                        else stringResource(R.string.clear_lyrics_cache))
                     }
                 }
             }
@@ -327,11 +335,12 @@ internal fun SettingsScreen(
         if (state.destination == AppDestination.SETTINGS_NETWORK) {
             item {
                 SwitchSettingCard(
-                    title = "ListenBrainz 播放记录",
+                    title = stringResource(R.string.settings_listenbrainz),
                     description = if (preferences.listenBrainzEnabled) {
-                        if (preferences.listenBrainzToken.isBlank()) "请填写 API 令牌后开始上报。" else "上报正在播放和满足规则的播放记录。"
+                        if (preferences.listenBrainzToken.isBlank()) stringResource(R.string.settings_listenbrainz_missing_token)
+                        else stringResource(R.string.settings_listenbrainz_enabled)
                     } else {
-                        "关闭时不会向 ListenBrainz 发送任何播放信息。"
+                        stringResource(R.string.settings_listenbrainz_disabled)
                     },
                     checked = preferences.listenBrainzEnabled,
                     onCheckedChange = onListenBrainzEnabled,
@@ -340,8 +349,8 @@ internal fun SettingsScreen(
         if (state.pendingListens.isNotEmpty()) {
             item {
                 SettingCard(
-                    title = "待上传记录",
-                    description = "${state.pendingListens.size} 条播放记录尚未上传成功，已安全保存在本机。",
+                    title = stringResource(R.string.pending_listens_title),
+                    description = pluralStringResource(R.plurals.pending_listens_summary, state.pendingListens.size, state.pendingListens.size),
                 ) {
                     FilledTonalButton(
                         onClick = onOpenPendingListens,
@@ -349,21 +358,21 @@ internal fun SettingsScreen(
                     ) {
                         Icon(Icons.AutoMirrored.Rounded.PlaylistPlay, null)
                         Spacer(Modifier.width(8.dp))
-                        Text("查看并管理")
+                        Text(stringResource(R.string.view_and_manage))
                     }
                 }
             }
         }
         item {
             SettingCard(
-                title = "ListenBrainz API",
-                description = "令牌仅保存在本机且不会进入系统备份。可在 ListenBrainz 账户设置中获取。",
+                title = stringResource(R.string.listenbrainz_api),
+                description = stringResource(R.string.listenbrainz_token_description),
             ) {
                 OutlinedTextField(
                     value = listenBrainzTokenDraft,
                     onValueChange = { listenBrainzTokenDraft = it },
                     modifier = Modifier.fillMaxWidth(),
-                    label = { Text("用户令牌（API Token）") },
+                    label = { Text(stringResource(R.string.listenbrainz_token_label)) },
                     singleLine = true,
                     enabled = !isCheckingToken,
                     visualTransformation = PasswordVisualTransformation(),
@@ -379,13 +388,13 @@ internal fun SettingsScreen(
                     }
                     Text(
                         text = when {
-                            validationAppliesToDraft -> tokenValidation.message.orEmpty()
+                            validationAppliesToDraft -> tokenValidation.message?.resolve(resources).orEmpty()
                             normalizedTokenDraft.isEmpty() && preferences.listenBrainzToken.isNotBlank() ->
-                                "保存后将清除当前令牌。"
+                                stringResource(R.string.token_will_be_cleared)
                             normalizedTokenDraft == preferences.listenBrainzToken && normalizedTokenDraft.isNotEmpty() ->
-                                "当前令牌已保存；可重新校验令牌和网络连接。"
-                            normalizedTokenDraft.isNotEmpty() -> "此令牌尚未校验，校验成功后才会保存。"
-                            else -> "请输入 ListenBrainz 用户令牌。"
+                                stringResource(R.string.token_saved_revalidate)
+                            normalizedTokenDraft.isNotEmpty() -> stringResource(R.string.token_not_validated)
+                            else -> stringResource(R.string.token_enter_prompt)
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = when (tokenValidationStatus) {
@@ -406,10 +415,10 @@ internal fun SettingsScreen(
                 ) {
                     Text(
                         when {
-                            isCheckingToken -> "正在校验…"
-                            normalizedTokenDraft.isEmpty() -> "清除令牌"
-                            normalizedTokenDraft == preferences.listenBrainzToken -> "重新校验令牌"
-                            else -> "校验并保存"
+                            isCheckingToken -> stringResource(R.string.token_checking)
+                            normalizedTokenDraft.isEmpty() -> stringResource(R.string.clear_token)
+                            normalizedTokenDraft == preferences.listenBrainzToken -> stringResource(R.string.revalidate_token)
+                            else -> stringResource(R.string.validate_and_save_token)
                         },
                     )
                 }
@@ -417,10 +426,10 @@ internal fun SettingsScreen(
         }
         item {
             SettingCard(
-                title = "上传规则",
-                description = "播放时长或播放百分比任一达到设定值，曲目结束后即正式记录。",
+                title = stringResource(R.string.upload_rules),
+                description = stringResource(R.string.upload_rules_description),
             ) {
-                Text("最小播放时长：${formatRuleDuration(preferences.listenBrainzMinimumSeconds)}")
+                Text(stringResource(R.string.minimum_playback_time, formatRuleDuration(preferences.listenBrainzMinimumSeconds)))
                 Slider(
                     value = preferences.listenBrainzMinimumSeconds.toFloat(),
                     onValueChange = { onListenBrainzMinimumSeconds((it / 30f).roundToInt() * 30) },
@@ -428,7 +437,7 @@ internal fun SettingsScreen(
                     steps = 18,
                 )
                 Spacer(Modifier.height(8.dp))
-                Text("最小播放百分比：${preferences.listenBrainzMinimumPercent}%")
+                Text(stringResource(R.string.minimum_playback_percent, preferences.listenBrainzMinimumPercent))
                 Slider(
                     value = preferences.listenBrainzMinimumPercent.toFloat(),
                     onValueChange = { onListenBrainzMinimumPercent((it / 5f).roundToInt() * 5) },
@@ -436,7 +445,11 @@ internal fun SettingsScreen(
                     steps = 17,
                 )
                 Text(
-                    "当前规则：播放 ${formatRuleDuration(preferences.listenBrainzMinimumSeconds)}，或达到曲目时长的 ${preferences.listenBrainzMinimumPercent}%。",
+                    stringResource(
+                        R.string.current_upload_rule,
+                        formatRuleDuration(preferences.listenBrainzMinimumSeconds),
+                        preferences.listenBrainzMinimumPercent,
+                    ),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -444,7 +457,7 @@ internal fun SettingsScreen(
         }
         item {
             Text(
-                "播放记录仅在启用 ListenBrainz 并填写令牌后上报。",
+                stringResource(R.string.listenbrainz_reporting_note),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(start = 4.dp, top = 8.dp, end = 4.dp),
@@ -457,13 +470,14 @@ internal fun SettingsScreen(
     }
 }
 
+@Composable
 private fun formatRuleDuration(seconds: Int): String {
     val minutes = seconds / 60
     val remainingSeconds = seconds % 60
     return when {
-        minutes == 0 -> "${remainingSeconds} 秒"
-        remainingSeconds == 0 -> "${minutes} 分钟"
-        else -> "${minutes} 分 ${remainingSeconds} 秒"
+        minutes == 0 -> stringResource(R.string.duration_seconds, remainingSeconds)
+        remainingSeconds == 0 -> stringResource(R.string.duration_minutes, minutes)
+        else -> stringResource(R.string.duration_minutes_seconds, minutes, remainingSeconds)
     }
 }
 
@@ -472,6 +486,54 @@ private fun formatByteSize(bytes: Long): String = when {
     bytes >= 1024L -> "%.1f KiB".format(bytes / 1024.0)
     else -> "$bytes B"
 }
+
+@Composable
+private fun GallerySize.displayName(): String = stringResource(
+    when (this) {
+        GallerySize.COMPACT -> R.string.gallery_compact
+        GallerySize.STANDARD -> R.string.gallery_standard
+        GallerySize.LARGE -> R.string.gallery_large
+    },
+)
+
+@Composable
+private fun ThemeMode.displayName(): String = stringResource(
+    when (this) {
+        ThemeMode.SYSTEM -> R.string.theme_system
+        ThemeMode.LIGHT -> R.string.theme_light
+        ThemeMode.DARK -> R.string.theme_dark
+    },
+)
+
+@Composable
+private fun LyricsProviderId.displayName(): String = stringResource(
+    when (this) {
+        LyricsProviderId.NETEASE -> R.string.lyrics_provider_netease
+        LyricsProviderId.QQ -> R.string.lyrics_provider_qq
+    },
+)
+
+@Composable
+private fun LyricsTranslationMode.displayName(): String = stringResource(
+    when (this) {
+        LyricsTranslationMode.ORIGINAL -> R.string.lyrics_original
+        LyricsTranslationMode.BILINGUAL -> R.string.lyrics_bilingual
+        LyricsTranslationMode.CHINESE_ONLY -> R.string.lyrics_chinese_only
+    },
+)
+
+@Composable
+private fun PresetPalette.displayName(): String = stringResource(
+    when (this) {
+        PresetPalette.MIST -> R.string.palette_mist
+        PresetPalette.VIOLET -> R.string.palette_violet
+        PresetPalette.ROSE -> R.string.palette_rose
+        PresetPalette.ORANGE -> R.string.palette_orange
+        PresetPalette.GREEN -> R.string.palette_green
+        PresetPalette.TEAL -> R.string.palette_teal
+        PresetPalette.BLUE -> R.string.palette_blue
+    },
+)
 
 @Composable
 private fun LyricsProviderOrderSetting(
@@ -505,12 +567,12 @@ private fun LyricsProviderOrderSetting(
             val itemKey = provider.name
             val dragged = reorderState.isDragging(itemKey)
             val pinnableContainer = LocalPinnableContainer.current
-            val scale by animateFloatAsState(if (dragged) 1.035f else 1f, label = "歌词来源拖动缩放")
-            val elevation by animateDpAsState(if (dragged) 4.dp else 0.dp, label = "歌词来源拖动阴影")
+            val scale by animateFloatAsState(if (dragged) 1.035f else 1f, label = "lyrics-provider-drag-scale")
+            val elevation by animateDpAsState(if (dragged) 4.dp else 0.dp, label = "lyrics-provider-drag-elevation")
             val containerColor by animateColorAsState(
                 if (dragged) MaterialTheme.colorScheme.primaryContainer
                 else MaterialTheme.colorScheme.surfaceContainerHigh,
-                label = "歌词来源拖动颜色",
+                label = "lyrics-provider-drag-color",
             )
             Surface(
                 modifier = reorderPlacementModifier(dragged)
@@ -531,7 +593,7 @@ private fun LyricsProviderOrderSetting(
                 ) {
                     Icon(
                         Icons.Rounded.DragHandle,
-                        "拖动调整 ${provider.label} 优先级",
+                        stringResource(R.string.reorder_lyrics_provider, provider.displayName()),
                         modifier = Modifier
                             .size(40.dp)
                             .lazyListReorderHandle(
@@ -549,7 +611,7 @@ private fun LyricsProviderOrderSetting(
                             MaterialTheme.colorScheme.onSurface.copy(alpha = .38f)
                         },
                     )
-                    Text(provider.label, modifier = Modifier.weight(1f))
+                    Text(provider.displayName(), modifier = Modifier.weight(1f))
                 }
             }
         }
@@ -625,13 +687,13 @@ private fun DynamicColorSettingCard(
         Column(Modifier.padding(horizontal = 18.dp, vertical = 16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text("动态配色", style = MaterialTheme.typography.titleMedium)
+                    Text(stringResource(R.string.dynamic_color), style = MaterialTheme.typography.titleMedium)
                     Spacer(Modifier.height(4.dp))
                     Text(
                         text = if (useDynamicColor) {
-                            "使用系统从壁纸生成的配色。"
+                            stringResource(R.string.dynamic_color_wallpaper)
                         } else {
-                            "选择 Material 3 Expressive 预设配色。"
+                            stringResource(R.string.dynamic_color_preset)
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -646,7 +708,7 @@ private fun DynamicColorSettingCard(
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     Spacer(Modifier.height(14.dp))
                     Text(
-                        "预设配色",
+                        stringResource(R.string.preset_colors),
                         style = MaterialTheme.typography.labelLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -658,6 +720,7 @@ private fun DynamicColorSettingCard(
                         PresetPalette.entries.forEach { palette ->
                             val selected = palette == selectedPalette
                             val (accent, onAccent) = previews.getValue(palette)
+                            val paletteDescription = stringResource(R.string.palette_accessibility, palette.displayName())
                             Surface(
                                 modifier = Modifier
                                     .size(48.dp)
@@ -667,7 +730,7 @@ private fun DynamicColorSettingCard(
                                         onClick = { onPresetPalette(palette) },
                                     )
                                     .semantics {
-                                        contentDescription = "${palette.label}配色"
+                                        contentDescription = paletteDescription
                                     },
                                 shape = CircleShape,
                                 color = accent,
@@ -709,7 +772,7 @@ private fun SettingsHeader(title: String, canGoBack: Boolean, onBack: () -> Unit
     Row(verticalAlignment = Alignment.CenterVertically) {
         if (canGoBack) {
             IconButton(onClick = onBack) {
-                Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回设置")
+                Icon(Icons.AutoMirrored.Rounded.ArrowBack, stringResource(R.string.back_to_settings))
             }
         }
         Text(title, style = MaterialTheme.typography.headlineLarge)
@@ -718,32 +781,60 @@ private fun SettingsHeader(title: String, canGoBack: Boolean, onBack: () -> Unit
 
 private fun LazyListScope.settingsCategoryItems(onNavigate: (AppDestination) -> Unit) {
     item(key = "appearance", contentType = "category") {
-        SettingsLink("界面", "封面、布局与主题配色", Icons.Rounded.Palette) {
+        SettingsLink(
+            titleRes = R.string.settings_appearance,
+            descriptionRes = R.string.settings_appearance_description,
+            testKey = "appearance",
+            icon = Icons.Rounded.Palette,
+        ) {
             onNavigate(AppDestination.SETTINGS_APPEARANCE)
         }
     }
     item(key = "lyrics", contentType = "category") {
-        SettingsLink("歌词", "在线来源、翻译与显示效果", Icons.Rounded.MusicNote) {
+        SettingsLink(
+            titleRes = R.string.settings_lyrics,
+            descriptionRes = R.string.settings_lyrics_description,
+            testKey = "lyrics",
+            icon = Icons.Rounded.MusicNote,
+        ) {
             onNavigate(AppDestination.SETTINGS_LYRICS)
         }
     }
     item(key = "network", contentType = "category") {
-        SettingsLink("网络", "ListenBrainz 播放记录与上传规则", Icons.Rounded.Language) {
+        SettingsLink(
+            titleRes = R.string.settings_network,
+            descriptionRes = R.string.settings_network_description,
+            testKey = "network",
+            icon = Icons.Rounded.Language,
+        ) {
             onNavigate(AppDestination.SETTINGS_NETWORK)
         }
     }
     item(key = "about", contentType = "category") {
-        SettingsLink("关于", "软件版本、开源项目与隐私说明", Icons.Rounded.Info) {
+        SettingsLink(
+            titleRes = R.string.settings_about,
+            descriptionRes = R.string.settings_about_description,
+            testKey = "about",
+            icon = Icons.Rounded.Info,
+        ) {
             onNavigate(AppDestination.SETTINGS_ABOUT)
         }
     }
 }
 
 @Composable
-private fun SettingsLink(title: String, description: String, icon: ImageVector, onClick: () -> Unit) {
+private fun SettingsLink(
+    @androidx.annotation.StringRes titleRes: Int,
+    @androidx.annotation.StringRes descriptionRes: Int,
+    testKey: String,
+    icon: ImageVector,
+    onClick: () -> Unit,
+) {
+    val title = stringResource(titleRes)
+    val description = stringResource(descriptionRes)
     Surface(
         onClick = onClick,
-        modifier = Modifier.fillMaxWidth().testTag("settings-link-$title"),
+        modifier = Modifier.fillMaxWidth().testTag("settings-link-$testKey"),
         shape = RoundedCornerShape(26.dp),
         color = MaterialTheme.colorScheme.surfaceContainer,
     ) {
@@ -765,30 +856,31 @@ private fun LazyListScope.aboutSettingsItems() {
         val context = LocalContext.current
         val packageInfo = remember(context) { context.packageManager.getPackageInfo(context.packageName, 0) }
         val icon = remember(context) { context.packageManager.getApplicationIcon(context.packageName).toBitmap().asImageBitmap() }
-        SettingCard("L’s Music", "版本 ${packageInfo.versionName} (${packageInfo.longVersionCode})") {
-            Image(icon, "应用图标", Modifier.size(72.dp))
+        SettingCard(stringResource(R.string.app_name), stringResource(R.string.version_info, packageInfo.versionName.orEmpty(), packageInfo.longVersionCode)) {
+            Image(icon, stringResource(R.string.app_icon), Modifier.size(72.dp))
             Spacer(Modifier.height(16.dp))
-            Text("浏览家庭网络音乐库，通过 DLNA 设备或手机本机播放音乐。支持播放队列、在线同步歌词和可选的 ListenBrainz 播放记录。")
+            Text(stringResource(R.string.about_description))
             Spacer(Modifier.height(12.dp))
-            Text("MIT 开源许可证", style = MaterialTheme.typography.bodySmall)
+            Text(stringResource(R.string.mit_license), style = MaterialTheme.typography.bodySmall)
         }
     }
     val links = listOf(
-        "项目主页" to "",
-        "版本发布" to "/releases",
-        "问题反馈" to "/issues",
-        "隐私说明" to "/blob/main/PRIVACY.md",
-        "开源许可证" to "/blob/main/LICENSE",
-        "第三方声明" to "/blob/main/THIRD_PARTY_NOTICES.md",
+        Triple(R.string.project_homepage, "project-homepage", ""),
+        Triple(R.string.releases, "releases", "/releases"),
+        Triple(R.string.issue_tracker, "issue-tracker", "/issues"),
+        Triple(R.string.privacy_statement, "privacy-statement", "/blob/main/PRIVACY.md"),
+        Triple(R.string.open_source_license, "open-source-license", "/blob/main/LICENSE"),
+        Triple(R.string.third_party_notices, "third-party-notices", "/blob/main/THIRD_PARTY_NOTICES.md"),
     )
-    links.forEach { (label, path) ->
+    links.forEach { (label, testKey, path) ->
         item(key = label, contentType = "link") {
             val context = LocalContext.current
-            SettingsLink(label, "在浏览器中打开", Icons.Rounded.Info) {
+            val noBrowserAvailable = stringResource(R.string.no_browser_available)
+            SettingsLink(label, R.string.open_in_browser, testKey, Icons.Rounded.Info) {
                 try {
                     context.startActivity(Intent(Intent.ACTION_VIEW, "https://github.com/bibibivlin/LsMusic$path".toUri()))
                 } catch (_: android.content.ActivityNotFoundException) {
-                    Toast.makeText(context, "没有可用于打开链接的浏览器", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, noBrowserAvailable, Toast.LENGTH_SHORT).show()
                 }
             }
         }
@@ -796,26 +888,27 @@ private fun LazyListScope.aboutSettingsItems() {
 }
 
 @Composable
-internal fun ExitProgressDialog(status: ExitStatus, error: String?, onRetry: () -> Unit) {
+internal fun ExitProgressDialog(status: ExitStatus, error: UiText?, onRetry: () -> Unit) {
     if (status == ExitStatus.IDLE || status == ExitStatus.COMPLETE) return
+    val resources = LocalResources.current
     AlertDialog(
         onDismissRequest = {},
         properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false),
-        title = { Text(if (status == ExitStatus.SAVE_FAILED) "记录尚未保存" else "正在退出…") },
+        title = { Text(if (status == ExitStatus.SAVE_FAILED) stringResource(R.string.exit_save_failed_title) else stringResource(R.string.exiting)) },
         text = {
             if (status == ExitStatus.SAVE_FAILED) {
-                Text(error ?: "播放已停止，无法保存播放记录，请重试。")
+                Text((error ?: UiText.Resource(R.string.exit_save_failed_body)).resolve(resources))
             } else {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
                     Spacer(Modifier.width(16.dp))
-                    Text("正在停止播放并保存播放记录…")
+                    Text(stringResource(R.string.exit_stopping_body))
                 }
             }
         },
         confirmButton = {
             if (status == ExitStatus.SAVE_FAILED) {
-                TextButton(onClick = onRetry) { Text("重试保存并退出") }
+                TextButton(onClick = onRetry) { Text(stringResource(R.string.retry_save_exit)) }
             }
         },
     )

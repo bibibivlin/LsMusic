@@ -12,6 +12,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import com.linxyi.lsmusic.listenbrainz.MusicBrainzMetadataParser
+import com.linxyi.lsmusic.R
+import com.linxyi.lsmusic.ui.UiText
 import org.jupnp.android.AndroidUpnpService
 import org.jupnp.controlpoint.ActionCallback
 import org.jupnp.model.action.ActionInvocation
@@ -62,7 +64,9 @@ class DlnaController(context: Context) : AutoCloseable {
             val isRelevantMusicDevice =
                 device.findService(CONTENT_DIRECTORY) != null || device.findService(AV_TRANSPORT) != null
             if (isRelevantMusicDevice) {
-                _snapshot.value = _snapshot.value.copy(error = "发现设备失败：${ex.localizedMessage}")
+                _snapshot.value = _snapshot.value.copy(
+                    error = UiText.Resource(R.string.error_dlna_discovery_failed, listOf(ex.localizedMessage.orEmpty())),
+                )
             } else {
                 Log.i(TAG, "Ignoring non-media UPnP discovery failure: ${device.displayString}", ex)
             }
@@ -74,13 +78,13 @@ class DlnaController(context: Context) : AutoCloseable {
             if (closed) return
             val upnp = binder as? AndroidUpnpService
             if (upnp == null) {
-                reportServiceError("DLNA 服务返回了无法识别的连接")
+                reportServiceError(UiText.Resource(R.string.error_dlna_service_unrecognized))
                 return
             }
             val registry = upnp.registry
             val controlPoint = upnp.controlPoint
             if (registry == null || controlPoint == null) {
-                reportServiceError("DLNA 核心服务初始化失败，请确认 Wi‑Fi 已连接后重试")
+                reportServiceError(UiText.Resource(R.string.error_dlna_service_init))
                 return
             }
             service = upnp
@@ -93,7 +97,7 @@ class DlnaController(context: Context) : AutoCloseable {
             service = null
             _snapshot.value = _snapshot.value.copy(
                 isSearching = false,
-                error = "DLNA 服务连接已断开",
+                error = UiText.Resource(R.string.error_dlna_service_disconnected),
             )
         }
     }
@@ -105,7 +109,7 @@ class DlnaController(context: Context) : AutoCloseable {
             Context.BIND_AUTO_CREATE,
         )
         if (!bound) {
-            _snapshot.value = DlnaSnapshot(error = "无法启动 DLNA 控制服务")
+            _snapshot.value = DlnaSnapshot(error = UiText.Resource(R.string.error_dlna_control_start))
         }
     }
 
@@ -121,12 +125,12 @@ class DlnaController(context: Context) : AutoCloseable {
         serverId: String,
         objectId: String,
         onResult: (List<MediaEntry>) -> Unit,
-        onError: (String) -> Unit,
+        onError: (UiText) -> Unit,
     ) {
-        val upnp = service ?: return onError("DLNA 服务尚未就绪")
+        val upnp = service ?: return onError(UiText.Resource(R.string.error_dlna_not_ready))
         val server = devices[serverId]
         val contentDirectory = server?.findService(CONTENT_DIRECTORY)
-            ?: return onError("所选媒体库不再可用")
+            ?: return onError(UiText.Resource(R.string.error_library_unavailable))
         fun resolveServerUri(value: Any?): String? {
             if (value == null) return null
             return runCatching {
@@ -238,7 +242,7 @@ class DlnaController(context: Context) : AutoCloseable {
                 invocation: ActionInvocation<*>,
                 operation: UpnpResponse?,
                 defaultMsg: String,
-            ) = onError(defaultMsg)
+            ) = onError(UiText.Resource(R.string.error_transport_action, listOf("Browse", defaultMsg)))
         })
     }
 
@@ -247,10 +251,10 @@ class DlnaController(context: Context) : AutoCloseable {
         track: MediaEntry,
         playImmediately: Boolean,
         onComplete: () -> Unit = {},
-        onError: (String) -> Unit = {},
+        onError: (UiText) -> Unit = {},
     ) {
         if (stopping || closed) return
-        val uri = track.resourceUri ?: return onError("曲目没有可播放的资源地址")
+        val uri = track.resourceUri ?: return onError(UiText.Resource(R.string.error_track_resource_missing))
         val metadata = track.didlMetadata?.takeIf { it.isNotBlank() } ?: createDidlMetadata(track, uri)
         setTrackUri(rendererId, uri, metadata, playImmediately, onComplete, onError)
     }
@@ -261,7 +265,7 @@ class DlnaController(context: Context) : AutoCloseable {
         metadata: String,
         playImmediately: Boolean,
         onComplete: () -> Unit,
-        onError: (String) -> Unit,
+        onError: (UiText) -> Unit,
         retriesRemaining: Int = 1,
         transitionRecoveryRemaining: Int = 1,
     ) {
@@ -346,7 +350,7 @@ class DlnaController(context: Context) : AutoCloseable {
                     SET_URI_RETRY_DELAY_MS,
                 )
             } else {
-                onError(error)
+                onError(UiText.Resource(R.string.error_set_transport_uri, listOf(error)))
             }
         })
     }
@@ -364,7 +368,7 @@ class DlnaController(context: Context) : AutoCloseable {
         metadata: String,
         playImmediately: Boolean,
         onComplete: () -> Unit,
-        onError: (String) -> Unit,
+        onError: (UiText) -> Unit,
         retriesRemaining: Int,
         transitionRecoveryRemaining: Int,
     ) {
@@ -393,9 +397,10 @@ class DlnaController(context: Context) : AutoCloseable {
                 }
             }.onFailure { failure ->
                 if (stopping || closed) return@onFailure
-                val error = "SetAVTransportURI 失败：${failure.localizedMessage ?: "无法连接播放设备"}"
-                Log.w(TAG, "Raw SetAVTransportURI failed on $rendererId: $error", failure)
-                if (transitionRecoveryRemaining > 0 && AvTransportSoap.isTransitionUnavailable(error)) {
+                val technicalError = failure.localizedMessage ?: "player connection failed"
+                val error = UiText.Resource(R.string.error_set_transport_uri, listOf(technicalError))
+                Log.w(TAG, "Raw SetAVTransportURI failed on $rendererId: $technicalError", failure)
+                if (transitionRecoveryRemaining > 0 && AvTransportSoap.isTransitionUnavailable(technicalError)) {
                     recoverSetTrackTransition(
                         rendererId = rendererId,
                         uri = uri,
@@ -438,7 +443,7 @@ class DlnaController(context: Context) : AutoCloseable {
         metadata: String,
         playImmediately: Boolean,
         onComplete: () -> Unit,
-        onError: (String) -> Unit,
+        onError: (UiText) -> Unit,
         retriesRemaining: Int,
         transitionRecoveryRemaining: Int,
     ) {
@@ -463,11 +468,13 @@ class DlnaController(context: Context) : AutoCloseable {
                     SET_URI_AFTER_STOP_DELAY_MS,
                 )
             },
-            onError = { stopError -> onError("切换曲目前停止播放失败：$stopError") },
+            onError = { stopError ->
+                onError(UiText.Resource(R.string.error_stop_before_track_change, listOf(stopError)))
+            },
         )
     }
 
-    fun play(rendererId: String, onComplete: () -> Unit = {}, onError: (String) -> Unit = {}) {
+    fun play(rendererId: String, onComplete: () -> Unit = {}, onError: (UiText) -> Unit = {}) {
         if (stopping || closed) return
         executeTransportAction(
             rendererId = rendererId,
@@ -478,15 +485,15 @@ class DlnaController(context: Context) : AutoCloseable {
         )
     }
 
-    fun pause(rendererId: String, onComplete: () -> Unit = {}, onError: (String) -> Unit = {}) {
+    fun pause(rendererId: String, onComplete: () -> Unit = {}, onError: (UiText) -> Unit = {}) {
         executeTransportAction(rendererId, "Pause", mapOf("InstanceID" to 0), onComplete, onError)
     }
 
-    fun stop(rendererId: String, onComplete: () -> Unit = {}, onError: (String) -> Unit = {}) {
+    fun stop(rendererId: String, onComplete: () -> Unit = {}, onError: (UiText) -> Unit = {}) {
         executeTransportAction(rendererId, "Stop", mapOf("InstanceID" to 0), onComplete, onError)
     }
 
-    fun seek(rendererId: String, target: String, onError: (String) -> Unit = {}) {
+    fun seek(rendererId: String, target: String, onError: (UiText) -> Unit = {}) {
         executeTransportAction(
             rendererId = rendererId,
             actionName = "Seek",
@@ -500,12 +507,12 @@ class DlnaController(context: Context) : AutoCloseable {
         actionName: String,
         inputs: Map<String, Any>,
         onSuccess: () -> Unit = {},
-        onError: (String) -> Unit = {},
+        onError: (UiText) -> Unit = {},
     ) {
         if (closed || (stopping && actionName != "Stop")) return
-        val renderer = devices[rendererId] ?: return onError("所选播放设备不再可用")
+        val renderer = devices[rendererId] ?: return onError(UiText.Resource(R.string.error_renderer_unavailable))
         val avTransport = renderer.findService(AV_TRANSPORT)
-            ?: return onError("播放设备不支持 AVTransport")
+            ?: return onError(UiText.Resource(R.string.error_renderer_no_avtransport))
         if (shouldUseRawSoap(rendererId)) {
             executeRawSoapTransportAction(rendererId, actionName, inputs, onSuccess, onError)
             return
@@ -522,7 +529,7 @@ class DlnaController(context: Context) : AutoCloseable {
                     executeRawSoapTransportAction(rendererId, actionName, inputs, onSuccess, onError)
                     return@transportFailure
                 }
-                onError(error)
+                onError(UiText.Resource(R.string.error_transport_action, listOf(actionName, error)))
             },
         )
     }
@@ -532,12 +539,12 @@ class DlnaController(context: Context) : AutoCloseable {
         actionName: String,
         inputs: Map<String, Any>,
         onSuccess: () -> Unit = {},
-        onError: (String) -> Unit = {},
+        onError: (UiText) -> Unit = {},
     ) {
         if (closed || (stopping && actionName != "Stop")) return
-        val renderer = devices[rendererId] ?: return onError("所选播放设备不再可用")
+        val renderer = devices[rendererId] ?: return onError(UiText.Resource(R.string.error_renderer_unavailable))
         val avTransport = renderer.findService(AV_TRANSPORT)
-            ?: return onError("播放设备不支持 AVTransport")
+            ?: return onError(UiText.Resource(R.string.error_renderer_no_avtransport))
         val controlUri = avTransport.controlURI
         val endpoint = if (controlUri.isAbsolute) controlUri else renderer.identity.descriptorURL.toURI().resolve(controlUri)
         val executor = if (stopping && actionName == "Stop") shutdownExecutor else commandExecutor
@@ -553,8 +560,9 @@ class DlnaController(context: Context) : AutoCloseable {
                 rememberRawSoapRenderer(rendererId, actionName)
                 onSuccess()
             }.onFailure { failure ->
-                val error = "$actionName 失败：${failure.localizedMessage ?: "无法连接播放设备"}"
-                Log.w(TAG, "Raw $actionName failed on $rendererId: $error", failure)
+                val detail = failure.localizedMessage ?: "player connection failed"
+                val error = UiText.Resource(R.string.error_transport_action, listOf(actionName, detail))
+                Log.w(TAG, "Raw $actionName failed on $rendererId: $detail", failure)
                 onError(error)
             }
         }
@@ -563,7 +571,7 @@ class DlnaController(context: Context) : AutoCloseable {
     fun getPositionInfo(
         rendererId: String,
         onResult: (position: String?, duration: String?) -> Unit,
-        onError: (String) -> Unit = {},
+        onError: (UiText) -> Unit = {},
     ) {
         val renderer = devices[rendererId]
         val avTransport = renderer?.findService(AV_TRANSPORT)
@@ -578,11 +586,11 @@ class DlnaController(context: Context) : AutoCloseable {
             )
             return
         }
-        val upnp = service ?: return onError("DLNA 服务尚未就绪")
+        val upnp = service ?: return onError(UiText.Resource(R.string.error_dlna_not_ready))
         val remoteService = renderer?.findService(AV_TRANSPORT)
-            ?: return onError("播放设备不支持 AVTransport")
+            ?: return onError(UiText.Resource(R.string.error_renderer_no_avtransport))
         val action = remoteService.getAction("GetPositionInfo")
-            ?: return onError("播放设备不支持进度查询")
+            ?: return onError(UiText.Resource(R.string.error_renderer_no_progress))
         val invocation = ActionInvocation(action)
         invocation.setInput("InstanceID", 0)
         upnp.controlPoint.execute(object : ActionCallback(invocation) {
@@ -609,7 +617,7 @@ class DlnaController(context: Context) : AutoCloseable {
                         onError = onError,
                     )
                 } else {
-                    onError(defaultMsg)
+                    onError(UiText.Resource(R.string.error_transport_action, listOf("GetPositionInfo", defaultMsg)))
                 }
             }
         })
@@ -618,7 +626,7 @@ class DlnaController(context: Context) : AutoCloseable {
     fun getTransportInfo(
         rendererId: String,
         onResult: (state: String?) -> Unit,
-        onError: (String) -> Unit = {},
+        onError: (UiText) -> Unit = {},
     ) {
         val renderer = devices[rendererId]
         val avTransport = renderer?.findService(AV_TRANSPORT)
@@ -633,11 +641,11 @@ class DlnaController(context: Context) : AutoCloseable {
             )
             return
         }
-        val upnp = service ?: return onError("DLNA 服务尚未就绪")
+        val upnp = service ?: return onError(UiText.Resource(R.string.error_dlna_not_ready))
         val remoteService = renderer?.findService(AV_TRANSPORT)
-            ?: return onError("播放设备不支持 AVTransport")
+            ?: return onError(UiText.Resource(R.string.error_renderer_no_avtransport))
         val action = remoteService.getAction("GetTransportInfo")
-            ?: return onError("播放设备不支持状态查询")
+            ?: return onError(UiText.Resource(R.string.error_renderer_no_state))
         val invocation = ActionInvocation(action)
         invocation.setInput("InstanceID", 0)
         upnp.controlPoint.execute(object : ActionCallback(invocation) {
@@ -661,7 +669,7 @@ class DlnaController(context: Context) : AutoCloseable {
                         onError = onError,
                     )
                 } else {
-                    onError(defaultMsg)
+                    onError(UiText.Resource(R.string.error_transport_action, listOf("GetTransportInfo", defaultMsg)))
                 }
             }
         })
@@ -673,7 +681,7 @@ class DlnaController(context: Context) : AutoCloseable {
         descriptorUri: URI,
         serviceType: String,
         onResult: (position: String?, duration: String?) -> Unit,
-        onError: (String) -> Unit,
+        onError: (UiText) -> Unit,
     ) {
         val endpoint = if (controlUri.isAbsolute) controlUri else descriptorUri.resolve(controlUri)
         commandExecutor.execute {
@@ -687,15 +695,16 @@ class DlnaController(context: Context) : AutoCloseable {
                 val position = AvTransportSoap.responseValue(response, "RelTime")
                 val duration = AvTransportSoap.responseValue(response, "TrackDuration")
                 if (position == null && duration == null) {
-                    error("播放设备未返回进度数据")
+                    error("player did not return position data")
                 }
                 position to duration
             }.onSuccess { (position, duration) ->
                 rememberRawSoapRenderer(rendererId, "GetPositionInfo")
                 onResult(position, duration)
             }.onFailure { failure ->
-                val error = "进度查询失败：${failure.localizedMessage ?: "无法连接播放设备"}"
-                Log.w(TAG, "Raw GetPositionInfo failed on $rendererId: $error", failure)
+                val detail = failure.localizedMessage ?: "player connection failed"
+                val error = UiText.Resource(R.string.error_transport_action, listOf("GetPositionInfo", detail))
+                Log.w(TAG, "Raw GetPositionInfo failed on $rendererId: $detail", failure)
                 onError(error)
             }
         }
@@ -707,7 +716,7 @@ class DlnaController(context: Context) : AutoCloseable {
         descriptorUri: URI,
         serviceType: String,
         onResult: (state: String?) -> Unit,
-        onError: (String) -> Unit,
+        onError: (UiText) -> Unit,
     ) {
         val endpoint = if (controlUri.isAbsolute) controlUri else descriptorUri.resolve(controlUri)
         commandExecutor.execute {
@@ -723,8 +732,9 @@ class DlnaController(context: Context) : AutoCloseable {
                 rememberRawSoapRenderer(rendererId, "GetTransportInfo")
                 onResult(state)
             }.onFailure { failure ->
-                val error = "状态查询失败：${failure.localizedMessage ?: "无法连接播放设备"}"
-                Log.w(TAG, "Raw GetTransportInfo failed on $rendererId: $error", failure)
+                val detail = failure.localizedMessage ?: "player connection failed"
+                val error = UiText.Resource(R.string.error_transport_action, listOf("GetTransportInfo", detail))
+                Log.w(TAG, "Raw GetTransportInfo failed on $rendererId: $detail", failure)
                 onError(error)
             }
         }
@@ -781,16 +791,16 @@ class DlnaController(context: Context) : AutoCloseable {
         onError: (String) -> Unit = {},
     ) {
         if (closed || (stopping && actionName != "Stop")) return
-        val upnp = service ?: return onError("DLNA 服务尚未就绪")
+        val upnp = service ?: return onError(appContext.getString(R.string.error_dlna_not_ready))
         val remoteService = devices[rendererId]?.findService(UDAServiceType(serviceName))
-            ?: return onError("播放设备不支持 $serviceName")
+            ?: return onError(appContext.getString(R.string.error_unsupported_service, serviceName))
         val action = remoteService.getAction(actionName)
-            ?: return onError("播放设备不支持 $actionName")
+            ?: return onError(appContext.getString(R.string.error_unsupported_action, actionName))
         val invocation = ActionInvocation(action)
         try {
             inputs.forEach { (name, value) -> invocation.setInput(name, value) }
         } catch (error: Exception) {
-            return onError(error.localizedMessage ?: "无法创建播放命令")
+            return onError(error.localizedMessage ?: appContext.getString(R.string.error_create_playback_command, error.localizedMessage.orEmpty()))
         }
         upnp.controlPoint.execute(object : ActionCallback(invocation) {
             override fun success(invocation: ActionInvocation<*>) {
@@ -804,7 +814,7 @@ class DlnaController(context: Context) : AutoCloseable {
             ) {
                 if (closed || (stopping && actionName != "Stop")) return
                 Log.w(TAG, "$actionName failed on $rendererId: $defaultMsg")
-                onError("$actionName 失败：$defaultMsg")
+                onError(defaultMsg)
             }
         })
     }
@@ -821,7 +831,7 @@ class DlnaController(context: Context) : AutoCloseable {
         publishDevices()
     }
 
-    private fun reportServiceError(message: String) {
+    private fun reportServiceError(message: UiText) {
         service = null
         _snapshot.value = _snapshot.value.copy(isSearching = false, error = message)
     }
@@ -880,7 +890,7 @@ class DlnaController(context: Context) : AutoCloseable {
                 xmlns:dc="http://purl.org/dc/elements/1.1/"
                 xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/">
               <item id="${xmlEscape(track.id)}" parentID="${xmlEscape(track.parentId)}" restricted="1">
-                <dc:title>${xmlEscape(track.title.ifBlank { "未知曲目" })}</dc:title>$creator$album
+                <dc:title>${xmlEscape(track.title.ifBlank { "Unknown track" })}</dc:title>$creator$album
                 <upnp:class>object.item.audioItem.musicTrack</upnp:class>
                 <res protocolInfo="${xmlEscape(protocolInfo)}"$duration>${xmlEscape(uri)}</res>
               </item>

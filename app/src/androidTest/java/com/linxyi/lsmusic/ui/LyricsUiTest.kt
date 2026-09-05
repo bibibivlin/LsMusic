@@ -9,6 +9,8 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.ui.unit.dp
+import androidx.test.platform.app.InstrumentationRegistry
+import com.linxyi.lsmusic.R
 import com.linxyi.lsmusic.dlna.MediaEntry
 import com.linxyi.lsmusic.lyrics.LyricsDocument
 import com.linxyi.lsmusic.lyrics.LyricsLine
@@ -43,10 +45,10 @@ class LyricsUiTest {
             }
         }
 
-        compose.onNodeWithText("无歌词").assertDoesNotExist()
-        compose.onNodeWithContentDescription("专辑封面，点击打开歌词").performClick()
-        compose.onNodeWithText("无歌词").assertIsDisplayed().performClick()
-        compose.onNodeWithText("无歌词").assertDoesNotExist()
+        compose.onNodeWithText(text(R.string.lyrics_not_found)).assertDoesNotExist()
+        compose.onNodeWithContentDescription(text(R.string.album_cover_open_lyrics, "Track")).performClick()
+        compose.onNodeWithText(text(R.string.lyrics_not_found)).assertIsDisplayed().performClick()
+        compose.onNodeWithText(text(R.string.lyrics_not_found)).assertDoesNotExist()
     }
 
     @Test
@@ -68,9 +70,9 @@ class LyricsUiTest {
             }
         }
 
-        compose.onNodeWithContentDescription("专辑封面，点击打开歌词").performClick()
-        compose.onNodeWithContentDescription("专辑封面，点击打开歌词").assertDoesNotExist()
-        compose.onNodeWithText("无歌词").assertIsDisplayed()
+        compose.onNodeWithContentDescription(text(R.string.album_cover_open_lyrics, "Track")).performClick()
+        compose.onNodeWithContentDescription(text(R.string.album_cover_open_lyrics, "Track")).assertDoesNotExist()
+        compose.onNodeWithText(text(R.string.lyrics_not_found)).assertIsDisplayed()
     }
 
     @Test
@@ -92,9 +94,9 @@ class LyricsUiTest {
             }
         }
 
-        compose.onNodeWithContentDescription("专辑封面，点击打开歌词").performClick()
-        compose.onNodeWithContentDescription("专辑封面，点击打开歌词").assertIsDisplayed()
-        compose.onNodeWithText("无歌词").assertIsDisplayed()
+        compose.onNodeWithContentDescription(text(R.string.album_cover_open_lyrics, "Track")).performClick()
+        compose.onNodeWithContentDescription(text(R.string.album_cover_open_lyrics, "Track")).assertIsDisplayed()
+        compose.onNodeWithText(text(R.string.lyrics_not_found)).assertIsDisplayed()
     }
 
     @Test
@@ -115,8 +117,8 @@ class LyricsUiTest {
             }
         }
 
-        compose.onNodeWithContentDescription("专辑封面").assertHasNoClickAction()
-        compose.onNodeWithText("无歌词").assertDoesNotExist()
+        compose.onNodeWithContentDescription(text(R.string.album_cover, "Track")).assertHasNoClickAction()
+        compose.onNodeWithText(text(R.string.lyrics_not_found)).assertDoesNotExist()
     }
 
     @Test
@@ -140,7 +142,7 @@ class LyricsUiTest {
             }
         }
 
-        compose.onNodeWithText("点击重试").performClick()
+        compose.onNodeWithText(text(R.string.retry)).performClick()
         compose.runOnIdle {
             assertTrue(retried)
             assertFalse(closed)
@@ -159,7 +161,7 @@ class LyricsUiTest {
                                 LyricsLine(
                                     stableId = "line",
                                     startMs = 0L,
-                                    original = "测试歌词",
+                                    original = "Test lyrics",
                                 ),
                             ),
                         ),
@@ -177,8 +179,8 @@ class LyricsUiTest {
             }
         }
 
-        compose.onNodeWithText("测试歌词").assertIsDisplayed()
-        compose.onNodeWithText("歌词来源：QQ音乐").assertDoesNotExist()
+        compose.onNodeWithText("Test lyrics").assertIsDisplayed()
+        compose.onNodeWithText(text(R.string.lyrics_source_label, text(R.string.lyrics_provider_qq))).assertDoesNotExist()
     }
 
     private fun playingState(
@@ -202,4 +204,7 @@ class LyricsUiTest {
         lyricsLoadState = lyricsLoadState,
         preferences = AppPreferences(lyricsEnabled = lyricsEnabled),
     )
+
+    private fun text(id: Int, vararg args: Any): String =
+        InstrumentationRegistry.getInstrumentation().targetContext.getString(id, *args)
 }

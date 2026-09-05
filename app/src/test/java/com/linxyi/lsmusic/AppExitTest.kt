@@ -9,6 +9,7 @@ import com.linxyi.lsmusic.ui.AppDestination
 import com.linxyi.lsmusic.ui.AppExitCoordinator
 import com.linxyi.lsmusic.ui.ExitStatus
 import com.linxyi.lsmusic.ui.LsMusicUiState
+import com.linxyi.lsmusic.ui.UiText
 import com.linxyi.lsmusic.ui.remoteRendererToStopOnExit
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.awaitCancellation
@@ -136,7 +137,7 @@ class AppExitTest {
         awaitStatus(coordinator, ExitStatus.COMPLETE)
         assertTrue(reportCancelled)
         assertTrue(stopCancelled)
-        assertEquals("未能确认远程设备已停止", coordinator.progress.warning)
+        assertEquals(R.string.remote_stop_unconfirmed, (coordinator.progress.warning as UiText.Resource).id)
     }
 
     @Test

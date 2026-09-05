@@ -59,6 +59,8 @@ import com.linxyi.lsmusic.lyrics.activeLyricsLineIndex
 import com.linxyi.lsmusic.lyrics.displayTexts
 import com.linxyi.lsmusic.lyrics.interpolatedLyricsPosition
 import com.linxyi.lsmusic.lyrics.wordSweepProgress
+import com.linxyi.lsmusic.R
+import androidx.compose.ui.res.stringResource
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
@@ -79,32 +81,32 @@ internal fun LyricsPanel(
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Box(modifier = modifier.clickable(onClickLabel = "关闭歌词") { onClose() }) {
+    Box(modifier = modifier.clickable(onClickLabel = stringResource(R.string.close_lyrics)) { onClose() }) {
         when (loadState) {
             LyricsLoadState.Idle,
             LyricsLoadState.Loading -> LyricsMessage {
                 CircularProgressIndicator()
                 Spacer(Modifier.height(14.dp))
-                Text("正在查找在线歌词")
+                Text(stringResource(R.string.lyrics_loading))
             }
             LyricsLoadState.NotFound -> LyricsMessage {
                 Text(
-                    "无歌词",
+                    stringResource(R.string.lyrics_not_found),
                     style = MaterialTheme.typography.headlineMedium,
                     fontWeight = FontWeight.SemiBold,
                 )
             }
             is LyricsLoadState.Error -> LyricsMessage {
-                Text("歌词加载失败", style = MaterialTheme.typography.titleLarge)
+                Text(stringResource(R.string.lyrics_load_failed), style = MaterialTheme.typography.titleLarge)
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    "请检查网络后重试",
+                    stringResource(R.string.lyrics_check_network),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Spacer(Modifier.height(14.dp))
                 Button(
                     onClick = onRetry,
-                ) { Text("点击重试") }
+                ) { Text(stringResource(R.string.retry)) }
             }
             is LyricsLoadState.Loaded -> LoadedLyrics(
                 document = loadState.document,
@@ -156,7 +158,7 @@ private fun LoadedLyrics(
     val edgeFadeAmount by animateFloatAsState(
         targetValue = if (distanceEffectsVisible) 1f else 0f,
         animationSpec = tween(EFFECT_TRANSITION_DURATION_MS, easing = FastOutSlowInEasing),
-        label = "歌词边缘渐隐",
+        label = "lyrics-edge-fade",
     )
 
     LaunchedEffect(isUserDragging) {
@@ -210,7 +212,7 @@ private fun LoadedLyrics(
                         0.dp
                     },
                     animationSpec = tween(EFFECT_TRANSITION_DURATION_MS, easing = FastOutSlowInEasing),
-                    label = "歌词模糊",
+                    label = "lyrics-blur",
                 )
                 val itemAlpha by animateFloatAsState(
                     targetValue = if (!distanceEffectsVisible || active) {
@@ -219,7 +221,7 @@ private fun LoadedLyrics(
                         (1f - distance * .11f).coerceAtLeast(.35f)
                     },
                     animationSpec = tween(EFFECT_TRANSITION_DURATION_MS, easing = FastOutSlowInEasing),
-                    label = "歌词透明度",
+                    label = "lyrics-alpha",
                 )
                 val scale by animateFloatAsState(
                     targetValue = if (!distanceEffectsVisible || active) {
@@ -228,7 +230,7 @@ private fun LoadedLyrics(
                         (1f - distance * .015f).coerceAtLeast(.92f)
                     },
                     animationSpec = tween(EFFECT_TRANSITION_DURATION_MS, easing = FastOutSlowInEasing),
-                    label = "歌词缩放",
+                    label = "lyrics-scale",
                 )
                 val stagger by animateFloatAsState(
                     targetValue = if (distanceEffectsVisible && !active) {
@@ -237,7 +239,7 @@ private fun LoadedLyrics(
                         0f
                     },
                     animationSpec = tween(EFFECT_TRANSITION_DURATION_MS, easing = FastOutSlowInEasing),
-                    label = "歌词错峰",
+                    label = "lyrics-stagger",
                 )
                 LyricsLineContent(
                     line = line,
@@ -260,7 +262,15 @@ private fun LoadedLyrics(
         }
         if (sourceVisible) {
             Text(
-                "歌词来源：${document.provider.label}",
+                stringResource(
+                    R.string.lyrics_source_label,
+                    stringResource(
+                        when (document.provider) {
+                            com.linxyi.lsmusic.lyrics.LyricsProviderId.NETEASE -> R.string.lyrics_provider_netease
+                            com.linxyi.lsmusic.lyrics.LyricsProviderId.QQ -> R.string.lyrics_provider_qq
+                        },
+                    ),
+                ),
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .padding(horizontal = 12.dp, vertical = 6.dp),
@@ -314,7 +324,7 @@ private fun LyricsLineContent(
         } else {
             snap()
         },
-        label = "当前歌词强调",
+        label = "lyrics-active-line",
     )
     val sweepProgress = if (active && effectsEnabled && translationMode != LyricsTranslationMode.CHINESE_ONLY) {
         wordSweepProgress(line, positionMs)

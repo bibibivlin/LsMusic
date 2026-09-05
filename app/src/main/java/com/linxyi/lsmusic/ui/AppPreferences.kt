@@ -8,29 +8,28 @@ import com.linxyi.lsmusic.lyrics.LyricsTranslationMode
 import com.linxyi.lsmusic.lyrics.normalizedProviderOrder
 import java.util.Locale
 
-enum class GallerySize(val label: String, val minCellSize: Int) {
-    COMPACT("紧凑", 96),
-    STANDARD("标准", 160),
-    LARGE("大封面", 216),
+enum class GallerySize(val minCellSize: Int) {
+    COMPACT(96),
+    STANDARD(160),
+    LARGE(216),
 }
 
-enum class ThemeMode(val label: String) {
-    SYSTEM("跟随系统"),
-    LIGHT("浅色"),
-    DARK("深色"),
+enum class ThemeMode {
+    SYSTEM,
+    LIGHT,
+    DARK,
 }
 
 enum class PresetPalette(
-    val label: String,
     val seedArgb: Long,
 ) {
-    MIST("雾青", 0xFF5F7C74),
-    VIOLET("紫罗兰", 0xFF6750A4),
-    ROSE("玫瑰", 0xFFB3265E),
-    ORANGE("暖橙", 0xFF8B5000),
-    GREEN("青翠", 0xFF386A20),
-    TEAL("青蓝", 0xFF006B5F),
-    BLUE("湛蓝", 0xFF005FAF),
+    MIST(0xFF5F7C74),
+    VIOLET(0xFF6750A4),
+    ROSE(0xFFB3265E),
+    ORANGE(0xFF8B5000),
+    GREEN(0xFF386A20),
+    TEAL(0xFF006B5F),
+    BLUE(0xFF005FAF),
 }
 
 data class AppPreferences(

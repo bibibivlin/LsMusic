@@ -166,15 +166,15 @@ class RemotePlaybackService : Service() {
             .setLargeIcon(artwork)
             .setVisibility(Notification.VISIBILITY_PUBLIC)
             .setOnlyAlertOnce(true)
-            .addAction(notificationAction(android.R.drawable.ic_media_previous, "上一首", COMMAND_PREVIOUS))
+            .addAction(notificationAction(android.R.drawable.ic_media_previous, getString(R.string.notification_previous), COMMAND_PREVIOUS))
             .addAction(
                 notificationAction(
                     if (data.playing) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play,
-                    if (data.playing) "暂停" else "播放",
+                    if (data.playing) getString(R.string.notification_pause) else getString(R.string.notification_play),
                     if (data.playing) COMMAND_PAUSE else COMMAND_PLAY,
                 ),
             )
-            .addAction(notificationAction(android.R.drawable.ic_media_next, "下一首", COMMAND_NEXT))
+            .addAction(notificationAction(android.R.drawable.ic_media_next, getString(R.string.notification_next), COMMAND_NEXT))
             .setStyle(
                 Notification.MediaStyle()
                     .setMediaSession(mediaSession.sessionToken)
@@ -227,7 +227,7 @@ class RemotePlaybackService : Service() {
     }
 
     private fun createNotificationChannel() {
-        val channel = NotificationChannel(CHANNEL_ID, "远程播放", NotificationManager.IMPORTANCE_LOW).apply {
+        val channel = NotificationChannel(CHANNEL_ID, getString(R.string.remote_playback_channel), NotificationManager.IMPORTANCE_LOW).apply {
             setShowBadge(false)
         }
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)

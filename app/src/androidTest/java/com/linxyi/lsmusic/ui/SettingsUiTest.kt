@@ -13,6 +13,7 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.test.platform.app.InstrumentationRegistry
+import com.linxyi.lsmusic.R
 import com.linxyi.lsmusic.dlna.MediaEntry
 import com.linxyi.lsmusic.dlna.RemotePlaybackState
 import com.linxyi.lsmusic.listenbrainz.PendingListen
@@ -32,40 +33,40 @@ class SettingsUiTest {
     @Test
     fun homeKeepsDevicesAndOrdersCategoriesBeforeIndependentExit() {
         render()
-        compose.onNodeWithText("播放与设备").assertDoesNotExist()
-        compose.onNodeWithText("媒体库与播放设备").assertIsDisplayed()
-        compose.onNodeWithText("扫描局域网设备").assertIsDisplayed()
-        compose.onNodeWithText("封面大小").assertDoesNotExist()
-        compose.onNodeWithText("在线获取歌词").assertDoesNotExist()
-        compose.onNodeWithText("ListenBrainz API").assertDoesNotExist()
-        listOf("界面", "歌词", "网络", "关于").forEachIndexed { index, title ->
+        compose.onNodeWithText(text(R.string.settings_online_lyrics)).assertDoesNotExist()
+        compose.onNodeWithText(text(R.string.settings_devices_title)).assertIsDisplayed()
+        compose.onNodeWithText(text(R.string.scan_local_network)).assertIsDisplayed()
+        compose.onNodeWithText(text(R.string.settings_gallery_size)).assertDoesNotExist()
+        compose.onNodeWithText(text(R.string.settings_online_lyrics)).assertDoesNotExist()
+        compose.onNodeWithText(text(R.string.listenbrainz_api)).assertDoesNotExist()
+        listOf("appearance", "lyrics", "network", "about").forEachIndexed { index, key ->
             compose.onNodeWithTag("settings-list").performScrollToIndex(index + 2)
-            compose.waitUntil(5_000L) { compose.onNodeWithTag("settings-link-$title").isDisplayed() }
+            compose.waitUntil(5_000L) { compose.onNodeWithTag("settings-link-$key").isDisplayed() }
         }
-        compose.onNodeWithText("退出").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText(text(R.string.exit)).performScrollTo().assertIsDisplayed()
         screenshot("settings-home")
     }
 
     @Test
     fun appearanceAndNetworkRestorePreferencesDraftAndPagePosition() {
         render()
-        open("界面")
-        compose.onNodeWithText("大封面").performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.OnClick) { it() }
+        open("appearance")
+        compose.onNodeWithText(text(R.string.gallery_large)).performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.OnClick) { it() }
         compose.runOnIdle { assertEquals(GallerySize.LARGE, state.preferences.gallerySize) }
         screenshot("settings-appearance")
         back()
-        open("界面")
-        compose.onNodeWithText("大封面").assertIsSelected()
+        open("appearance")
+        compose.onNodeWithText(text(R.string.gallery_large)).assertIsSelected()
         back()
-        open("网络")
+        open("network")
         compose.onNodeWithTag("settings-list").performScrollToNode(hasSetTextAction())
         compose.onNode(hasSetTextAction()).performTextInput("offline draft")
-        compose.onNodeWithTag("settings-list").performScrollToNode(hasText("上传规则"))
-        val offset = compose.onNodeWithText("上传规则").fetchSemanticsNode().boundsInRoot.top
+        compose.onNodeWithTag("settings-list").performScrollToNode(hasText(text(R.string.upload_rules)))
+        val offset = compose.onNodeWithText(text(R.string.upload_rules)).fetchSemanticsNode().boundsInRoot.top
         // Bottom navigation deliberately returns to the root, and the saved network page restores.
-        compose.onNode(hasText("设置") and hasClickAction()).performClick()
-        open("网络")
-        assertEquals(offset, compose.onNodeWithText("上传规则").fetchSemanticsNode().boundsInRoot.top, 1f)
+        compose.onNode(hasText(text(R.string.nav_settings)) and hasClickAction()).performClick()
+        open("network")
+        assertEquals(offset, compose.onNodeWithText(text(R.string.upload_rules)).fetchSemanticsNode().boundsInRoot.top, 1f)
         compose.onNodeWithTag("settings-list").performScrollToNode(hasSetTextAction())
         compose.onNode(hasSetTextAction()).assertTextContains("offline draft")
     }
@@ -73,16 +74,16 @@ class SettingsUiTest {
     @Test
     fun pendingRecordsReturnToNetworkAndEntryIsConditional() {
         render()
-        open("网络")
-        compose.onNodeWithText("待上传记录").assertDoesNotExist()
+        open("network")
+        compose.onNodeWithText(text(R.string.pending_listens_title)).assertDoesNotExist()
         compose.runOnIdle {
             state = state.copy(pendingListens = listOf(PendingListen(
                 id = "fixture", track = track(), startedAtEpochSeconds = 1_700_000_000L,
                 durationMs = 300_000L, listenedMs = 180_000L, queuedAtEpochSeconds = 1_700_000_180L,
             )))
         }
-        compose.onNodeWithText("查看并管理").performScrollTo().performClick()
-        compose.onNodeWithContentDescription("返回网络设置").performClick()
+        compose.onNodeWithText(text(R.string.view_and_manage)).performScrollTo().performClick()
+        compose.onNodeWithContentDescription(text(R.string.back_to_network_settings)).performClick()
         compose.runOnIdle { assertEquals(AppDestination.SETTINGS_NETWORK, state.destination) }
         back()
         compose.runOnIdle { assertEquals(AppDestination.SETTINGS, state.destination) }
@@ -91,18 +92,18 @@ class SettingsUiTest {
     @Test
     fun lyricsAndAboutHaveSeparateContentAndProjectInformation() {
         render()
-        open("歌词")
-        compose.onNodeWithText("在线获取歌词").assertIsDisplayed()
-        compose.onNodeWithText("ListenBrainz API").assertDoesNotExist()
+        open("lyrics")
+        compose.onNodeWithText(text(R.string.settings_online_lyrics)).assertIsDisplayed()
+        compose.onNodeWithText(text(R.string.listenbrainz_api)).assertDoesNotExist()
         screenshot("settings-lyrics")
         back()
-        open("关于")
-        compose.onNodeWithText("L’s Music").assertIsDisplayed()
-        compose.onNodeWithText("MIT 开源许可证").assertIsDisplayed()
-        compose.onNodeWithText("你的音乐，你的选择").assertDoesNotExist()
+        open("about")
+        compose.onNodeWithText(text(R.string.app_name)).assertIsDisplayed()
+        compose.onNodeWithText(text(R.string.mit_license)).assertIsDisplayed()
+        compose.onNodeWithText(text(R.string.settings_devices_title)).assertDoesNotExist()
         screenshot("settings-about")
-        compose.onNodeWithTag("settings-list").performScrollToNode(hasTestTag("settings-link-第三方声明"))
-        compose.onNodeWithTag("settings-link-第三方声明").assertIsDisplayed()
+        compose.onNodeWithTag("settings-list").performScrollToNode(hasTestTag("settings-link-third-party-notices"))
+        compose.onNodeWithTag("settings-link-third-party-notices").assertIsDisplayed()
     }
 
     @Test
@@ -110,13 +111,13 @@ class SettingsUiTest {
         state = state.copy(queue = listOf(track()), currentQueueIndex = 0, playbackState = RemotePlaybackState.PAUSED)
         render()
         compose.onNodeWithTag("settings-list").performScrollToIndex(6)
-        compose.onNodeWithText("退出").assertIsDisplayed()
-        val exitBottom = compose.onNodeWithText("退出").fetchSemanticsNode().boundsInRoot.bottom
+        compose.onNodeWithText(text(R.string.exit)).assertIsDisplayed()
+        val exitBottom = compose.onNodeWithText(text(R.string.exit)).fetchSemanticsNode().boundsInRoot.bottom
         val playerTop = compose.onNodeWithText("Offline track").fetchSemanticsNode().boundsInRoot.top
         assertTrue(exitBottom < playerTop)
         screenshot("settings-mini-player")
-        compose.onNodeWithText("退出").performClick()
-        compose.onNodeWithText("正在退出…").assertIsDisplayed()
+        compose.onNodeWithText(text(R.string.exit)).performClick()
+        compose.onNodeWithText(text(R.string.exiting)).assertIsDisplayed()
         compose.runOnIdle { assertEquals(1, exits) }
     }
 
@@ -124,15 +125,15 @@ class SettingsUiTest {
     fun secondaryPageSlidesInWhilePreviousPageFadesOut() {
         render()
         compose.mainClock.autoAdvance = false
-        compose.onNodeWithTag("settings-link-界面").performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.OnClick) { it() }
+        compose.onNodeWithTag("settings-link-appearance").performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.OnClick) { it() }
         compose.mainClock.advanceTimeByFrame()
         compose.mainClock.advanceTimeBy(64L)
-        val enteringLeft = compose.onNodeWithText("封面大小").fetchSemanticsNode().boundsInRoot.left
-        compose.onNodeWithText("扫描局域网设备").assertExists()
+        val enteringLeft = compose.onNodeWithText(text(R.string.settings_gallery_size)).fetchSemanticsNode().boundsInRoot.left
+        compose.onNodeWithText(text(R.string.scan_local_network)).assertExists()
         compose.mainClock.advanceTimeBy(240L)
-        val settledLeft = compose.onNodeWithText("封面大小").fetchSemanticsNode().boundsInRoot.left
+        val settledLeft = compose.onNodeWithText(text(R.string.settings_gallery_size)).fetchSemanticsNode().boundsInRoot.left
         assertTrue(enteringLeft > settledLeft)
-        compose.onNodeWithText("扫描局域网设备").assertDoesNotExist()
+        compose.onNodeWithText(text(R.string.scan_local_network)).assertDoesNotExist()
         compose.mainClock.autoAdvance = true
     }
 
@@ -140,24 +141,26 @@ class SettingsUiTest {
     fun largeFontKeepsExitAndAboutLinksReachable() {
         render(fontScale = 1.5f)
         compose.onNodeWithTag("settings-list").performScrollToIndex(6)
-        compose.onNodeWithText("退出").assertIsDisplayed()
+        compose.onNodeWithText(text(R.string.exit)).assertIsDisplayed()
         screenshot("settings-large-font")
-        open("关于")
-        compose.onNodeWithTag("settings-list").performScrollToNode(hasTestTag("settings-link-第三方声明"))
-        compose.onNodeWithTag("settings-link-第三方声明").assertIsDisplayed()
+        open("about")
+        compose.onNodeWithTag("settings-list").performScrollToNode(hasTestTag("settings-link-third-party-notices"))
+        compose.onNodeWithTag("settings-link-third-party-notices").assertIsDisplayed()
     }
 
-    private fun open(title: String) {
-        compose.onNodeWithTag("settings-list").performScrollToNode(hasTestTag("settings-link-$title"))
-        compose.onNodeWithTag("settings-link-$title").performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.OnClick) { it() }
+    private fun open(key: String) {
+        compose.onNodeWithTag("settings-list").performScrollToNode(hasTestTag("settings-link-$key"))
+        compose.onNodeWithTag("settings-link-$key").performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.OnClick) { it() }
         compose.waitForIdle()
     }
 
     private fun back() {
-        compose.onNodeWithTag("settings-list").performScrollToNode(hasContentDescription("返回设置"))
-        compose.onNodeWithContentDescription("返回设置").performClick()
+        compose.onNodeWithTag("settings-list").performScrollToNode(hasContentDescription(text(R.string.back_to_settings)))
+        compose.onNodeWithContentDescription(text(R.string.back_to_settings)).performClick()
         compose.waitForIdle()
     }
+
+    private fun text(id: Int): String = InstrumentationRegistry.getInstrumentation().targetContext.getString(id)
 
     private fun render(fontScale: Float? = null) {
         compose.setContent {

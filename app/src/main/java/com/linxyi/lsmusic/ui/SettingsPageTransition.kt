@@ -25,7 +25,7 @@ internal fun SettingsPageTransition(destination: AppDestination, content: @Compo
                 (slideOutHorizontally(tween(180)) { -direction * it / 12 } + fadeOut(tween(150))))
                 .using(null)
         },
-        label = "设置页面过渡",
+        label = "settings-page-transition",
     ) { page ->
         pages.SaveableStateProvider(page.name) { content(page) }
     }

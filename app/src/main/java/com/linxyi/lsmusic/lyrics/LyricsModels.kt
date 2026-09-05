@@ -1,14 +1,14 @@
 package com.linxyi.lsmusic.lyrics
 
-enum class LyricsProviderId(val label: String) {
-    NETEASE("网易云音乐"),
-    QQ("QQ音乐"),
+enum class LyricsProviderId {
+    NETEASE,
+    QQ,
 }
 
-enum class LyricsTranslationMode(val label: String) {
-    ORIGINAL("仅原文"),
-    BILINGUAL("双语"),
-    CHINESE_ONLY("仅中文"),
+enum class LyricsTranslationMode {
+    ORIGINAL,
+    BILINGUAL,
+    CHINESE_ONLY,
 }
 
 data class LyricsQuery(
