@@ -34,6 +34,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
@@ -45,6 +46,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.linxyi.lsmusic.ui.LsMusicApp
 import com.linxyi.lsmusic.ui.LsMusicViewModel
+import com.linxyi.lsmusic.ui.resolve
 import com.linxyi.lsmusic.ui.theme.LsMusicTheme
 
 class MainActivity : ComponentActivity() {
@@ -57,7 +59,9 @@ class MainActivity : ComponentActivity() {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 viewModel.uiState.collect { state ->
                     if (state.exitStatus == ExitStatus.COMPLETE && !isFinishing) {
-                        state.exitWarning?.let { Toast.makeText(this@MainActivity, it, Toast.LENGTH_LONG).show() }
+                        state.exitWarning?.let {
+                            Toast.makeText(this@MainActivity, it.resolve(this@MainActivity), Toast.LENGTH_LONG).show()
+                        }
                         finishAndRemoveTask()
                     }
                 }
@@ -126,14 +130,14 @@ private fun LocalNetworkPermissionScreen(onRequestPermission: () -> Unit) {
             )
         }
         Spacer(Modifier.height(24.dp))
-        Text("连接你的音乐设备", style = MaterialTheme.typography.headlineLarge, textAlign = TextAlign.Center)
+        Text(stringResource(R.string.permission_title), style = MaterialTheme.typography.headlineLarge, textAlign = TextAlign.Center)
         Spacer(Modifier.height(10.dp))
         Text(
-            "L’s Music 需要访问局域网，才能发现 DLNA 媒体库和播放器。你可以选择在本机或局域网播放设备上播放，音乐不会上传到互联网。",
+            stringResource(R.string.permission_body),
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
         )
         Spacer(Modifier.height(28.dp))
-        Button(onClick = onRequestPermission) { Text("允许访问局域网") }
+        Button(onClick = onRequestPermission) { Text(stringResource(R.string.permission_allow_local_network)) }
     }
 }

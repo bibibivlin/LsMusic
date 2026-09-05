@@ -53,8 +53,8 @@ internal fun buildListenBrainzTrackPayloadFields(
     if (track.artistMbids.isNotEmpty()) additionalInfo["artist_mbids"] = track.artistMbids
     track.trackNumber?.let { additionalInfo["tracknumber"] = it.toString() }
     return ListenBrainzTrackPayloadFields(
-        artistName = track.creator.ifBlank { "未知艺术家" },
-        trackName = track.title.ifBlank { "未知曲目" },
+        artistName = track.creator.ifBlank { "Unknown artist" },
+        trackName = track.title.ifBlank { "Unknown track" },
         releaseName = track.album.takeIf { it.isNotBlank() },
         additionalInfo = additionalInfo,
     )
@@ -72,7 +72,7 @@ class ListenBrainzClient(
             val response = connection.inputStream.bufferedReader().use { it.readText() }
             val json = JSONObject(response)
             if (!json.has("valid")) {
-                throw ListenBrainzResponseException("令牌校验响应缺少 valid 字段")
+                throw ListenBrainzResponseException("validation response is missing valid")
             }
             ListenBrainzTokenValidationResult(
                 valid = json.optBoolean("valid", false),
@@ -177,17 +177,40 @@ class ListenBrainzClient(
     }
 }
 
-fun describeListenBrainzValidationFailure(error: Throwable): String {
+enum class ListenBrainzValidationFailureKind {
+    UNKNOWN_HOST,
+    TIMEOUT,
+    CONNECTION,
+    SSL,
+    UNRECOGNIZED_RESPONSE,
+    HTTP_STATUS,
+    REQUEST,
+}
+
+data class ListenBrainzValidationFailure(
+    val kind: ListenBrainzValidationFailureKind,
+    val statusCode: Int? = null,
+    val detail: String? = null,
+)
+
+fun describeListenBrainzValidationFailure(error: Throwable): ListenBrainzValidationFailure {
     val causes = generateSequence(error) { it.cause }.toList()
     val httpError = causes.filterIsInstance<ListenBrainzHttpException>().firstOrNull()
     return when {
-        causes.any { it is UnknownHostException } -> "无法解析 ListenBrainz 地址，请检查网络或 DNS"
-        causes.any { it is SocketTimeoutException } -> "连接 ListenBrainz 超时，请检查网络后重试"
+        causes.any { it is UnknownHostException } -> ListenBrainzValidationFailure(ListenBrainzValidationFailureKind.UNKNOWN_HOST)
+        causes.any { it is SocketTimeoutException } -> ListenBrainzValidationFailure(ListenBrainzValidationFailureKind.TIMEOUT)
         causes.any { it is ConnectException || it is NoRouteToHostException } ->
-            "无法连接 ListenBrainz，请检查网络是否可用"
-        causes.any { it is SSLException } -> "无法建立 ListenBrainz HTTPS 安全连接"
-        causes.any { it is ListenBrainzResponseException } -> "ListenBrainz 返回了无法识别的校验结果"
-        httpError != null -> "已连接 ListenBrainz，但服务返回 HTTP ${httpError.statusCode}"
-        else -> "校验请求失败：${error.localizedMessage ?: "未知网络或服务错误"}"
+            ListenBrainzValidationFailure(ListenBrainzValidationFailureKind.CONNECTION)
+        causes.any { it is SSLException } -> ListenBrainzValidationFailure(ListenBrainzValidationFailureKind.SSL)
+        causes.any { it is ListenBrainzResponseException } ->
+            ListenBrainzValidationFailure(ListenBrainzValidationFailureKind.UNRECOGNIZED_RESPONSE)
+        httpError != null -> ListenBrainzValidationFailure(
+            kind = ListenBrainzValidationFailureKind.HTTP_STATUS,
+            statusCode = httpError.statusCode,
+        )
+        else -> ListenBrainzValidationFailure(
+            kind = ListenBrainzValidationFailureKind.REQUEST,
+            detail = error.localizedMessage,
+        )
     }
 }

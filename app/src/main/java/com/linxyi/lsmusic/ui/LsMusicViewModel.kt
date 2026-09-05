@@ -20,6 +20,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.linxyi.lsmusic.artwork.AlbumArtworkRepository
+import com.linxyi.lsmusic.R
 import com.linxyi.lsmusic.dlna.DlnaController
 import com.linxyi.lsmusic.dlna.DlnaDevice
 import com.linxyi.lsmusic.dlna.DlnaDeviceKind
@@ -38,6 +39,8 @@ import com.linxyi.lsmusic.listenbrainz.ListenBrainzUploadScheduler
 import com.linxyi.lsmusic.listenbrainz.PendingListen
 import com.linxyi.lsmusic.listenbrainz.PendingListenRepository
 import com.linxyi.lsmusic.listenbrainz.describeListenBrainzValidationFailure
+import com.linxyi.lsmusic.listenbrainz.ListenBrainzValidationFailure
+import com.linxyi.lsmusic.listenbrainz.ListenBrainzValidationFailureKind
 import com.linxyi.lsmusic.listenbrainz.shouldSubmitListen
 import com.linxyi.lsmusic.lyrics.LyricsDiskCache
 import com.linxyi.lsmusic.lyrics.LyricsLoadState
@@ -70,13 +73,36 @@ enum class ListenBrainzTokenValidationStatus { IDLE, CHECKING, VALID, INVALID, E
 
 data class ListenBrainzTokenValidationUiState(
     val status: ListenBrainzTokenValidationStatus = ListenBrainzTokenValidationStatus.IDLE,
-    val message: String? = null,
+    val message: UiText? = null,
     val checkedToken: String? = null,
 )
 
+private fun ListenBrainzValidationFailure.toUiText(previousTokenKept: Boolean): UiText {
+    val base = when (kind) {
+        ListenBrainzValidationFailureKind.UNKNOWN_HOST -> UiText.Resource(R.string.listenbrainz_unknown_host)
+        ListenBrainzValidationFailureKind.TIMEOUT -> UiText.Resource(R.string.listenbrainz_timeout)
+        ListenBrainzValidationFailureKind.CONNECTION -> UiText.Resource(R.string.listenbrainz_connection_failed)
+        ListenBrainzValidationFailureKind.SSL -> UiText.Resource(R.string.listenbrainz_ssl_failed)
+        ListenBrainzValidationFailureKind.UNRECOGNIZED_RESPONSE -> UiText.Resource(R.string.listenbrainz_unrecognized_response)
+        ListenBrainzValidationFailureKind.HTTP_STATUS -> UiText.Resource(
+            R.string.listenbrainz_http_status,
+            listOf(statusCode ?: 0),
+        )
+        ListenBrainzValidationFailureKind.REQUEST -> UiText.Resource(
+            R.string.listenbrainz_validation_request_failed,
+            listOf(detail ?: UiText.Resource(R.string.unknown_network_or_service_error)),
+        )
+    }
+    return UiText.Resource(
+        if (previousTokenKept) R.string.listenbrainz_validation_failure_saved
+        else R.string.listenbrainz_validation_failure_unsaved,
+        listOf(base),
+    )
+}
+
 data class BrowseLocation(
     val id: String,
-    val title: String,
+    val title: String? = null,
     val artworkUri: String? = null,
     val artworkCandidates: List<ArtworkCandidate> = artworkUri?.let {
         listOf(ArtworkCandidate(it))
@@ -144,7 +170,7 @@ data class LsMusicUiState(
     val rememberedRenderer: DlnaDevice? = null,
     val entries: List<MediaEntry> = emptyList(),
     val albumSort: AlbumSort = AlbumSort.SERVER_DEFAULT,
-    val path: List<BrowseLocation> = listOf(BrowseLocation("0", "音乐库")),
+    val path: List<BrowseLocation> = listOf(BrowseLocation("0")),
     val browsePageKey: BrowsePageKey? = null,
     val browseViewState: BrowseViewState = BrowseViewState(),
     val queue: List<MediaEntry> = emptyList(),
@@ -168,10 +194,10 @@ data class LsMusicUiState(
     val isSearching: Boolean = true,
     val browseLoadStatus: BrowseLoadStatus = BrowseLoadStatus.WAITING_FOR_DEVICE,
     val albumArtwork: AlbumArtworkUiState? = null,
-    val error: String? = null,
+    val error: UiText? = null,
     val exitStatus: ExitStatus = ExitStatus.IDLE,
-    val exitError: String? = null,
-    val exitWarning: String? = null,
+    val exitError: UiText? = null,
+    val exitWarning: UiText? = null,
 ) {
     val currentTrack: MediaEntry?
         get() = queue.getOrNull(currentQueueIndex)
@@ -314,7 +340,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         override fun onPlayerError(error: PlaybackException) {
             if (!exiting && _uiState.value.selectedRendererId == LOCAL_RENDERER_ID) {
                 _uiState.update { it.copy(playbackState = RemotePlaybackState.STOPPED) }
-                showError("本机播放失败：${error.localizedMessage}")
+                showError(UiText.Resource(R.string.local_playback_failed, listOf(error.localizedMessage ?: getApplication<Application>().getString(R.string.unknown_playback_error))))
             }
         }
     }
@@ -336,7 +362,14 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
                         pendingLocalPlayback?.let { (queue, index) -> playLocally(controller, queue, index) }
                         updateLocalPlaybackState()
                     }
-                    .onFailure { if (!exiting) showError("无法连接本机播放器：${it.localizedMessage}") }
+                    .onFailure {
+                        if (!exiting) {
+                            showError(UiText.Resource(
+                                R.string.local_player_connection_failed,
+                                listOf(it.localizedMessage ?: getApplication<Application>().getString(R.string.unknown_network_or_service_error)),
+                            ))
+                        }
+                    }
             },
             ContextCompat.getMainExecutor(application),
         )
@@ -393,7 +426,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
                             it.albumSort
                         },
                         path = if (serverChanged || !serverIsAvailable) {
-                            listOf(BrowseLocation(ROOT_OBJECT_ID, "音乐库"))
+                            listOf(BrowseLocation(ROOT_OBJECT_ID))
                         } else {
                             it.path
                         },
@@ -541,7 +574,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
                 rememberedServer = device,
                 entries = emptyList(),
                 albumSort = preferenceStore.albumSort(id),
-                path = listOf(BrowseLocation(ROOT_OBJECT_ID, "音乐库")),
+                path = listOf(BrowseLocation(ROOT_OBJECT_ID)),
                 browsePageKey = BrowsePageKey(id, ROOT_OBJECT_ID),
                 browseViewState = BrowseViewState(),
                 browseLoadStatus = BrowseLoadStatus.LOADING,
@@ -698,7 +731,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     fun playNow(track: MediaEntry) {
         if (exiting) return
         val rendererId = _uiState.value.selectedRendererId
-            ?: return showError("请先选择播放设备")
+            ?: return showError(UiText.Resource(R.string.select_player_first))
         val oldQueue = _uiState.value.queue
         val index = oldQueue.indexOfFirst { it.id == track.id }.takeIf { it >= 0 } ?: oldQueue.size
         val queue = if (index == oldQueue.size) oldQueue + track else oldQueue
@@ -729,8 +762,8 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     fun playAll(tracks: List<MediaEntry>) {
         if (exiting) return
         val playable = tracks.filter { !it.isContainer && it.resourceUri != null }
-        if (playable.isEmpty()) return showError("这里没有可播放的歌曲")
-        val rendererId = _uiState.value.selectedRendererId ?: return showError("请先选择播放设备")
+        if (playable.isEmpty()) return showError(UiText.Resource(R.string.no_playable_tracks))
+        val rendererId = _uiState.value.selectedRendererId ?: return showError(UiText.Resource(R.string.select_player_first))
         val first = playable.first()
         _uiState.update {
             it.copy(
@@ -756,7 +789,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     fun addAllToQueue(tracks: List<MediaEntry>) {
         if (exiting) return
         val playable = tracks.filter { !it.isContainer && it.resourceUri != null }
-        if (playable.isEmpty()) return showError("这里没有可加入的歌曲")
+        if (playable.isEmpty()) return showError(UiText.Resource(R.string.no_tracks_to_queue))
         _uiState.update { state -> state.copy(queue = state.queue + playable) }
         localController?.takeIf { it.mediaItemCount > 0 }
             ?.addMediaItems(playable.map { it.toMediaItem() })
@@ -765,8 +798,8 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     fun togglePlayback() {
         if (exiting) return
         val state = _uiState.value
-        val rendererId = state.selectedRendererId ?: return showError("请先选择一台 DLNA 播放设备")
-        val track = state.currentTrack ?: return showError("播放列表还是空的")
+        val rendererId = state.selectedRendererId ?: return showError(UiText.Resource(R.string.select_dlna_player_first))
+        val track = state.currentTrack ?: return showError(UiText.Resource(R.string.queue_is_empty))
         if (rendererId == LOCAL_RENDERER_ID) {
             when (state.playbackState) {
                 RemotePlaybackState.PLAYING -> localController?.pause()
@@ -845,7 +878,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         if (exiting) return
         val state = _uiState.value
         val track = state.queue.getOrNull(index) ?: return
-        val rendererId = state.selectedRendererId ?: return showError("请先选择播放设备")
+        val rendererId = state.selectedRendererId ?: return showError(UiText.Resource(R.string.select_player_first))
         _uiState.update {
             it.copy(
                 currentQueueIndex = index,
@@ -1046,7 +1079,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
                     isClearingLyricsCache = false,
                 )
             }
-            if (failure != null) showError("清除歌词缓存失败")
+            if (failure != null) showError(UiText.Resource(R.string.lyrics_cache_clear_failed))
         }
     }
 
@@ -1136,7 +1169,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
             it.copy(
                 listenBrainzTokenValidation = ListenBrainzTokenValidationUiState(
                     status = ListenBrainzTokenValidationStatus.CHECKING,
-                    message = "正在连接 ListenBrainz 并校验令牌…",
+                    message = UiText.Resource(R.string.listenbrainz_validating),
                     checkedToken = normalized,
                 ),
             )
@@ -1161,8 +1194,8 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
                                 listenBrainzTokenValidation = ListenBrainzTokenValidationUiState(
                                     status = ListenBrainzTokenValidationStatus.VALID,
                                     message = result.userName?.let { userName ->
-                                        "校验成功，网络连接正常；账户：$userName"
-                                    } ?: "校验成功，网络连接正常。",
+                                        UiText.Resource(R.string.listenbrainz_validation_success_account, listOf(userName))
+                                    } ?: UiText.Resource(R.string.listenbrainz_validation_success),
                                     checkedToken = normalized,
                                 ),
                             )
@@ -1172,8 +1205,10 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
                             it.copy(
                                 listenBrainzTokenValidation = ListenBrainzTokenValidationUiState(
                                     status = ListenBrainzTokenValidationStatus.INVALID,
-                                    message = "已连接 ListenBrainz，但令牌无效" +
-                                        if (hadSavedToken) "；仍保留原令牌。" else "；未保存。",
+                                    message = UiText.Resource(
+                                        if (hadSavedToken) R.string.listenbrainz_token_invalid_saved
+                                        else R.string.listenbrainz_token_invalid_unsaved,
+                                    ),
                                     checkedToken = normalized,
                                 ),
                             )
@@ -1186,8 +1221,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
                         it.copy(
                             listenBrainzTokenValidation = ListenBrainzTokenValidationUiState(
                                 status = ListenBrainzTokenValidationStatus.ERROR,
-                                message = describeListenBrainzValidationFailure(error) +
-                                    if (hadSavedToken) "；仍保留原令牌。" else "；未保存。",
+                                message = describeListenBrainzValidationFailure(error).toUiText(hadSavedToken),
                                 checkedToken = normalized,
                             ),
                         )
@@ -1210,11 +1244,11 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         if (exiting) return
         val preferences = _uiState.value.preferences
         if (!preferences.listenBrainzEnabled) {
-            if (showFeedback) showError("请先启用 ListenBrainz 播放记录")
+            if (showFeedback) showError(UiText.Resource(R.string.pending_upload_requires_enabled))
             return
         }
         if (preferences.listenBrainzToken.isBlank()) {
-            if (showFeedback) showError("请先保存有效的 ListenBrainz 令牌")
+            if (showFeedback) showError(UiText.Resource(R.string.pending_upload_requires_token))
             return
         }
         if (pendingListenUploadJob?.isActive == true) return
@@ -1234,17 +1268,27 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
                     ListenBrainzUploadScheduler.schedule(getApplication())
                 }
                 if (showFeedback) {
-                    showError("无法上传待处理记录：${error.localizedMessage ?: "本机存储错误"}")
+                    showError(UiText.Resource(
+                        R.string.pending_upload_failed,
+                        listOf(error.localizedMessage ?: getApplication<Application>().getString(R.string.unknown_network_or_service_error)),
+                    ))
                 }
                 return@launch
             }
             when {
                 result.errorMessage != null -> {
                     ListenBrainzUploadScheduler.schedule(getApplication())
-                    if (showFeedback) showError("仍有记录未上传：${result.errorMessage}")
+                    if (showFeedback) {
+                        val message = if (result.errorMessage == "missing_token") {
+                            UiText.Resource(R.string.pending_upload_requires_token)
+                        } else {
+                            UiText.Resource(R.string.pending_upload_remaining, listOf(result.errorMessage))
+                        }
+                        showError(message)
+                    }
                 }
                 showFeedback && result.uploadedCount > 0 ->
-                    showError("已上传 ${result.uploadedCount} 条 ListenBrainz 记录")
+                    showError(UiText.Plural(R.plurals.pending_upload_success, result.uploadedCount, listOf(result.uploadedCount)))
             }
             if (result.remainingCount > 0) {
                 ListenBrainzUploadScheduler.schedule(getApplication())
@@ -1258,7 +1302,12 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         if (_uiState.value.isPendingListensUploading) return
         viewModelScope.launch {
             runCatching { pendingListenRepository.remove(id) }
-                .onFailure { showError("无法删除待上传记录：${it.localizedMessage}") }
+                .onFailure {
+                    showError(UiText.Resource(
+                        R.string.pending_remove_failed,
+                        listOf(it.localizedMessage ?: getApplication<Application>().getString(R.string.unknown_network_or_service_error)),
+                    ))
+                }
             if (pendingListenRepository.records.value.isEmpty()) {
                 ListenBrainzUploadScheduler.cancel(getApplication())
             }
@@ -1269,7 +1318,12 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         if (_uiState.value.isPendingListensUploading) return
         viewModelScope.launch {
             runCatching { pendingListenRepository.clear() }
-                .onFailure { showError("无法清空待上传记录：${it.localizedMessage}") }
+                .onFailure {
+                    showError(UiText.Resource(
+                        R.string.pending_clear_failed,
+                        listOf(it.localizedMessage ?: getApplication<Application>().getString(R.string.unknown_network_or_service_error)),
+                    ))
+                }
             if (pendingListenRepository.records.value.isEmpty()) {
                 ListenBrainzUploadScheduler.cancel(getApplication())
             }
@@ -1375,7 +1429,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         )
     }
 
-    private fun showError(message: String) = _uiState.update { it.copy(error = message) }
+    private fun showError(message: UiText) = _uiState.update { it.copy(error = message) }
 
     private fun cancelAlbumArtworkResolution() {
         albumArtworkJob?.cancel()
@@ -1431,7 +1485,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
                     } catch (error: CancellationException) {
                         throw error
                     } catch (_: Exception) {
-                        showError("无法保存待上传的 ListenBrainz 记录，请检查设备存储空间")
+                        showError(UiText.Resource(R.string.pending_save_failed))
                     }
                 }
             }
@@ -1563,7 +1617,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun MediaEntry.toMediaItem(): MediaItem {
-        val uri = requireNotNull(resourceUri) { "曲目没有可播放的资源地址" }
+        val uri = requireNotNull(resourceUri) { "Track has no playable resource URL" }
         return MediaItem.Builder()
             .setUri(uri)
             .setMediaId(id)
@@ -1825,9 +1879,9 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         const val LOCAL_RENDERER_ID = "local-renderer"
         private val LOCAL_RENDERER = DlnaDevice(
             id = LOCAL_RENDERER_ID,
-            name = "本机",
+            name = "",
             manufacturer = "Android",
-            model = "此设备扬声器",
+            model = "",
             kind = DlnaDeviceKind.MEDIA_RENDERER,
         )
 

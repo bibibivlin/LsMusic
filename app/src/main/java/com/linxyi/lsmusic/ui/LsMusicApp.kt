@@ -166,8 +166,11 @@ import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -185,6 +188,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.linxyi.lsmusic.R
 import com.linxyi.lsmusic.dlna.DlnaDevice
 import com.linxyi.lsmusic.dlna.MediaEntry
 import com.linxyi.lsmusic.dlna.RemotePlaybackState
@@ -212,7 +216,6 @@ import kotlin.math.roundToInt
 
 private data class DestinationItem(
     val destination: AppDestination,
-    val label: String,
     val icon: ImageVector,
 )
 
@@ -389,10 +392,10 @@ private fun AlbumArtworkPrefetchEffect(
 }
 
 private val destinations = listOf(
-    DestinationItem(AppDestination.LIBRARY, "媒体库", Icons.Rounded.LibraryMusic),
-    DestinationItem(AppDestination.QUEUE, "播放列表", Icons.AutoMirrored.Rounded.PlaylistPlay),
-    DestinationItem(AppDestination.NOW_PLAYING, "正在播放", Icons.Rounded.GraphicEq),
-    DestinationItem(AppDestination.SETTINGS, "设置", Icons.Rounded.Settings),
+    DestinationItem(AppDestination.LIBRARY, Icons.Rounded.LibraryMusic),
+    DestinationItem(AppDestination.QUEUE, Icons.AutoMirrored.Rounded.PlaylistPlay),
+    DestinationItem(AppDestination.NOW_PLAYING, Icons.Rounded.GraphicEq),
+    DestinationItem(AppDestination.SETTINGS, Icons.Rounded.Settings),
 )
 
 @Composable
@@ -411,10 +414,12 @@ fun LsMusicApp(viewModel: LsMusicViewModel) {
     ) {
         SystemNavigationBarAppearance()
         val snackbar = remember { SnackbarHostState() }
+        val resources = LocalResources.current
+        val localeKey = resources.configuration.locales.toLanguageTags()
 
-        LaunchedEffect(state.error) {
+        LaunchedEffect(state.error, localeKey) {
             state.error?.let {
-                snackbar.showSnackbar(it)
+                snackbar.showSnackbar(it.resolve(resources))
                 viewModel.consumeError()
             }
         }
@@ -717,7 +722,7 @@ private fun AppNavigationBar(selected: AppDestination, onDestination: (AppDestin
                     selected = selectedNavigationDestination == item.destination,
                     onClick = { onDestination(item.destination) },
                     icon = { Icon(item.icon, null) },
-                    label = { Text(item.label) },
+                    label = { Text(stringResource(item.destination.navigationLabelRes)) },
                 )
             }
         }
@@ -752,7 +757,7 @@ private fun AppNavigationRail(selected: AppDestination, onDestination: (AppDesti
                 icon = { Icon(item.icon, null) },
                 label = {
                     Text(
-                        item.label,
+                        stringResource(item.destination.navigationLabelRes),
                         maxLines = 1,
                         softWrap = false,
                         overflow = TextOverflow.Ellipsis,
@@ -832,7 +837,7 @@ private fun ResolvingLibraryPage(
         Row(verticalAlignment = Alignment.CenterVertically) {
             if (path.size > 1) {
                 FilledTonalIconButton(onClick = { onNavigateTo(path.lastIndex - 1) }) {
-                    Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回上一级")
+                    Icon(Icons.AutoMirrored.Rounded.ArrowBack, stringResource(R.string.back_to_parent))
                 }
                 Spacer(Modifier.width(8.dp))
             }
@@ -844,7 +849,7 @@ private fun ResolvingLibraryPage(
                 .weight(1f),
             contentAlignment = Alignment.Center,
         ) {
-            LoadingPanel("正在读取音乐内容…")
+            LoadingPanel(stringResource(R.string.loading_music_content))
         }
     }
 }
@@ -999,7 +1004,7 @@ internal fun LibraryDirectoryScreen(
             horizontalArrangement = Arrangement.spacedBy(gridSpacing),
         ) {
             item(span = { GridItemSpan(maxLineSpan) }, contentType = "library-header") {
-                Text("L's Music", style = MaterialTheme.typography.headlineLarge)
+                Text(stringResource(R.string.app_name), style = MaterialTheme.typography.headlineLarge)
             }
             item(span = { GridItemSpan(maxLineSpan) }, contentType = "library-header") {
                 OutlinedTextField(
@@ -1014,10 +1019,10 @@ internal fun LibraryDirectoryScreen(
                     leadingIcon = { Icon(Icons.Rounded.Search, null) },
                     trailingIcon = {
                         if (query.isNotBlank()) IconButton(onClick = { query = "" }) {
-                            Icon(Icons.Rounded.Close, "清空搜索")
+                            Icon(Icons.Rounded.Close, stringResource(R.string.clear_search))
                         }
                     },
-                    placeholder = { Text("搜索当前目录") },
+                    placeholder = { Text(stringResource(R.string.search_current_directory)) },
                 )
             }
             item(span = { GridItemSpan(maxLineSpan) }, contentType = "library-header") {
@@ -1026,7 +1031,7 @@ internal fun LibraryDirectoryScreen(
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             if (state.path.size > 1) {
                                 FilledTonalIconButton(onClick = { onNavigateTo(state.path.lastIndex - 1) }) {
-                                    Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回上一级")
+                                    Icon(Icons.AutoMirrored.Rounded.ArrowBack, stringResource(R.string.back_to_parent))
                                 }
                                 Spacer(Modifier.width(8.dp))
                             }
@@ -1044,7 +1049,7 @@ internal fun LibraryDirectoryScreen(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         if (state.path.size > 1) {
                             FilledTonalIconButton(onClick = { onNavigateTo(state.path.lastIndex - 1) }) {
-                                Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回上一级")
+                                Icon(Icons.AutoMirrored.Rounded.ArrowBack, stringResource(R.string.back_to_parent))
                             }
                             Spacer(Modifier.width(8.dp))
                         }
@@ -1053,7 +1058,7 @@ internal fun LibraryDirectoryScreen(
                         FilledTonalIconButton(onClick = { useGrid = !useGrid }) {
                             Icon(
                                 if (useGrid) Icons.AutoMirrored.Rounded.ViewList else Icons.Rounded.GridView,
-                                if (useGrid) "切换到列表" else "切换到封面网格",
+                                 if (useGrid) stringResource(R.string.switch_to_list) else stringResource(R.string.switch_to_grid),
                             )
                         }
                     }
@@ -1065,7 +1070,7 @@ internal fun LibraryDirectoryScreen(
                     span = { GridItemSpan(maxLineSpan) },
                     contentType = "library-status",
                 ) {
-                    LoadingPanel("正在加载音乐库…")
+                    LoadingPanel(stringResource(R.string.loading_music_library))
                 }
                 LibraryContentStatus.NO_SERVER -> item(
                     span = { GridItemSpan(maxLineSpan) },
@@ -1073,9 +1078,9 @@ internal fun LibraryDirectoryScreen(
                 ) {
                     EmptyPanel(
                         icon = Icons.Rounded.Devices,
-                        title = "还没发现媒体库",
-                        body = "在设置中选择或重新扫描局域网内的 DLNA 媒体库。",
-                        action = "打开设备设置",
+                        title = stringResource(R.string.library_not_found_title),
+                        body = stringResource(R.string.library_not_found_body),
+                        action = stringResource(R.string.open_device_settings),
                         onAction = onOpenSettings,
                     )
                 }
@@ -1085,9 +1090,9 @@ internal fun LibraryDirectoryScreen(
                 ) {
                     EmptyPanel(
                         icon = Icons.Rounded.Devices,
-                        title = "上次使用的媒体库当前不可用",
-                        body = "确认媒体库已开机并连接到同一局域网，或选择其他媒体库。",
-                        action = "打开设备设置",
+                        title = stringResource(R.string.library_unavailable_title),
+                        body = stringResource(R.string.library_unavailable_body),
+                        action = stringResource(R.string.open_device_settings),
                         onAction = onOpenSettings,
                     )
                 }
@@ -1097,9 +1102,9 @@ internal fun LibraryDirectoryScreen(
                 ) {
                     EmptyPanel(
                         icon = Icons.Rounded.MusicNote,
-                        title = "无法读取音乐目录",
-                        body = "请确认媒体库连接正常，然后重新选择或扫描设备。",
-                        action = "打开设备设置",
+                        title = stringResource(R.string.library_load_failed_title),
+                        body = stringResource(R.string.library_load_failed_body),
+                        action = stringResource(R.string.open_device_settings),
                         onAction = onOpenSettings,
                     )
                 }
@@ -1109,8 +1114,8 @@ internal fun LibraryDirectoryScreen(
                 ) {
                     EmptyPanel(
                         icon = Icons.Rounded.MusicNote,
-                        title = if (query.isBlank()) "这个目录是空的" else "没有匹配的音乐",
-                        body = if (query.isBlank()) "返回上一级看看其他唱片或播放列表。" else "换一个关键词试试。",
+                        title = stringResource(if (query.isBlank()) R.string.empty_directory_title else R.string.no_matching_music_title),
+                        body = stringResource(if (query.isBlank()) R.string.empty_directory_body else R.string.no_matching_music_body),
                     )
                 }
                 LibraryContentStatus.CONTENT -> gridItemsIndexed(
@@ -1181,7 +1186,7 @@ internal fun LibraryDirectoryScreen(
                 containerColor = MaterialTheme.colorScheme.secondaryContainer,
                 contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
             ) {
-                Icon(Icons.Rounded.Search, "搜索当前目录")
+                Icon(Icons.Rounded.Search, stringResource(R.string.search_current_directory))
             }
         }
     }
@@ -1224,6 +1229,7 @@ private fun LibraryFastScroller(
         val currentVisibleItemCount by rememberUpdatedState(visibleItemCount)
         val currentTotalItemCount by rememberUpdatedState(totalItemCount)
         val currentOnDragStateChanged by rememberUpdatedState(onDragStateChanged)
+        val fastScrollDescription = stringResource(R.string.fast_scroll_library)
 
         DisposableEffect(Unit) {
             onDispose { currentOnDragStateChanged(false) }
@@ -1239,7 +1245,7 @@ private fun LibraryFastScroller(
             modifier = Modifier
                 .fillMaxSize()
                 .semantics {
-                    contentDescription = "媒体库快速滚动"
+                    contentDescription = fastScrollDescription
                     progressBarRangeInfo = ProgressBarRangeInfo(positionFraction, 0f..1f)
                     setProgress { requestedFraction ->
                         requestedItemIndex = fastScrollTargetItemIndex(
@@ -1343,12 +1349,12 @@ private fun AlbumCollectionToolbar(
         ) {
             Column(Modifier.weight(1f)) {
                 Text(
-                    "$albumCount 张专辑",
+                    pluralStringResource(R.plurals.album_count, albumCount, albumCount),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                 )
                 Text(
-                    "浏览与排序",
+                    stringResource(R.string.browse_and_sort),
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -1358,7 +1364,7 @@ private fun AlbumCollectionToolbar(
             FilledTonalIconButton(onClick = onToggleLayout) {
                 Icon(
                     if (useGrid) Icons.AutoMirrored.Rounded.ViewList else Icons.Rounded.GridView,
-                    if (useGrid) "切换到列表" else "切换到封面网格",
+                    if (useGrid) stringResource(R.string.switch_to_list) else stringResource(R.string.switch_to_grid),
                 )
             }
         }
@@ -1374,7 +1380,7 @@ private fun AlbumSortPicker(
     Box {
         AssistChip(
             onClick = { expanded = true },
-            label = { Text(selected.shortLabel) },
+            label = { Text(selected.shortLabel()) },
             leadingIcon = { Icon(Icons.AutoMirrored.Rounded.Sort, null, Modifier.size(18.dp)) },
             trailingIcon = { Icon(Icons.Rounded.ExpandMore, null, Modifier.size(18.dp)) },
         )
@@ -1383,8 +1389,8 @@ private fun AlbumSortPicker(
                 DropdownMenuItem(
                     text = {
                         Column {
-                            Text(option.menuLabel)
-                            option.explanation?.let {
+                            Text(option.menuLabel())
+                            option.explanation()?.let {
                                 Text(
                                     it,
                                     style = MaterialTheme.typography.bodySmall,
@@ -1407,30 +1413,34 @@ private fun AlbumSortPicker(
     }
 }
 
-private val AlbumSort.shortLabel: String
-    get() = when (this) {
-        AlbumSort.SERVER_DEFAULT -> "服务器默认"
-        AlbumSort.YEAR_ASCENDING -> "年份 ↑"
-        AlbumSort.YEAR_DESCENDING -> "年份 ↓"
-        AlbumSort.ALBUM_ARTIST -> "专辑艺术家"
-        AlbumSort.TITLE -> "标题"
-    }
+@Composable
+private fun AlbumSort.shortLabel(): String = stringResource(
+    when (this) {
+        AlbumSort.SERVER_DEFAULT -> R.string.album_sort_server_default_short
+        AlbumSort.YEAR_ASCENDING -> R.string.album_sort_year_ascending_short
+        AlbumSort.YEAR_DESCENDING -> R.string.album_sort_year_descending_short
+        AlbumSort.ALBUM_ARTIST -> R.string.album_sort_album_artist_short
+        AlbumSort.TITLE -> R.string.album_sort_title_short
+    },
+)
 
-private val AlbumSort.menuLabel: String
-    get() = when (this) {
-        AlbumSort.SERVER_DEFAULT -> "服务器默认排序"
-        AlbumSort.YEAR_ASCENDING -> "年份：从早到晚"
-        AlbumSort.YEAR_DESCENDING -> "年份：从新到旧"
-        AlbumSort.ALBUM_ARTIST -> "专辑艺术家"
-        AlbumSort.TITLE -> "标题"
-    }
+@Composable
+private fun AlbumSort.menuLabel(): String = stringResource(
+    when (this) {
+        AlbumSort.SERVER_DEFAULT -> R.string.album_sort_server_default
+        AlbumSort.YEAR_ASCENDING -> R.string.album_sort_year_ascending
+        AlbumSort.YEAR_DESCENDING -> R.string.album_sort_year_descending
+        AlbumSort.ALBUM_ARTIST -> R.string.album_sort_album_artist_short
+        AlbumSort.TITLE -> R.string.album_sort_title_short
+    },
+)
 
-private val AlbumSort.explanation: String?
-    get() = when (this) {
-        AlbumSort.SERVER_DEFAULT -> "沿用媒体服务器返回的次序"
-        AlbumSort.TITLE -> "数字和符号 → 英文 → 中文拼音 → 其他语言"
-        else -> null
-    }
+@Composable
+private fun AlbumSort.explanation(): String? = when (this) {
+    AlbumSort.SERVER_DEFAULT -> stringResource(R.string.album_sort_server_default_explanation)
+    AlbumSort.TITLE -> stringResource(R.string.album_sort_title_explanation)
+    else -> null
+}
 
 @Composable
 private fun AlbumDetailScreen(
@@ -1550,7 +1560,8 @@ private fun AlbumDetailScreen(
                 }
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    if (state.isBrowsing) "正在读取曲目…" else "$trackCount 首歌曲",
+                    if (state.isBrowsing) stringResource(R.string.loading_music_content)
+                    else pluralStringResource(R.plurals.track_count, trackCount, trackCount),
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -1567,7 +1578,7 @@ private fun AlbumDetailScreen(
                     ) {
                         Icon(Icons.Rounded.PlayArrow, null)
                         Spacer(Modifier.width(4.dp))
-                        Text("播放全部")
+                        Text(stringResource(R.string.play_all))
                     }
                     OutlinedButton(
                         onClick = { onShufflePlay(tracks) },
@@ -1577,7 +1588,7 @@ private fun AlbumDetailScreen(
                     ) {
                         Icon(Icons.Rounded.Shuffle, null)
                         Spacer(Modifier.width(4.dp))
-                        Text("随机播放")
+                        Text(stringResource(R.string.shuffle_play))
                     }
                     OutlinedButton(
                         onClick = { onQueueAll(tracks) },
@@ -1587,7 +1598,7 @@ private fun AlbumDetailScreen(
                     ) {
                         Icon(Icons.Rounded.Add, null)
                         Spacer(Modifier.width(4.dp))
-                        Text("加入队列")
+                        Text(stringResource(R.string.add_to_queue))
                     }
                 }
             }
@@ -1596,8 +1607,8 @@ private fun AlbumDetailScreen(
             item {
                 EmptyPanel(
                     icon = Icons.Rounded.MusicNote,
-                    title = "这张专辑没有可播放的曲目",
-                    body = "媒体服务器没有返回可播放的音频内容。",
+                    title = stringResource(R.string.album_no_playable_tracks_title),
+                    body = stringResource(R.string.album_no_playable_tracks_body),
                 )
             }
         }
@@ -1642,7 +1653,7 @@ private fun TrackCollectionRow(
                 if (isPlaying) {
                     Icon(
                         Icons.Rounded.GraphicEq,
-                        "正在播放",
+                        stringResource(R.string.playing),
                         tint = MaterialTheme.colorScheme.onPrimaryContainer,
                     )
                 } else {
@@ -1653,7 +1664,7 @@ private fun TrackCollectionRow(
             Column(Modifier.weight(1f)) {
                 Text(track.title, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(
-                    track.creator.ifBlank { track.album.ifBlank { "未知艺术家" } },
+                    track.creator.ifBlank { track.album.ifBlank { stringResource(R.string.unknown_artist) } },
                     style = MaterialTheme.typography.bodySmall,
                     color = supportingContentColor,
                     maxLines = 1,
@@ -1665,7 +1676,7 @@ private fun TrackCollectionRow(
                 style = MaterialTheme.typography.labelMedium,
                 color = supportingContentColor,
             )
-            IconButton(onClick = onQueue) { Icon(Icons.Rounded.Add, "加入播放列表") }
+            IconButton(onClick = onQueue) { Icon(Icons.Rounded.Add, stringResource(R.string.add_to_queue)) }
         }
     }
 }
@@ -1686,26 +1697,26 @@ internal fun DeviceStrip(
         ) {
             DevicePicker(
                 modifier = Modifier.weight(1f),
-                label = "音乐来自",
+                label = stringResource(R.string.music_from),
                 icon = Icons.Rounded.LibraryMusic,
                 devices = state.servers,
                 selectedId = state.selectedServerId,
                 rememberedDevice = state.rememberedServer,
-                rememberedLabel = "上次使用的媒体库",
+                rememberedLabel = stringResource(R.string.last_used_library),
                 isSearching = state.isSearching,
-                emptyLabel = "未发现媒体库",
+                emptyLabel = stringResource(R.string.no_library_found),
                 onSelected = onSelectServer,
             )
             DevicePicker(
                 modifier = Modifier.weight(1f),
-                label = "播放到",
+                label = stringResource(R.string.play_to),
                 icon = Icons.Rounded.Speaker,
                 devices = state.renderers,
                 selectedId = state.selectedRendererId,
                 rememberedDevice = state.rememberedRenderer,
-                rememberedLabel = "上次使用的播放设备",
+                rememberedLabel = stringResource(R.string.last_used_player),
                 isSearching = state.isSearching,
-                emptyLabel = "选择播放器",
+                emptyLabel = stringResource(R.string.choose_player),
                 onSelected = onSelectRenderer,
             )
         }
@@ -1728,13 +1739,18 @@ private fun DevicePicker(
     var expanded by remember { mutableStateOf(false) }
     val selected = devices.firstOrNull { it.id == selectedId }
     val rememberedSelection = rememberedDevice?.takeIf { it.id == selectedId }
-    val selectedName = selected?.name?.takeIf { it.isNotBlank() }
-        ?: rememberedSelection?.name?.takeIf { it.isNotBlank() }
-        ?: if (rememberedSelection != null) rememberedLabel else emptyLabel
+    val selectedName = when {
+        selected?.id == LsMusicViewModel.LOCAL_RENDERER_ID -> stringResource(R.string.local_player_name)
+        !selected?.name.isNullOrBlank() -> selected?.name
+        rememberedSelection?.id == LsMusicViewModel.LOCAL_RENDERER_ID -> stringResource(R.string.local_player_name)
+        !rememberedSelection?.name.isNullOrBlank() -> rememberedSelection?.name
+        rememberedSelection != null -> rememberedLabel
+        else -> emptyLabel
+    }
     val connectionStatus = when {
         selected != null || rememberedSelection == null -> null
-        isSearching -> "正在连接"
-        else -> "当前不可用"
+        isSearching -> stringResource(R.string.connecting)
+        else -> stringResource(R.string.currently_unavailable)
     }
     Box(modifier) {
         Surface(
@@ -1766,8 +1782,12 @@ private fun DevicePicker(
                 DropdownMenuItem(
                     text = {
                         Column {
-                            Text(device.name)
-                            val detail = listOf(device.manufacturer, device.model).filter { it.isNotBlank() }.joinToString(" · ")
+                            Text(if (device.id == LsMusicViewModel.LOCAL_RENDERER_ID) stringResource(R.string.local_player_name) else device.name)
+                            val detail = if (device.id == LsMusicViewModel.LOCAL_RENDERER_ID) {
+                                stringResource(R.string.local_player_model)
+                            } else {
+                                listOf(device.manufacturer, device.model).filter { it.isNotBlank() }.joinToString(" · ")
+                            }
                             if (detail.isNotBlank()) Text(detail, style = MaterialTheme.typography.bodySmall)
                         }
                     },
@@ -1793,7 +1813,10 @@ private fun Breadcrumbs(
     ) {
         path.forEachIndexed { index, location ->
             if (index > 0) Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, null, Modifier.size(18.dp))
-            AssistChip(onClick = { onNavigateTo(index) }, label = { Text(location.title) })
+            AssistChip(
+                onClick = { onNavigateTo(index) },
+                label = { Text(location.title ?: stringResource(R.string.library_root)) },
+            )
         }
     }
 }
@@ -1878,11 +1901,12 @@ private fun MediaGridCard(
                 Text(
                     when {
                         entry.isAlbum -> albumDetails(entry)
-                        entry.isContainer && entry.childCount != null -> "${entry.childCount} 项"
+                        entry.isContainer && entry.childCount != null ->
+                            pluralStringResource(R.plurals.directory_item_count, entry.childCount, entry.childCount)
                         entry.creator.isNotBlank() -> entry.creator
                         entry.album.isNotBlank() -> entry.album
-                        entry.isContainer -> "文件夹"
-                        else -> entry.duration ?: "音频"
+                        entry.isContainer -> stringResource(R.string.folder)
+                        else -> entry.duration ?: stringResource(R.string.audio)
                     },
                     style = detailStyle,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1891,7 +1915,7 @@ private fun MediaGridCard(
                 )
             }
             if (!entry.isContainer) {
-                IconButton(onClick = onQueue) { Icon(Icons.Rounded.Add, "加入播放列表") }
+                IconButton(onClick = onQueue) { Icon(Icons.Rounded.Add, stringResource(R.string.add_to_queue)) }
             }
         }
     }
@@ -1919,30 +1943,32 @@ private fun MediaEntryRow(
                 Text(entry.title, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 val details = when {
                     entry.isAlbum -> albumDetails(entry)
-                    entry.isContainer && entry.childCount != null -> "${entry.childCount} 项"
+                    entry.isContainer && entry.childCount != null ->
+                        pluralStringResource(R.plurals.directory_item_count, entry.childCount, entry.childCount)
                     entry.creator.isNotBlank() && !entry.duration.isNullOrBlank() -> "${entry.creator} · ${entry.duration}"
                     entry.creator.isNotBlank() -> entry.creator
                     !entry.duration.isNullOrBlank() -> entry.duration
-                    entry.isContainer -> "文件夹"
-                    else -> entry.mimeType?.substringAfter('/')?.uppercase() ?: "音频"
+                    entry.isContainer -> stringResource(R.string.folder)
+                    else -> entry.mimeType?.substringAfter('/')?.uppercase() ?: stringResource(R.string.audio)
                 }
                 Text(details, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
             }
             if (entry.isContainer) {
-                Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, "打开")
+                Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, stringResource(R.string.open))
             } else {
-                IconButton(onClick = onQueue) { Icon(Icons.Rounded.Add, "加入播放列表") }
-                FilledTonalIconButton(onClick = onPlay) { Icon(Icons.Rounded.PlayArrow, "立即播放") }
+                IconButton(onClick = onQueue) { Icon(Icons.Rounded.Add, stringResource(R.string.add_to_queue)) }
+                FilledTonalIconButton(onClick = onPlay) { Icon(Icons.Rounded.PlayArrow, stringResource(R.string.play_now)) }
             }
         }
     }
 }
 
+@Composable
 private fun albumDetails(entry: MediaEntry): String = listOfNotNull(
     entry.albumArtist.takeIf { it.isNotBlank() },
     entry.year?.toString(),
-    entry.childCount?.let { "$it 项" },
-).joinToString(" · ").ifBlank { "专辑" }
+    entry.childCount?.let { pluralStringResource(R.plurals.track_count, it, it) },
+).joinToString(" · ").ifBlank { stringResource(R.string.album) }
 
 @Immutable
 private data class QueueDisplayItem(
@@ -2027,14 +2053,14 @@ private fun QueueScreen(
             modifier = Modifier.fillMaxSize().padding(20.dp, 24.dp, 20.dp, bottomContentPadding),
         ) {
             Column {
-                Text("接下来播放", style = MaterialTheme.typography.headlineLarge)
-                Text("0 首音乐 · 队列保存在这台手机上", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(stringResource(R.string.queue_up_next), style = MaterialTheme.typography.headlineLarge)
+                Text(pluralStringResource(R.plurals.queue_summary, 0, 0), color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Box(
                 modifier = Modifier.fillMaxWidth().weight(1f),
                 contentAlignment = Alignment.Center,
             ) {
-                EmptyPanel(Icons.AutoMirrored.Rounded.PlaylistPlay, "播放列表还是空的")
+                EmptyPanel(Icons.AutoMirrored.Rounded.PlaylistPlay, stringResource(R.string.queue_empty))
             }
         }
         return
@@ -2117,13 +2143,13 @@ private fun QueueScreen(
         item {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text("接下来播放", style = MaterialTheme.typography.headlineLarge)
-                    Text("${state.queue.size} 首音乐 · 队列保存在这台手机上", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(stringResource(R.string.queue_up_next), style = MaterialTheme.typography.headlineLarge)
+                    Text(pluralStringResource(R.plurals.queue_summary, state.queue.size, state.queue.size), color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 if (state.queue.isNotEmpty()) FilledTonalButton(onClick = onClear) {
                     Icon(Icons.Rounded.ClearAll, null)
                     Spacer(Modifier.width(8.dp))
-                    Text("清空")
+                    Text(stringResource(R.string.clear))
                 }
             }
         }
@@ -2135,8 +2161,8 @@ private fun QueueScreen(
                 onDispose { dragHandles.remove(queueItem.key) }
             }
             val playing = item.id == state.currentTrack?.id
-            val scale by animateFloatAsState(if (dragged) 1.025f else 1f, label = "播放列表拖动缩放")
-            val elevation by animateDpAsState(if (dragged) 6.dp else 0.dp, label = "播放列表拖动阴影")
+            val scale by animateFloatAsState(if (dragged) 1.025f else 1f, label = "queue-drag-scale")
+            val elevation by animateDpAsState(if (dragged) 6.dp else 0.dp, label = "queue-drag-elevation")
             val normalContainerColor = if (playing) {
                 MaterialTheme.colorScheme.primaryContainer
             } else {
@@ -2144,7 +2170,7 @@ private fun QueueScreen(
             }
             val containerColor by animateColorAsState(
                 if (dragged) MaterialTheme.colorScheme.secondaryContainer else normalContainerColor,
-                label = "播放列表拖动颜色",
+                label = "queue-drag-color",
             )
             Surface(
                 modifier = reorderPlacementModifier(dragged)
@@ -2175,7 +2201,7 @@ private fun QueueScreen(
                             if (playing) {
                                 Icon(
                                     Icons.Rounded.GraphicEq,
-                                    "正在播放",
+                                    stringResource(R.string.playing),
                                     tint = MaterialTheme.colorScheme.onPrimaryContainer,
                                 )
                             } else {
@@ -2186,12 +2212,12 @@ private fun QueueScreen(
                         Spacer(Modifier.width(12.dp))
                         Column(Modifier.weight(1f)) {
                             Text(item.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
-                            Text(item.creator.ifBlank { item.duration ?: "音频" }, style = MaterialTheme.typography.bodySmall)
+                            Text(item.creator.ifBlank { item.duration ?: stringResource(R.string.audio) }, style = MaterialTheme.typography.bodySmall)
                         }
                     }
                     Icon(
                         Icons.Rounded.DragHandle,
-                        "拖动调整 ${item.title} 顺序",
+                        stringResource(R.string.reorder_queue, item.title),
                         modifier = Modifier
                             .size(44.dp)
                             .onGloballyPositioned { coordinates ->
@@ -2205,7 +2231,7 @@ private fun QueueScreen(
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     IconButton(onClick = { onRemove(queueItem.stateIndex) }) {
-                        Icon(Icons.Rounded.DeleteOutline, "移除")
+                        Icon(Icons.Rounded.DeleteOutline, stringResource(R.string.remove))
                     }
                 }
             }
@@ -2244,7 +2270,7 @@ internal fun NowPlayingScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Text(
-                "正在播放",
+                stringResource(R.string.nav_now_playing),
                 modifier = Modifier.fillMaxWidth(),
                 style = MaterialTheme.typography.headlineLarge,
             )
@@ -2252,7 +2278,7 @@ internal fun NowPlayingScreen(
                 modifier = Modifier.fillMaxWidth().weight(1f),
                 contentAlignment = Alignment.Center,
             ) {
-                EmptyPanel(Icons.Rounded.Album, "还没有播放音乐")
+                EmptyPanel(Icons.Rounded.Album, stringResource(R.string.no_current_track))
             }
         }
         return
@@ -2289,7 +2315,7 @@ internal fun NowPlayingScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Text(
-                "正在播放",
+                stringResource(R.string.nav_now_playing),
                 modifier = Modifier.fillMaxWidth(),
                 style = MaterialTheme.typography.headlineLarge,
             )
@@ -2309,19 +2335,25 @@ internal fun NowPlayingScreen(
                             contentAlignment = Alignment.Center,
                         ) {
                             val artworkSize = minOf(maxWidth, maxHeight * .96f, 440.dp)
+                            val artworkContentDescription = if (state.preferences.lyricsEnabled) {
+                                stringResource(R.string.album_cover_open_lyrics, track.title)
+                            } else {
+                                stringResource(R.string.album_cover, track.title)
+                            }
                             Box(
                                 modifier = Modifier
                                     .semantics {
-                                        contentDescription = if (state.preferences.lyricsEnabled) {
-                                            "专辑封面，点击打开歌词"
-                                        } else {
-                                            "专辑封面"
-                                        }
+                                        contentDescription = artworkContentDescription
                                     }
-                                    .clickable(
-                                        enabled = state.preferences.lyricsEnabled,
-                                        onClickLabel = "打开歌词",
-                                    ) { showLyrics = true },
+                                    .then(
+                                        if (state.preferences.lyricsEnabled) {
+                                            Modifier.clickable(
+                                                onClickLabel = stringResource(R.string.open_lyrics),
+                                            ) { showLyrics = true }
+                                        } else {
+                                            Modifier
+                                        },
+                                    ),
                             ) { HeroArtwork(track, artworkSize) }
                         }
                         LyricsPanel(
@@ -2359,19 +2391,25 @@ internal fun NowPlayingScreen(
                         maxHeight * .96f,
                         maximumArtwork,
                     )
+                    val artworkContentDescription = if (state.preferences.lyricsEnabled) {
+                        stringResource(R.string.album_cover_open_lyrics, track.title)
+                    } else {
+                        stringResource(R.string.album_cover, track.title)
+                    }
                     Box(
                         modifier = Modifier
                             .semantics {
-                                contentDescription = if (state.preferences.lyricsEnabled) {
-                                    "专辑封面，点击打开歌词"
-                                } else {
-                                    "专辑封面"
-                                }
+                                contentDescription = artworkContentDescription
                             }
-                            .clickable(
-                                enabled = state.preferences.lyricsEnabled,
-                                onClickLabel = "打开歌词",
-                            ) { showLyrics = true },
+                            .then(
+                                if (state.preferences.lyricsEnabled) {
+                                    Modifier.clickable(
+                                        onClickLabel = stringResource(R.string.open_lyrics),
+                                    ) { showLyrics = true }
+                                } else {
+                                    Modifier
+                                },
+                            ),
                     ) { HeroArtwork(track, artworkSize) }
                 }
             }
@@ -2387,7 +2425,7 @@ internal fun NowPlayingScreen(
             )
             Spacer(Modifier.height(4.dp))
             Text(
-                track.creator.ifBlank { "未知艺术家" },
+                track.creator.ifBlank { stringResource(R.string.unknown_artist) },
                 modifier = Modifier.fillMaxWidth(),
                 style = artistStyle,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -2397,7 +2435,7 @@ internal fun NowPlayingScreen(
             )
             Spacer(Modifier.height(2.dp))
             Text(
-                track.album.ifBlank { "未知专辑" },
+                track.album.ifBlank { stringResource(R.string.unknown_album) },
                 modifier = Modifier.fillMaxWidth(),
                 style = albumStyle,
                 color = MaterialTheme.colorScheme.outline,
@@ -2432,9 +2470,9 @@ internal fun NowPlayingScreen(
                             Icons.Rounded.FormatListNumbered
                         },
                         if (state.playbackOrder.shuffleEnabled) {
-                            "随机播放，点击切换到顺序播放"
+                            stringResource(R.string.shuffle_on_accessibility)
                         } else {
-                            "顺序播放，点击切换到随机播放"
+                            stringResource(R.string.shuffle_off_accessibility)
                         },
                         tint = if (state.playbackOrder.shuffleEnabled) {
                             MaterialTheme.colorScheme.primary
@@ -2448,13 +2486,13 @@ internal fun NowPlayingScreen(
                     enabled = state.currentQueueIndex > 0,
                     modifier = Modifier.size(secondaryControlSize),
                 ) {
-                    Icon(Icons.Rounded.SkipPrevious, "上一首", Modifier.size(controlIconSize))
+                    Icon(Icons.Rounded.SkipPrevious, stringResource(R.string.previous_track), Modifier.size(controlIconSize))
                 }
                 FilledIconButton(onClick = onTogglePlayback, modifier = Modifier.size(primaryControlSize)) {
                     AnimatedContent(state.playbackState, label = "play pause") { playback ->
                         Icon(
                             if (playback == RemotePlaybackState.PLAYING) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                            if (playback == RemotePlaybackState.PLAYING) "暂停" else "播放",
+                            if (playback == RemotePlaybackState.PLAYING) stringResource(R.string.pause) else stringResource(R.string.play),
                             Modifier.size(primaryIconSize),
                         )
                     }
@@ -2463,7 +2501,7 @@ internal fun NowPlayingScreen(
                     onClick = onNext,
                     enabled = canSelectNextTrack(state.queue, state.currentQueueIndex, state.playbackOrder),
                     modifier = Modifier.size(secondaryControlSize),
-                ) { Icon(Icons.Rounded.SkipNext, "下一首", Modifier.size(controlIconSize)) }
+                ) { Icon(Icons.Rounded.SkipNext, stringResource(R.string.next_track), Modifier.size(controlIconSize)) }
                 IconButton(onClick = onCycleRepeat) {
                     Icon(
                         when (state.playbackOrder.repeatMode) {
@@ -2472,9 +2510,9 @@ internal fun NowPlayingScreen(
                             RepeatMode.ALL -> Icons.Rounded.Repeat
                         },
                         when (state.playbackOrder.repeatMode) {
-                            RepeatMode.NONE -> "循环关闭，点击切换到单曲循环"
-                            RepeatMode.ONE -> "单曲循环，点击切换到列表循环"
-                            RepeatMode.ALL -> "列表循环，点击关闭循环"
+                            RepeatMode.NONE -> stringResource(R.string.repeat_off_accessibility)
+                            RepeatMode.ONE -> stringResource(R.string.repeat_one_accessibility)
+                            RepeatMode.ALL -> stringResource(R.string.repeat_all_accessibility)
                         },
                         tint = if (state.playbackOrder.repeatMode == RepeatMode.NONE) {
                             MaterialTheme.colorScheme.onSurfaceVariant
@@ -2566,19 +2604,21 @@ private fun MiniPlayer(
             Column(Modifier.weight(1f)) {
                 Text(track.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
                 Text(
-                    state.renderers.firstOrNull { it.id == state.selectedRendererId }?.name ?: "未选择播放器",
+                    state.renderers.firstOrNull { it.id == state.selectedRendererId }?.let {
+                        if (it.id == LsMusicViewModel.LOCAL_RENDERER_ID) stringResource(R.string.local_player_name) else it.name
+                    } ?: stringResource(R.string.not_selected_player),
                     maxLines = 1,
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
             IconButton(onClick = onTogglePlayback) {
-                Icon(if (state.playbackState == RemotePlaybackState.PLAYING) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, "播放或暂停")
+                Icon(if (state.playbackState == RemotePlaybackState.PLAYING) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, stringResource(R.string.play_or_pause))
             }
             IconButton(
                 onClick = onNext,
                 enabled = canSelectNextTrack(state.queue, state.currentQueueIndex, state.playbackOrder),
             ) {
-                Icon(Icons.Rounded.SkipNext, "下一首")
+                Icon(Icons.Rounded.SkipNext, stringResource(R.string.next_track))
             }
         }
     }
@@ -2678,7 +2718,7 @@ private fun ArtworkTile(
             ) {
                 AsyncImage(
                     model = artworkModel,
-                    contentDescription = "${entry.title} 封面",
+                    contentDescription = stringResource(R.string.album_cover, entry.title),
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop,
                     filterQuality = filterQuality,
@@ -2714,7 +2754,7 @@ private fun HeroArtwork(track: MediaEntry, size: androidx.compose.ui.unit.Dp) {
             key(track.id, track.artworkUri) {
                 AsyncImage(
                     model = track.artworkUri,
-                    contentDescription = "${track.title} 封面",
+                    contentDescription = stringResource(R.string.album_cover, track.title),
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop,
                 )

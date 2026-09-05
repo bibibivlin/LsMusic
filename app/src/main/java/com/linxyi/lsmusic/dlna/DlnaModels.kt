@@ -1,5 +1,7 @@
 package com.linxyi.lsmusic.dlna
 
+import com.linxyi.lsmusic.ui.UiText
+
 enum class DlnaDeviceKind { MEDIA_SERVER, MEDIA_RENDERER }
 
 data class DlnaDevice(
@@ -87,7 +89,7 @@ data class DlnaSnapshot(
     val servers: List<DlnaDevice> = emptyList(),
     val renderers: List<DlnaDevice> = emptyList(),
     val isSearching: Boolean = false,
-    val error: String? = null,
+    val error: UiText? = null,
 )
 
 private val albumYearPattern = Regex("(?<!\\d)[12]\\d{3}(?!\\d)")

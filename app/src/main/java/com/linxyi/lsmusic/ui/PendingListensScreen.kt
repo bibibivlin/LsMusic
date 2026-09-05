@@ -40,6 +40,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.linxyi.lsmusic.listenbrainz.PendingListen
+import com.linxyi.lsmusic.R
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -67,10 +70,10 @@ internal fun PendingListensScreen(
         item(key = "header") {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onBack) {
-                    Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回网络设置")
+                    Icon(Icons.AutoMirrored.Rounded.ArrowBack, stringResource(R.string.back_to_network_settings))
                 }
                 Text(
-                    "待上传记录",
+                    stringResource(R.string.pending_listens_title),
                     style = MaterialTheme.typography.headlineMedium,
                     modifier = Modifier.padding(start = 4.dp),
                 )
@@ -79,10 +82,13 @@ internal fun PendingListensScreen(
         item(key = "summary") {
             Text(
                 if (records.isEmpty()) {
-                    "没有待上传的 ListenBrainz 播放记录。"
+                    stringResource(R.string.pending_listens_empty)
                 } else {
-                    "${records.size} 条记录保存在本机。自动重试和手动重试都会使用曲目实际开始播放的时间。" +
-                        if (canUpload) "" else " 请返回网络设置并启用 ListenBrainz、保存有效令牌。"
+                    pluralStringResource(
+                        R.plurals.pending_listens_local_summary,
+                        records.size,
+                        records.size,
+                    ) + if (canUpload) "" else stringResource(R.string.pending_listens_enable_hint)
                 },
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -103,10 +109,10 @@ internal fun PendingListensScreen(
                                 modifier = Modifier.padding(end = 8.dp).size(18.dp),
                                 strokeWidth = 2.dp,
                             )
-                            Text("正在上传")
+                            Text(stringResource(R.string.uploading))
                         } else {
                             Icon(Icons.Rounded.Refresh, null)
-                            Text("立即重试", modifier = Modifier.padding(start = 8.dp))
+                            Text(stringResource(R.string.retry_now), modifier = Modifier.padding(start = 8.dp))
                         }
                     }
                     OutlinedButton(
@@ -115,7 +121,7 @@ internal fun PendingListensScreen(
                         modifier = Modifier.weight(1f),
                     ) {
                         Icon(Icons.Rounded.DeleteOutline, null)
-                        Text("清空列表", modifier = Modifier.padding(start = 8.dp))
+                        Text(stringResource(R.string.clear_list), modifier = Modifier.padding(start = 8.dp))
                     }
                 }
             }
@@ -139,7 +145,7 @@ internal fun PendingListensScreen(
                     modifier = Modifier.fillMaxWidth().height(180.dp),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text("上传成功的记录会自动从这里移除。")
+                    Text(stringResource(R.string.uploaded_records_removed))
                 }
             }
         }
@@ -148,8 +154,8 @@ internal fun PendingListensScreen(
     recordToDelete?.let { record ->
         AlertDialog(
             onDismissRequest = { recordToDelete = null },
-            title = { Text("删除这条待上传记录？") },
-            text = { Text("“${record.track.title}”删除后将无法再上传到 ListenBrainz。") },
+            title = { Text(stringResource(R.string.delete_pending_title)) },
+            text = { Text(stringResource(R.string.delete_pending_body, record.track.title)) },
             confirmButton = {
                 TextButton(
                     onClick = {
@@ -157,10 +163,10 @@ internal fun PendingListensScreen(
                         recordToDelete = null
                     },
                     enabled = !isUploading,
-                ) { Text("删除") }
+                ) { Text(stringResource(R.string.delete)) }
             },
             dismissButton = {
-                TextButton(onClick = { recordToDelete = null }) { Text("取消") }
+                TextButton(onClick = { recordToDelete = null }) { Text(stringResource(R.string.cancel)) }
             },
         )
     }
@@ -168,8 +174,8 @@ internal fun PendingListensScreen(
     if (confirmingClear) {
         AlertDialog(
             onDismissRequest = { confirmingClear = false },
-            title = { Text("清空全部待上传记录？") },
-            text = { Text("这 ${records.size} 条记录将永久删除，之后无法恢复上传。") },
+            title = { Text(stringResource(R.string.clear_pending_title)) },
+            text = { Text(stringResource(R.string.clear_pending_body, records.size)) },
             confirmButton = {
                 TextButton(
                     onClick = {
@@ -177,10 +183,10 @@ internal fun PendingListensScreen(
                         confirmingClear = false
                     },
                     enabled = !isUploading && records.isNotEmpty(),
-                ) { Text("全部删除") }
+                ) { Text(stringResource(R.string.delete_all)) }
             },
             dismissButton = {
-                TextButton(onClick = { confirmingClear = false }) { Text("取消") }
+                TextButton(onClick = { confirmingClear = false }) { Text(stringResource(R.string.cancel)) }
             },
         )
     }
@@ -202,7 +208,7 @@ private fun PendingListenCard(
             Row(verticalAlignment = Alignment.Top) {
                 Column(Modifier.weight(1f)) {
                     Text(
-                        record.track.title.ifBlank { "未知曲目" },
+                        record.track.title.ifBlank { stringResource(R.string.unknown_track) },
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
@@ -212,34 +218,34 @@ private fun PendingListenCard(
                         listOf(record.track.creator, record.track.album)
                             .filter(String::isNotBlank)
                             .joinToString(" · ")
-                            .ifBlank { "未知艺术家" },
+                            .ifBlank { stringResource(R.string.unknown_artist) },
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
                 IconButton(onClick = onDelete, enabled = deleteEnabled) {
-                    Icon(Icons.Rounded.DeleteOutline, "删除这条记录")
+                    Icon(Icons.Rounded.DeleteOutline, stringResource(R.string.delete_pending_record))
                 }
             }
             Spacer(Modifier.height(10.dp))
             Text(
-                "播放于 ${formatPendingListenDate(record.startedAtEpochSeconds)}",
+                stringResource(R.string.played_at, formatPendingListenDate(record.startedAtEpochSeconds)),
                 style = MaterialTheme.typography.bodyMedium,
             )
             Text(
-                "已播放 ${formatPendingListenDuration(record.listenedMs)}" +
+                stringResource(R.string.played_duration, formatPendingListenDuration(record.listenedMs)) +
                     record.durationMs.takeIf { it > 0L }?.let {
-                        " / 曲目 ${formatPendingListenDuration(it)}"
+                        " · " + stringResource(R.string.track_duration, formatPendingListenDuration(it))
                     }.orEmpty(),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             if (record.attemptCount > 0) {
                 Text(
-                    "已尝试 ${record.attemptCount} 次" +
+                    stringResource(R.string.upload_attempts, record.attemptCount) +
                         record.lastAttemptAtEpochSeconds?.let {
-                            " · 最近 ${formatPendingListenDate(it)}"
+                            " · " + stringResource(R.string.last_attempt, formatPendingListenDate(it))
                         }.orEmpty(),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -248,7 +254,7 @@ private fun PendingListenCard(
             record.lastError?.let { error ->
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "最近失败：$error",
+                    stringResource(R.string.latest_failure, error),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error,
                 )
@@ -256,7 +262,7 @@ private fun PendingListenCard(
             Spacer(Modifier.height(10.dp))
             TextButton(onClick = onRetry, enabled = retryEnabled) {
                 Icon(Icons.Rounded.Refresh, null)
-                Text("重试此记录", modifier = Modifier.padding(start = 8.dp))
+                Text(stringResource(R.string.retry_this_record), modifier = Modifier.padding(start = 8.dp))
             }
         }
     }

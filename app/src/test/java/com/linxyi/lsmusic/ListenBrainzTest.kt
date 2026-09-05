@@ -10,6 +10,7 @@ import com.linxyi.lsmusic.listenbrainz.MusicBrainzMetadataParser
 import com.linxyi.lsmusic.listenbrainz.PendingListen
 import com.linxyi.lsmusic.listenbrainz.PendingListenJsonCodec
 import com.linxyi.lsmusic.listenbrainz.describeListenBrainzValidationFailure
+import com.linxyi.lsmusic.listenbrainz.ListenBrainzValidationFailureKind
 import com.linxyi.lsmusic.listenbrainz.buildListenBrainzTrackPayloadFields
 import com.linxyi.lsmusic.listenbrainz.processPendingListens
 import com.linxyi.lsmusic.listenbrainz.shouldContinuePendingListenBatchAfter
@@ -155,17 +156,19 @@ class ListenBrainzTest {
 
     @Test
     fun validationFailure_distinguishesNetworkAndServiceErrors() {
-        assertTrue(
-            describeListenBrainzValidationFailure(UnknownHostException()).contains("DNS"),
+        assertEquals(
+            ListenBrainzValidationFailureKind.UNKNOWN_HOST,
+            describeListenBrainzValidationFailure(UnknownHostException()).kind,
         )
-        assertTrue(
-            describeListenBrainzValidationFailure(SocketTimeoutException()).contains("超时"),
+        assertEquals(
+            ListenBrainzValidationFailureKind.TIMEOUT,
+            describeListenBrainzValidationFailure(SocketTimeoutException()).kind,
         )
-        assertTrue(
-            describeListenBrainzValidationFailure(
-                ListenBrainzHttpException(503, "unavailable"),
-            ).contains("HTTP 503"),
+        val httpFailure = describeListenBrainzValidationFailure(
+            ListenBrainzHttpException(503, "unavailable"),
         )
+        assertEquals(ListenBrainzValidationFailureKind.HTTP_STATUS, httpFailure.kind)
+        assertEquals(503, httpFailure.statusCode)
     }
 
     @Test

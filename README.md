@@ -1,5 +1,7 @@
 # L's Music
 
+[English](README.en.md)
+
 [![Android CI](https://github.com/bibibivlin/LsMusic/actions/workflows/android-ci.yml/badge.svg)](https://github.com/bibibivlin/LsMusic/actions/workflows/android-ci.yml)
 [![GitHub Release](https://img.shields.io/github/v/release/bibibivlin/LsMusic)](https://github.com/bibibivlin/LsMusic/releases/latest)
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)

@@ -11,11 +11,13 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipe
 import androidx.compose.ui.unit.dp
+import com.linxyi.lsmusic.R
 import com.linxyi.lsmusic.dlna.DlnaDevice
 import com.linxyi.lsmusic.dlna.DlnaDeviceKind
 import com.linxyi.lsmusic.dlna.MediaEntry
 import com.linxyi.lsmusic.dlna.RemotePlaybackState
 import com.linxyi.lsmusic.ui.theme.LsMusicTheme
+import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Rule
 import org.junit.Test
 
@@ -27,27 +29,27 @@ class LibraryLayoutUiTest {
     fun layoutToggleRightHalfWorksWhileFastScrollerIsVisible() {
         setLibraryContent()
 
-        compose.onNodeWithContentDescription("媒体库快速滚动").assertIsDisplayed()
-        compose.onNodeWithContentDescription("切换到封面网格")
+        compose.onNodeWithContentDescription(text(R.string.fast_scroll_library)).assertIsDisplayed()
+        compose.onNodeWithContentDescription(text(R.string.switch_to_grid))
             .assertIsDisplayed()
             .performTouchInput {
                 click(Offset(width * 0.85f, centerY))
             }
 
-        compose.onNodeWithContentDescription("切换到列表")
+        compose.onNodeWithContentDescription(text(R.string.switch_to_list))
             .assertIsDisplayed()
             .performTouchInput {
                 click(Offset(width * 0.85f, centerY))
             }
 
-        compose.onNodeWithContentDescription("切换到封面网格").assertIsDisplayed()
+        compose.onNodeWithContentDescription(text(R.string.switch_to_grid)).assertIsDisplayed()
     }
 
     @Test
     fun fastScrollerStillDragsAndKeepsFloatingSearchClickable() {
         setLibraryContent()
 
-        compose.onNodeWithContentDescription("媒体库快速滚动")
+        compose.onNodeWithContentDescription(text(R.string.fast_scroll_library))
             .assertIsDisplayed()
             .performTouchInput {
                 swipe(
@@ -57,11 +59,11 @@ class LibraryLayoutUiTest {
                 )
             }
 
-        compose.onNodeWithContentDescription("搜索当前目录")
+        compose.onNodeWithContentDescription(text(R.string.search_current_directory))
             .assertIsDisplayed()
             .performClick()
 
-        compose.onNodeWithContentDescription("切换到封面网格").assertIsDisplayed()
+        compose.onNodeWithContentDescription(text(R.string.switch_to_grid)).assertIsDisplayed()
     }
 
     private fun setLibraryContent() {
@@ -69,7 +71,7 @@ class LibraryLayoutUiTest {
         val viewState = BrowseViewState(useGrid = false)
         val server = DlnaDevice(
             id = "server",
-            name = "测试媒体库",
+            name = "Test library",
             manufacturer = "Test",
             model = "Server",
             kind = DlnaDeviceKind.MEDIA_SERVER,
@@ -86,7 +88,7 @@ class LibraryLayoutUiTest {
                 )
             },
             albumSort = AlbumSort.SERVER_DEFAULT,
-            path = listOf(BrowseLocation("albums", "专辑")),
+            path = listOf(BrowseLocation("albums", "Albums")),
             browsePageKey = pageKey,
             browseViewState = viewState,
             preferences = AppPreferences(useGridByDefault = false),
@@ -121,4 +123,6 @@ class LibraryLayoutUiTest {
             }
         }
     }
+
+    private fun text(id: Int): String = InstrumentationRegistry.getInstrumentation().targetContext.getString(id)
 }

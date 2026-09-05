@@ -47,13 +47,13 @@ internal class LyricsRepository(
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
-                failures += "${providerId.label}：${error.localizedMessage ?: "请求失败"}"
+                failures += "${providerId.name}: ${error.localizedMessage ?: "request failed"}"
             }
         }
         if (failures.isEmpty()) {
             LyricsRepositoryResult.NotFound
         } else {
-            LyricsRepositoryResult.Failure(failures.joinToString("；"))
+            LyricsRepositoryResult.Failure(failures.joinToString("; "))
         }
     }
 

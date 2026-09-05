@@ -1,5 +1,6 @@
 package com.linxyi.lsmusic.ui
 
+import com.linxyi.lsmusic.R
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
@@ -16,8 +17,8 @@ internal fun remoteRendererToStopOnExit(state: LsMusicUiState): String? =
 
 internal data class ExitProgress(
     val status: ExitStatus = ExitStatus.IDLE,
-    val error: String? = null,
-    val warning: String? = null,
+    val error: UiText? = null,
+    val warning: UiText? = null,
 )
 
 /** Owns one exit attempt across recomposition/rotation and retains failed writes for a retry. */
@@ -55,7 +56,7 @@ internal class AppExitCoordinator(
             } catch (error: CancellationException) {
                 throw error
             } catch (_: Exception) {
-                "播放已停止，但无法保存播放记录。请释放设备存储空间后重试。"
+                UiText.Resource(R.string.exit_save_failed_body)
             }
             // A failed local write is never followed by an upload or a successful exit.
             // Cleanup of the server's ephemeral status also runs on a failed-save attempt.
@@ -66,7 +67,7 @@ internal class AppExitCoordinator(
             } catch (_: Exception) {
                 // Durable records remain queued; transient network failures do not block exit.
             }
-            val warning = if (stopped.await()) null else "未能确认远程设备已停止"
+            val warning = if (stopped.await()) null else UiText.Resource(R.string.remote_stop_unconfirmed)
             publish(ExitProgress(
                 status = if (saveError == null) ExitStatus.COMPLETE else ExitStatus.SAVE_FAILED,
                 error = saveError,

@@ -142,7 +142,7 @@ class PendingListenRepository internal constructor(
                     attemptedCount = 0,
                     uploadedCount = 0,
                     remainingCount = records.value.size,
-                    errorMessage = "请先保存有效的 ListenBrainz 令牌",
+                    errorMessage = "missing_token",
                 )
             }
             val snapshot = records.value.filter { ids == null || it.id in ids }
@@ -230,13 +230,13 @@ private class PendingListenDiskStore(context: Context) {
         } catch (_: FileNotFoundException) {
             emptyList()
         } catch (error: Throwable) {
-            throw IOException("无法读取待上传的 ListenBrainz 记录", error)
+            throw IOException("Unable to read pending ListenBrainz records", error)
         }
     }
 
     fun save(records: List<PendingListen>) {
         if (!directory.exists() && !directory.mkdirs()) {
-            throw IOException("无法创建 ListenBrainz 待上传记录目录")
+            throw IOException("Unable to create the pending ListenBrainz records directory")
         }
         val output = file.startWrite()
         try {
@@ -264,7 +264,7 @@ internal object PendingListenJsonCodec {
 
     fun decode(value: String): List<PendingListen> {
         val root = JSONObject(value)
-        require(root.getInt("version") == VERSION) { "不支持的待上传记录版本" }
+        require(root.getInt("version") == VERSION) { "Unsupported pending ListenBrainz record version" }
         val records = root.getJSONArray("records")
         return List(records.length()) { index -> records.getJSONObject(index).toPendingListen() }
     }
@@ -342,7 +342,7 @@ internal object PendingListenJsonCodec {
 
 private fun Throwable.pendingListenErrorMessage(): String = when (this) {
     is ListenBrainzHttpException -> "ListenBrainz HTTP $statusCode"
-    else -> localizedMessage?.takeIf { it.isNotBlank() }?.take(300) ?: "网络请求失败"
+    else -> localizedMessage?.takeIf { it.isNotBlank() }?.take(300) ?: "Network request failed"
 }
 
 private val RECORD_SPECIFIC_HTTP_STATUS_CODES = setOf(400, 422)
