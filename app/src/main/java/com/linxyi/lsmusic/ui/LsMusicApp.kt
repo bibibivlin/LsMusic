@@ -169,6 +169,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
@@ -401,11 +402,10 @@ private val destinations = listOf(
 @Composable
 fun LsMusicApp(viewModel: LsMusicViewModel) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    val darkTheme = when (state.preferences.themeMode) {
-        ThemeMode.SYSTEM -> isSystemInDarkTheme()
-        ThemeMode.LIGHT -> false
-        ThemeMode.DARK -> true
-    }
+    val darkTheme = resolvesToDarkTheme(
+        mode = state.preferences.themeMode,
+        systemUsesDarkTheme = isSystemInDarkTheme(),
+    )
 
     LsMusicTheme(
         darkTheme = darkTheme,
@@ -710,6 +710,7 @@ private fun AppNavigationBar(selected: AppDestination, onDestination: (AppDestin
     val selectedNavigationDestination = selected.navigationDestination
     Box(
         Modifier.fillMaxWidth()
+            .testTag("app-navigation-bar")
             .background(MaterialTheme.colorScheme.surfaceContainer)
             .navigationBarsPadding(),
     ) {
