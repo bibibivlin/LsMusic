@@ -1,9 +1,12 @@
 package com.linxyi.lsmusic
 
+import android.app.LocaleConfig
 import android.content.Context
 import android.content.res.Configuration
+import android.os.Build
 import android.os.LocaleList
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.filters.SdkSuppress
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
@@ -42,6 +45,15 @@ class ResourceLocalizationTest {
             english.resources.getQuantityString(R.plurals.album_count, 2, 2),
             unsupported.resources.getQuantityString(R.plurals.album_count, 2, 2),
         )
+    }
+
+    @Test
+    @SdkSuppress(minSdkVersion = Build.VERSION_CODES.TIRAMISU)
+    fun applicationLocaleConfigExposesOnlySupportedLocales() {
+        val localeConfig = LocaleConfig.fromContextIgnoringOverride(baseContext)
+
+        assertEquals(LocaleConfig.STATUS_SUCCESS, localeConfig.status)
+        assertEquals("en,zh", requireNotNull(localeConfig.supportedLocales).toLanguageTags())
     }
 
     private fun localized(locale: Locale): Context {
