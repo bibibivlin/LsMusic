@@ -20,6 +20,12 @@ enum class ThemeMode {
     DARK,
 }
 
+internal fun resolvesToDarkTheme(mode: ThemeMode, systemUsesDarkTheme: Boolean): Boolean = when (mode) {
+    ThemeMode.SYSTEM -> systemUsesDarkTheme
+    ThemeMode.LIGHT -> false
+    ThemeMode.DARK -> true
+}
+
 enum class PresetPalette(
     val seedArgb: Long,
 ) {

@@ -2,6 +2,7 @@ package com.linxyi.lsmusic
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.content.res.Configuration
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -39,6 +40,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.linxyi.lsmusic.ui.ExitStatus
+import com.linxyi.lsmusic.ui.AppPreferencesStore
 import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -47,17 +49,39 @@ import androidx.compose.ui.unit.dp
 import com.linxyi.lsmusic.ui.LsMusicApp
 import com.linxyi.lsmusic.ui.LsMusicViewModel
 import com.linxyi.lsmusic.ui.resolve
+import com.linxyi.lsmusic.ui.resolvesToDarkTheme
 import com.linxyi.lsmusic.ui.theme.LsMusicTheme
 
 class MainActivity : ComponentActivity() {
     private val viewModel: LsMusicViewModel by viewModels()
+    private var appliedDarkTheme = false
 
     @SuppressLint("InlinedApi")
     override fun onCreate(savedInstanceState: Bundle?) {
+        val startupPreferences = AppPreferencesStore(this).load()
+        appliedDarkTheme = resolvesToDarkTheme(
+            mode = startupPreferences.themeMode,
+            systemUsesDarkTheme = resources.configuration.usesDarkTheme,
+        )
+        val startupDynamicColor = startupPreferences.useDynamicColor
+        val startupPresetPalette = startupPreferences.presetPalette
+        setTheme(
+            if (appliedDarkTheme) R.style.LsMusicPlatformThemeDark
+            else R.style.LsMusicPlatformThemeLight,
+        )
         super.onCreate(savedInstanceState)
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 viewModel.uiState.collect { state ->
+                    val requestedDarkTheme = resolvesToDarkTheme(
+                        mode = state.preferences.themeMode,
+                        systemUsesDarkTheme = resources.configuration.usesDarkTheme,
+                    )
+                    if (requestedDarkTheme != appliedDarkTheme && !isFinishing) {
+                        appliedDarkTheme = requestedDarkTheme
+                        recreate()
+                        return@collect
+                    }
                     if (state.exitStatus == ExitStatus.COMPLETE && !isFinishing) {
                         state.exitWarning?.let {
                             Toast.makeText(this@MainActivity, it.resolve(this@MainActivity), Toast.LENGTH_LONG).show()
@@ -78,33 +102,37 @@ class MainActivity : ComponentActivity() {
             ),
         )
         setContent {
-            LsMusicTheme {
-                var hasLocalNetworkPermission by remember {
-                    mutableStateOf(
-                        Build.VERSION.SDK_INT < 37 ||
-                            checkSelfPermission(Manifest.permission.ACCESS_LOCAL_NETWORK) == PackageManager.PERMISSION_GRANTED,
-                    )
-                }
-                val permissionLauncher = rememberLauncherForActivityResult(
-                    ActivityResultContracts.RequestPermission(),
-                ) { granted -> hasLocalNetworkPermission = granted }
-                val notificationPermissionLauncher = rememberLauncherForActivityResult(
-                    ActivityResultContracts.RequestPermission(),
-                ) {}
+            var hasLocalNetworkPermission by remember {
+                mutableStateOf(
+                    Build.VERSION.SDK_INT < 37 ||
+                        checkSelfPermission(Manifest.permission.ACCESS_LOCAL_NETWORK) == PackageManager.PERMISSION_GRANTED,
+                )
+            }
+            val permissionLauncher = rememberLauncherForActivityResult(
+                ActivityResultContracts.RequestPermission(),
+            ) { granted -> hasLocalNetworkPermission = granted }
+            val notificationPermissionLauncher = rememberLauncherForActivityResult(
+                ActivityResultContracts.RequestPermission(),
+            ) {}
 
-                LaunchedEffect(hasLocalNetworkPermission) {
-                    if (
-                        hasLocalNetworkPermission &&
-                        Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-                        checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-                    ) {
-                        notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                    }
+            LaunchedEffect(hasLocalNetworkPermission) {
+                if (
+                    hasLocalNetworkPermission &&
+                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                    checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+                ) {
+                    notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                 }
+            }
 
-                if (hasLocalNetworkPermission) {
-                    LsMusicApp(viewModel)
-                } else {
+            if (hasLocalNetworkPermission) {
+                LsMusicApp(viewModel)
+            } else {
+                LsMusicTheme(
+                    darkTheme = appliedDarkTheme,
+                    dynamicColor = startupDynamicColor,
+                    presetPalette = startupPresetPalette,
+                ) {
                     LocalNetworkPermissionScreen {
                         permissionLauncher.launch(Manifest.permission.ACCESS_LOCAL_NETWORK)
                     }
@@ -113,6 +141,9 @@ class MainActivity : ComponentActivity() {
         }
     }
 }
+
+private val Configuration.usesDarkTheme: Boolean
+    get() = uiMode and Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES
 
 @Composable
 private fun LocalNetworkPermissionScreen(onRequestPermission: () -> Unit) {
