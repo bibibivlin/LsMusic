@@ -7,6 +7,7 @@ import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -43,14 +44,18 @@ import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.linxyi.lsmusic.R
 import com.linxyi.lsmusic.lyrics.LyricsDocument
 import com.linxyi.lsmusic.lyrics.LyricsLine
 import com.linxyi.lsmusic.lyrics.LyricsLoadState
@@ -59,8 +64,6 @@ import com.linxyi.lsmusic.lyrics.activeLyricsLineIndex
 import com.linxyi.lsmusic.lyrics.displayTexts
 import com.linxyi.lsmusic.lyrics.interpolatedLyricsPosition
 import com.linxyi.lsmusic.lyrics.wordSweepProgress
-import com.linxyi.lsmusic.R
-import androidx.compose.ui.res.stringResource
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
@@ -81,7 +84,15 @@ internal fun LyricsPanel(
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Box(modifier = modifier.clickable(onClickLabel = stringResource(R.string.close_lyrics)) { onClose() }) {
+    val closeInteractionSource = remember { MutableInteractionSource() }
+    Box(
+        modifier = modifier.clickable(
+            interactionSource = closeInteractionSource,
+            indication = null,
+            onClickLabel = stringResource(R.string.close_lyrics),
+            onClick = onClose,
+        ),
+    ) {
         when (loadState) {
             LyricsLoadState.Idle,
             LyricsLoadState.Loading -> LyricsMessage {
@@ -155,11 +166,6 @@ private fun LoadedLyrics(
         with(density) { (fontSizeSp * ESTIMATED_LINE_HEIGHT_MULTIPLIER).sp.toPx().roundToInt() }
     }
     val distanceEffectsVisible = effectsEnabled && !suppressDistanceEffects
-    val edgeFadeAmount by animateFloatAsState(
-        targetValue = if (distanceEffectsVisible) 1f else 0f,
-        animationSpec = tween(EFFECT_TRANSITION_DURATION_MS, easing = FastOutSlowInEasing),
-        label = "lyrics-edge-fade",
-    )
 
     LaunchedEffect(isUserDragging) {
         if (isUserDragging) {
@@ -171,93 +177,100 @@ private fun LoadedLyrics(
         }
     }
 
-    BoxWithConstraints(Modifier.fillMaxSize()) {
-        val verticalContentPadding = if (document.isSynced) maxOf(96.dp, maxHeight / 2) else 96.dp
-        LaunchedEffect(activeIndex, manuallyBrowsing, verticalContentPadding, estimatedLineSizePx) {
-            if (manuallyBrowsing) return@LaunchedEffect
-            if (activeIndex >= 0) centerLyricsLine(listState, activeIndex, estimatedLineSizePx)
-            suppressDistanceEffects = false
-        }
-        LazyColumn(
-            state = listState,
-            modifier = Modifier
-                .fillMaxSize()
-                .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
-                .drawWithContent {
-                    drawContent()
-                    drawRect(
-                        brush = Brush.verticalGradient(
-                            0f to androidx.compose.ui.graphics.Color.Black.copy(alpha = 1f - edgeFadeAmount),
-                            .12f to androidx.compose.ui.graphics.Color.Black,
-                            .84f to androidx.compose.ui.graphics.Color.Black,
-                            1f to androidx.compose.ui.graphics.Color.Black.copy(alpha = 1f - edgeFadeAmount),
-                        ),
-                        blendMode = BlendMode.DstIn,
-                    )
-                },
-            contentPadding = PaddingValues(horizontal = 24.dp, vertical = verticalContentPadding),
-            verticalArrangement = Arrangement.spacedBy(18.dp),
+    Column(Modifier.fillMaxSize()) {
+        BoxWithConstraints(
+            Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .testTag(LYRICS_VIEWPORT_TEST_TAG),
         ) {
-            itemsIndexed(
-                items = lines,
-                key = { _, line -> line.stableId },
-                contentType = { _, line -> if (line.translation == null) "original" else "translated" },
-            ) { index, line ->
-                val distance = if (activeIndex < 0) 0 else abs(index - activeIndex)
-                val active = index == activeIndex
-                val blur by animateDpAsState(
-                    targetValue = if (distanceEffectsVisible && !active) {
-                        (distance * 1.8f).coerceAtMost(8f).dp
-                    } else {
-                        0.dp
+            val verticalContentPadding = if (document.isSynced) maxOf(96.dp, maxHeight / 2) else 96.dp
+            LaunchedEffect(activeIndex, manuallyBrowsing, verticalContentPadding, estimatedLineSizePx) {
+                if (manuallyBrowsing) return@LaunchedEffect
+                if (activeIndex >= 0) centerLyricsLine(listState, activeIndex, estimatedLineSizePx)
+                suppressDistanceEffects = false
+            }
+            LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+                    .drawWithContent {
+                        drawContent()
+                        drawRect(
+                            brush = Brush.verticalGradient(
+                                0f to Color.Transparent,
+                                .12f to Color.Black,
+                                .84f to Color.Black,
+                                1f to Color.Transparent,
+                            ),
+                            blendMode = BlendMode.DstIn,
+                        )
                     },
-                    animationSpec = tween(EFFECT_TRANSITION_DURATION_MS, easing = FastOutSlowInEasing),
-                    label = "lyrics-blur",
-                )
-                val itemAlpha by animateFloatAsState(
-                    targetValue = if (!distanceEffectsVisible || active) {
-                        1f
-                    } else {
-                        (1f - distance * .11f).coerceAtLeast(.35f)
-                    },
-                    animationSpec = tween(EFFECT_TRANSITION_DURATION_MS, easing = FastOutSlowInEasing),
-                    label = "lyrics-alpha",
-                )
-                val scale by animateFloatAsState(
-                    targetValue = if (!distanceEffectsVisible || active) {
-                        1f
-                    } else {
-                        (1f - distance * .015f).coerceAtLeast(.92f)
-                    },
-                    animationSpec = tween(EFFECT_TRANSITION_DURATION_MS, easing = FastOutSlowInEasing),
-                    label = "lyrics-scale",
-                )
-                val stagger by animateFloatAsState(
-                    targetValue = if (distanceEffectsVisible && !active) {
-                        lyricsStaggerOffsetDp(distance)
-                    } else {
-                        0f
-                    },
-                    animationSpec = tween(EFFECT_TRANSITION_DURATION_MS, easing = FastOutSlowInEasing),
-                    label = "lyrics-stagger",
-                )
-                LyricsLineContent(
-                    line = line,
-                    active = active,
-                    positionMs = interpolatedPosition,
-                    translationMode = translationMode,
-                    effectsEnabled = effectsEnabled,
-                    fontSizeSp = fontSizeSp,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .graphicsLayer {
-                            alpha = itemAlpha
-                            scaleX = scale
-                            scaleY = scale
-                            translationX = stagger.dp.toPx()
-                        }
-                        .blur(blur, BlurredEdgeTreatment.Unbounded),
-                )
+                contentPadding = PaddingValues(horizontal = 24.dp, vertical = verticalContentPadding),
+                verticalArrangement = Arrangement.spacedBy(18.dp),
+            ) {
+                itemsIndexed(
+                    items = lines,
+                    key = { _, line -> line.stableId },
+                    contentType = { _, line -> if (line.translation == null) "original" else "translated" },
+                ) { index, line ->
+                    val distance = if (activeIndex < 0) 0 else abs(index - activeIndex)
+                    val active = index == activeIndex
+                    val blur by animateDpAsState(
+                        targetValue = if (distanceEffectsVisible && !active) {
+                            (distance * 1.8f).coerceAtMost(8f).dp
+                        } else {
+                            0.dp
+                        },
+                        animationSpec = tween(EFFECT_TRANSITION_DURATION_MS, easing = FastOutSlowInEasing),
+                        label = "lyrics-blur",
+                    )
+                    val itemAlpha by animateFloatAsState(
+                        targetValue = if (!distanceEffectsVisible || active) {
+                            1f
+                        } else {
+                            (1f - distance * .11f).coerceAtLeast(.35f)
+                        },
+                        animationSpec = tween(EFFECT_TRANSITION_DURATION_MS, easing = FastOutSlowInEasing),
+                        label = "lyrics-alpha",
+                    )
+                    val scale by animateFloatAsState(
+                        targetValue = if (!distanceEffectsVisible || active) {
+                            1f
+                        } else {
+                            (1f - distance * .015f).coerceAtLeast(.92f)
+                        },
+                        animationSpec = tween(EFFECT_TRANSITION_DURATION_MS, easing = FastOutSlowInEasing),
+                        label = "lyrics-scale",
+                    )
+                    val stagger by animateFloatAsState(
+                        targetValue = if (distanceEffectsVisible && !active) {
+                            lyricsStaggerOffsetDp(distance)
+                        } else {
+                            0f
+                        },
+                        animationSpec = tween(EFFECT_TRANSITION_DURATION_MS, easing = FastOutSlowInEasing),
+                        label = "lyrics-stagger",
+                    )
+                    LyricsLineContent(
+                        line = line,
+                        active = active,
+                        positionMs = interpolatedPosition,
+                        translationMode = translationMode,
+                        effectsEnabled = effectsEnabled,
+                        fontSizeSp = fontSizeSp,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .graphicsLayer {
+                                alpha = itemAlpha
+                                scaleX = scale
+                                scaleY = scale
+                                translationX = stagger.dp.toPx()
+                            }
+                            .blur(blur, BlurredEdgeTreatment.Unbounded),
+                    )
+                }
             }
         }
         if (sourceVisible) {
@@ -272,8 +285,9 @@ private fun LoadedLyrics(
                     ),
                 ),
                 modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                    .align(Alignment.CenterHorizontally)
+                    .padding(horizontal = 12.dp, vertical = 4.dp)
+                    .testTag(LYRICS_SOURCE_TEST_TAG),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = .72f),
             )
@@ -403,3 +417,5 @@ private const val ACTIVE_LINE_TRANSITION_DURATION_MS = 480
 private const val ESTIMATED_LINE_HEIGHT_MULTIPLIER = 1.5f
 private const val LYRICS_STAGGER_STEP_DP = 4f
 private const val LYRICS_STAGGER_MAX_DP = 12f
+internal const val LYRICS_VIEWPORT_TEST_TAG = "lyrics-viewport"
+internal const val LYRICS_SOURCE_TEST_TAG = "lyrics-source"
