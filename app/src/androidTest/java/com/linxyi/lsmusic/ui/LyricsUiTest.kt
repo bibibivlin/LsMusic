@@ -8,7 +8,11 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.layout.requiredSize
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.test.platform.app.InstrumentationRegistry
 import com.linxyi.lsmusic.R
 import com.linxyi.lsmusic.dlna.MediaEntry
@@ -181,6 +185,65 @@ class LyricsUiTest {
 
         compose.onNodeWithText("Test lyrics").assertIsDisplayed()
         compose.onNodeWithText(text(R.string.lyrics_source_label, text(R.string.lyrics_provider_qq))).assertDoesNotExist()
+    }
+
+    @Test
+    fun lyricsSourceUsesSeparateFooterAndReturnsItsSpaceWhenHidden() {
+        var sourceVisible by mutableStateOf(true)
+        compose.setContent {
+            LsMusicTheme(dynamicColor = false) {
+                LyricsPanel(
+                    loadState = LyricsLoadState.Loaded(
+                        LyricsDocument(
+                            provider = LyricsProviderId.QQ,
+                            lines = listOf(
+                                LyricsLine(
+                                    stableId = "line",
+                                    startMs = 0L,
+                                    original = "Test lyrics",
+                                ),
+                            ),
+                        ),
+                    ),
+                    positionMs = 0L,
+                    durationMs = 180_000L,
+                    isPlaying = false,
+                    translationMode = com.linxyi.lsmusic.lyrics.LyricsTranslationMode.ORIGINAL,
+                    sourceVisible = sourceVisible,
+                    effectsEnabled = false,
+                    fontSizeSp = 28,
+                    onRetry = {},
+                    onClose = {},
+                    modifier = Modifier.requiredSize(width = 320.dp, height = 420.dp),
+                )
+            }
+        }
+
+        val viewportWithSource = compose.onNodeWithTag(
+            testTag = LYRICS_VIEWPORT_TEST_TAG,
+            useUnmergedTree = true,
+        )
+            .fetchSemanticsNode().boundsInRoot
+        val sourceBounds = compose.onNodeWithTag(
+            testTag = LYRICS_SOURCE_TEST_TAG,
+            useUnmergedTree = true,
+        )
+            .fetchSemanticsNode().boundsInRoot
+
+        assertTrue(viewportWithSource.bottom <= sourceBounds.top)
+
+        compose.runOnIdle { sourceVisible = false }
+        compose.onNodeWithTag(
+            testTag = LYRICS_SOURCE_TEST_TAG,
+            useUnmergedTree = true,
+        ).assertDoesNotExist()
+
+        val viewportWithoutSource = compose.onNodeWithTag(
+            testTag = LYRICS_VIEWPORT_TEST_TAG,
+            useUnmergedTree = true,
+        )
+            .fetchSemanticsNode().boundsInRoot
+        assertTrue(viewportWithoutSource.height > viewportWithSource.height)
     }
 
     private fun playingState(
