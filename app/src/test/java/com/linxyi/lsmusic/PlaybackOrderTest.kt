@@ -1,6 +1,7 @@
 package com.linxyi.lsmusic
 
 import com.linxyi.lsmusic.dlna.MediaEntry
+import com.linxyi.lsmusic.ui.QueueItem
 import com.linxyi.lsmusic.ui.PlaybackOrder
 import com.linxyi.lsmusic.ui.RepeatMode
 import com.linxyi.lsmusic.ui.isConfirmedLocalRepeatTransition
@@ -22,19 +23,19 @@ class PlaybackOrderTest {
             resourceUri = "https://media.example/$index.flac",
             isContainer = false,
         )
-    }
+    }.map { QueueItem(it.id, it) }
 
     @Test
     fun shuffle_doesNotRepeatUntilEveryTrackHasPlayed() {
         var index = 0
-        var order = PlaybackOrder().toggleShuffle(queue[index].id)
-        val played = mutableListOf(queue[index].id)
+        var order = PlaybackOrder().toggleShuffle(queue[index].queueId)
+        val played = mutableListOf(queue[index].queueId)
 
         repeat(queue.size - 1) {
             val selection = requireNotNull(selectNextTrack(queue, index, order, automatic = true, Random(7)))
             index = selection.index
             order = selection.order
-            played += queue[index].id
+            played += queue[index].queueId
         }
 
         assertEquals(queue.size, played.distinct().size)
@@ -45,7 +46,7 @@ class PlaybackOrderTest {
     fun shuffle_newQueueTrackRemainsEligible() {
         val playedOrder = PlaybackOrder(
             shuffleEnabled = true,
-            shuffledTrackIds = queue.take(3).mapTo(mutableSetOf()) { it.id },
+            shuffledQueueIds = queue.take(3).mapTo(mutableSetOf()) { it.queueId },
         )
 
         val selection = requireNotNull(
@@ -57,14 +58,14 @@ class PlaybackOrderTest {
 
     @Test
     fun togglingShuffle_resetsPlayedTracks() {
-        val enabled = PlaybackOrder().toggleShuffle(queue[0].id).copy(
-            shuffledTrackIds = queue.mapTo(mutableSetOf()) { it.id },
+        val enabled = PlaybackOrder().toggleShuffle(queue[0].queueId).copy(
+            shuffledQueueIds = queue.mapTo(mutableSetOf()) { it.queueId },
         )
 
-        val enabledAgain = enabled.toggleShuffle(queue[0].id).toggleShuffle(queue[1].id)
+        val enabledAgain = enabled.toggleShuffle(queue[0].queueId).toggleShuffle(queue[1].queueId)
 
         assertTrue(enabledAgain.shuffleEnabled)
-        assertEquals(setOf(queue[1].id), enabledAgain.shuffledTrackIds)
+        assertEquals(setOf(queue[1].queueId), enabledAgain.shuffledQueueIds)
     }
 
     @Test
@@ -83,7 +84,7 @@ class PlaybackOrderTest {
         val shuffled = PlaybackOrder(
             repeatMode = RepeatMode.ALL,
             shuffleEnabled = true,
-            shuffledTrackIds = queue.mapTo(mutableSetOf()) { it.id },
+            shuffledQueueIds = queue.mapTo(mutableSetOf()) { it.queueId },
         )
         val selection = requireNotNull(
             selectNextTrack(queue, queue.lastIndex, shuffled, automatic = true, Random(3)),
@@ -95,16 +96,16 @@ class PlaybackOrderTest {
     fun initialPlayerRepeatCallback_doesNotSkipFirstTrackBeforePlaybackIsReady() {
         assertFalse(
             isConfirmedLocalRepeatTransition(
-                currentTrackId = queue.first().id,
+                currentTrackId = queue.first().queueId,
                 playbackReadyTrackId = null,
-                transitionedTrackId = queue.first().id,
+                transitionedTrackId = queue.first().queueId,
             ),
         )
         assertTrue(
             isConfirmedLocalRepeatTransition(
-                currentTrackId = queue.first().id,
-                playbackReadyTrackId = queue.first().id,
-                transitionedTrackId = queue.first().id,
+                currentTrackId = queue.first().queueId,
+                playbackReadyTrackId = queue.first().queueId,
+                transitionedTrackId = queue.first().queueId,
             ),
         )
     }

@@ -18,7 +18,7 @@ class LsMusicUiStateTest {
 
     @Test
     fun currentTrack_readsSelectedQueueItem() {
-        assertEquals(track, LsMusicUiState(queue = listOf(track), currentQueueIndex = 0).currentTrack)
+        assertEquals(track, LsMusicUiState(queue = listOf(com.linxyi.lsmusic.ui.QueueItem.create(track)), currentQueueIndex = 0).currentTrack)
     }
 
     @Test

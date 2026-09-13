@@ -1,0 +1,8 @@
+// Run device playback tests in a separate app, without the user's accounts or preferences.
+allprojects {
+    plugins.withId("com.android.application") {
+        extensions.getByName("androidComponents").finalizeDsl { android ->
+            android.buildTypes.getByName("debug").applicationIdSuffix = ".qa"
+        }
+    }
+}

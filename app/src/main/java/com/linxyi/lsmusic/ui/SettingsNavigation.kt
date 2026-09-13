@@ -5,11 +5,11 @@ import com.linxyi.lsmusic.R
 
 enum class AppDestination {
     LIBRARY, QUEUE, NOW_PLAYING, SETTINGS,
-    SETTINGS_APPEARANCE, SETTINGS_LYRICS, SETTINGS_NETWORK, SETTINGS_ABOUT, PENDING_LISTENS;
+    SETTINGS_APPEARANCE, SETTINGS_PLAYBACK, SETTINGS_LYRICS, SETTINGS_NETWORK, SETTINGS_ABOUT, PENDING_LISTENS;
 
     val settingsParent: AppDestination?
         get() = when (this) {
-            SETTINGS_APPEARANCE, SETTINGS_LYRICS, SETTINGS_NETWORK, SETTINGS_ABOUT -> SETTINGS
+            SETTINGS_APPEARANCE, SETTINGS_PLAYBACK, SETTINGS_LYRICS, SETTINGS_NETWORK, SETTINGS_ABOUT -> SETTINGS
             PENDING_LISTENS -> SETTINGS_NETWORK
             else -> null
         }
@@ -21,6 +21,7 @@ enum class AppDestination {
     val settingsTitleRes: Int
         get() = when (this) {
             SETTINGS_APPEARANCE -> R.string.settings_appearance
+            SETTINGS_PLAYBACK -> R.string.settings_playback
             SETTINGS_LYRICS -> R.string.settings_lyrics
             SETTINGS_NETWORK -> R.string.settings_network
             SETTINGS_ABOUT -> R.string.settings_about

@@ -252,11 +252,12 @@ class DlnaController(context: Context) : AutoCloseable {
         playImmediately: Boolean,
         onComplete: () -> Unit = {},
         onError: (UiText) -> Unit = {},
+        isCurrent: () -> Boolean = { true },
     ) {
-        if (stopping || closed) return
+        if (stopping || closed || !isCurrent()) return
         val uri = track.resourceUri ?: return onError(UiText.Resource(R.string.error_track_resource_missing))
         val metadata = track.didlMetadata?.takeIf { it.isNotBlank() } ?: createDidlMetadata(track, uri)
-        setTrackUri(rendererId, uri, metadata, playImmediately, onComplete, onError)
+        setTrackUri(rendererId, uri, metadata, playImmediately, onComplete, onError, isCurrent = isCurrent)
     }
 
     private fun setTrackUri(
@@ -268,8 +269,9 @@ class DlnaController(context: Context) : AutoCloseable {
         onError: (UiText) -> Unit,
         retriesRemaining: Int = 1,
         transitionRecoveryRemaining: Int = 1,
+        isCurrent: () -> Boolean,
     ) {
-        if (stopping || closed) return
+        if (stopping || closed || !isCurrent()) return
         val renderer = devices[rendererId]
         val avTransport = renderer?.findService(AV_TRANSPORT)
         if (renderer != null && avTransport != null && shouldUseRawSoap(rendererId)) {
@@ -285,6 +287,7 @@ class DlnaController(context: Context) : AutoCloseable {
                 onError = onError,
                 retriesRemaining = retriesRemaining,
                 transitionRecoveryRemaining = transitionRecoveryRemaining,
+                isCurrent = isCurrent,
             )
             return
         }
@@ -293,15 +296,16 @@ class DlnaController(context: Context) : AutoCloseable {
             "InstanceID" to 0,
             "CurrentURI" to uri,
             "CurrentURIMetaData" to metadata,
-        ), onSuccess = {
+        ), isCurrent = isCurrent, onSuccess = {
             if (playImmediately) {
                 // Some renderers (including portable players) need a short transition from
                 // STOPPED to READY after SetAVTransportURI before they accept Play.
-                mainHandler.postDelayed({ play(rendererId, onComplete, onError) }, PLAY_AFTER_SET_DELAY_MS)
+                mainHandler.postDelayed({ if (isCurrent()) play(rendererId, onComplete, onError, isCurrent) }, PLAY_AFTER_SET_DELAY_MS)
             } else {
                 onComplete()
             }
         }, onError = setUriFailure@{ error ->
+            if (!isCurrent()) return@setUriFailure
             if (renderer != null && avTransport != null && AvTransportSoap.isRequestSerializationFailure(error)) {
                 Log.i(TAG, "jUPnP could not serialize SetAVTransportURI for $rendererId; using raw SOAP")
                 setRawSoapTrackUri(
@@ -316,6 +320,7 @@ class DlnaController(context: Context) : AutoCloseable {
                     onError = onError,
                     retriesRemaining = retriesRemaining,
                     transitionRecoveryRemaining = transitionRecoveryRemaining,
+                    isCurrent = isCurrent,
                 )
                 return@setUriFailure
             }
@@ -329,6 +334,7 @@ class DlnaController(context: Context) : AutoCloseable {
                     onError = onError,
                     retriesRemaining = retriesRemaining,
                     transitionRecoveryRemaining = transitionRecoveryRemaining,
+                    isCurrent = isCurrent,
                 )
                 return@setUriFailure
             }
@@ -345,6 +351,7 @@ class DlnaController(context: Context) : AutoCloseable {
                             onError = onError,
                             retriesRemaining = retriesRemaining - 1,
                             transitionRecoveryRemaining = transitionRecoveryRemaining,
+                            isCurrent = isCurrent,
                         )
                     },
                     SET_URI_RETRY_DELAY_MS,
@@ -371,10 +378,12 @@ class DlnaController(context: Context) : AutoCloseable {
         onError: (UiText) -> Unit,
         retriesRemaining: Int,
         transitionRecoveryRemaining: Int,
+        isCurrent: () -> Boolean,
     ) {
-        if (stopping || closed) return
+        if (stopping || closed || !isCurrent()) return
         val endpoint = if (controlUri.isAbsolute) controlUri else descriptorUri.resolve(controlUri)
         commandExecutor.execute {
+            if (!isCurrent()) return@execute
             val result = runCatching {
                 sendRawSoapAction(
                     endpoint = endpoint,
@@ -388,15 +397,15 @@ class DlnaController(context: Context) : AutoCloseable {
                 )
             }
             result.onSuccess {
-                if (stopping || closed) return@onSuccess
+                if (stopping || closed || !isCurrent()) return@onSuccess
                 rememberRawSoapRenderer(rendererId, "SetAVTransportURI")
                 if (playImmediately) {
-                    mainHandler.postDelayed({ play(rendererId, onComplete, onError) }, PLAY_AFTER_SET_DELAY_MS)
+                    mainHandler.postDelayed({ if (isCurrent()) play(rendererId, onComplete, onError, isCurrent) }, PLAY_AFTER_SET_DELAY_MS)
                 } else {
                     onComplete()
                 }
             }.onFailure { failure ->
-                if (stopping || closed) return@onFailure
+                if (stopping || closed || !isCurrent()) return@onFailure
                 val technicalError = failure.localizedMessage ?: "player connection failed"
                 val error = UiText.Resource(R.string.error_set_transport_uri, listOf(technicalError))
                 Log.w(TAG, "Raw SetAVTransportURI failed on $rendererId: $technicalError", failure)
@@ -410,6 +419,7 @@ class DlnaController(context: Context) : AutoCloseable {
                         onError = onError,
                         retriesRemaining = retriesRemaining,
                         transitionRecoveryRemaining = transitionRecoveryRemaining,
+                        isCurrent = isCurrent,
                     )
                 } else if (retriesRemaining > 0) {
                     mainHandler.postDelayed(
@@ -426,6 +436,7 @@ class DlnaController(context: Context) : AutoCloseable {
                                 onError = onError,
                                 retriesRemaining = retriesRemaining - 1,
                                 transitionRecoveryRemaining = transitionRecoveryRemaining,
+                                isCurrent = isCurrent,
                             )
                         },
                         SET_URI_RETRY_DELAY_MS,
@@ -446,8 +457,9 @@ class DlnaController(context: Context) : AutoCloseable {
         onError: (UiText) -> Unit,
         retriesRemaining: Int,
         transitionRecoveryRemaining: Int,
+        isCurrent: () -> Boolean,
     ) {
-        if (stopping || closed) return
+        if (stopping || closed || !isCurrent()) return
         Log.i(TAG, "SetAVTransportURI is unavailable in the current state on $rendererId; stopping before retry")
         stop(
             rendererId = rendererId,
@@ -463,34 +475,37 @@ class DlnaController(context: Context) : AutoCloseable {
                             onError = onError,
                             retriesRemaining = retriesRemaining,
                             transitionRecoveryRemaining = transitionRecoveryRemaining - 1,
+                            isCurrent = isCurrent,
                         )
                     },
                     SET_URI_AFTER_STOP_DELAY_MS,
                 )
             },
+            isCurrent = isCurrent,
             onError = { stopError ->
                 onError(UiText.Resource(R.string.error_stop_before_track_change, listOf(stopError)))
             },
         )
     }
 
-    fun play(rendererId: String, onComplete: () -> Unit = {}, onError: (UiText) -> Unit = {}) {
-        if (stopping || closed) return
+    fun play(rendererId: String, onComplete: () -> Unit = {}, onError: (UiText) -> Unit = {}, isCurrent: () -> Boolean = { true }) {
+        if (stopping || closed || !isCurrent()) return
         executeTransportAction(
             rendererId = rendererId,
             actionName = "Play",
             inputs = mapOf("InstanceID" to 0, "Speed" to "1"),
+            isCurrent = isCurrent,
             onSuccess = onComplete,
             onError = onError,
         )
     }
 
-    fun pause(rendererId: String, onComplete: () -> Unit = {}, onError: (UiText) -> Unit = {}) {
-        executeTransportAction(rendererId, "Pause", mapOf("InstanceID" to 0), onComplete, onError)
+    fun pause(rendererId: String, onComplete: () -> Unit = {}, onError: (UiText) -> Unit = {}, isCurrent: () -> Boolean = { true }) {
+        executeTransportAction(rendererId, "Pause", mapOf("InstanceID" to 0), onComplete, onError, isCurrent)
     }
 
-    fun stop(rendererId: String, onComplete: () -> Unit = {}, onError: (UiText) -> Unit = {}) {
-        executeTransportAction(rendererId, "Stop", mapOf("InstanceID" to 0), onComplete, onError)
+    fun stop(rendererId: String, onComplete: () -> Unit = {}, onError: (UiText) -> Unit = {}, isCurrent: () -> Boolean = { true }) {
+        executeTransportAction(rendererId, "Stop", mapOf("InstanceID" to 0), onComplete, onError, isCurrent)
     }
 
     fun seek(rendererId: String, target: String, onError: (UiText) -> Unit = {}) {
@@ -508,13 +523,14 @@ class DlnaController(context: Context) : AutoCloseable {
         inputs: Map<String, Any>,
         onSuccess: () -> Unit = {},
         onError: (UiText) -> Unit = {},
+        isCurrent: () -> Boolean = { true },
     ) {
-        if (closed || (stopping && actionName != "Stop")) return
+        if (closed || (stopping && actionName != "Stop") || !isCurrent()) return
         val renderer = devices[rendererId] ?: return onError(UiText.Resource(R.string.error_renderer_unavailable))
         val avTransport = renderer.findService(AV_TRANSPORT)
             ?: return onError(UiText.Resource(R.string.error_renderer_no_avtransport))
         if (shouldUseRawSoap(rendererId)) {
-            executeRawSoapTransportAction(rendererId, actionName, inputs, onSuccess, onError)
+            executeRawSoapTransportAction(rendererId, actionName, inputs, onSuccess, onError, isCurrent)
             return
         }
         execute(
@@ -522,11 +538,12 @@ class DlnaController(context: Context) : AutoCloseable {
             serviceName = "AVTransport",
             actionName = actionName,
             inputs = inputs,
+            isCurrent = isCurrent,
             onSuccess = onSuccess,
             onError = transportFailure@{ error ->
                 if (AvTransportSoap.isRequestSerializationFailure(error)) {
                     Log.i(TAG, "jUPnP could not serialize $actionName for $rendererId; using raw SOAP")
-                    executeRawSoapTransportAction(rendererId, actionName, inputs, onSuccess, onError)
+                    executeRawSoapTransportAction(rendererId, actionName, inputs, onSuccess, onError, isCurrent)
                     return@transportFailure
                 }
                 onError(UiText.Resource(R.string.error_transport_action, listOf(actionName, error)))
@@ -540,8 +557,9 @@ class DlnaController(context: Context) : AutoCloseable {
         inputs: Map<String, Any>,
         onSuccess: () -> Unit = {},
         onError: (UiText) -> Unit = {},
+        isCurrent: () -> Boolean = { true },
     ) {
-        if (closed || (stopping && actionName != "Stop")) return
+        if (closed || (stopping && actionName != "Stop") || !isCurrent()) return
         val renderer = devices[rendererId] ?: return onError(UiText.Resource(R.string.error_renderer_unavailable))
         val avTransport = renderer.findService(AV_TRANSPORT)
             ?: return onError(UiText.Resource(R.string.error_renderer_no_avtransport))
@@ -549,6 +567,7 @@ class DlnaController(context: Context) : AutoCloseable {
         val endpoint = if (controlUri.isAbsolute) controlUri else renderer.identity.descriptorURL.toURI().resolve(controlUri)
         val executor = if (stopping && actionName == "Stop") shutdownExecutor else commandExecutor
         executor.execute {
+            if (!isCurrent()) return@execute
             runCatching {
                 sendRawSoapAction(
                     endpoint = endpoint,
@@ -557,9 +576,11 @@ class DlnaController(context: Context) : AutoCloseable {
                     inputs = inputs.mapValues { it.value.toString() },
                 )
             }.onSuccess {
+                if (!isCurrent()) return@onSuccess
                 rememberRawSoapRenderer(rendererId, actionName)
                 onSuccess()
             }.onFailure { failure ->
+                if (!isCurrent()) return@onFailure
                 val detail = failure.localizedMessage ?: "player connection failed"
                 val error = UiText.Resource(R.string.error_transport_action, listOf(actionName, detail))
                 Log.w(TAG, "Raw $actionName failed on $rendererId: $detail", failure)
@@ -789,8 +810,9 @@ class DlnaController(context: Context) : AutoCloseable {
         inputs: Map<String, Any>,
         onSuccess: () -> Unit = {},
         onError: (String) -> Unit = {},
+        isCurrent: () -> Boolean = { true },
     ) {
-        if (closed || (stopping && actionName != "Stop")) return
+        if (closed || (stopping && actionName != "Stop") || !isCurrent()) return
         val upnp = service ?: return onError(appContext.getString(R.string.error_dlna_not_ready))
         val remoteService = devices[rendererId]?.findService(UDAServiceType(serviceName))
             ?: return onError(appContext.getString(R.string.error_unsupported_service, serviceName))
@@ -804,7 +826,7 @@ class DlnaController(context: Context) : AutoCloseable {
         }
         upnp.controlPoint.execute(object : ActionCallback(invocation) {
             override fun success(invocation: ActionInvocation<*>) {
-                if (!closed && (!stopping || actionName == "Stop")) onSuccess()
+                if (!closed && (!stopping || actionName == "Stop") && isCurrent()) onSuccess()
             }
 
             override fun failure(
@@ -812,7 +834,7 @@ class DlnaController(context: Context) : AutoCloseable {
                 operation: UpnpResponse?,
                 defaultMsg: String,
             ) {
-                if (closed || (stopping && actionName != "Stop")) return
+                if (closed || (stopping && actionName != "Stop") || !isCurrent()) return
                 Log.w(TAG, "$actionName failed on $rendererId: $defaultMsg")
                 onError(defaultMsg)
             }

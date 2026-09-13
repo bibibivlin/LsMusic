@@ -8,6 +8,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.net.Uri
 import android.os.SystemClock
+import android.os.Bundle
 import android.util.Log
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -19,6 +20,8 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
+import androidx.media3.session.SessionCommand
+import androidx.media3.session.SessionResult
 import com.linxyi.lsmusic.artwork.AlbumArtworkRepository
 import com.linxyi.lsmusic.R
 import com.linxyi.lsmusic.dlna.DlnaController
@@ -27,9 +30,11 @@ import com.linxyi.lsmusic.dlna.DlnaDeviceKind
 import com.linxyi.lsmusic.dlna.ArtworkCandidate
 import com.linxyi.lsmusic.dlna.MediaEntry
 import com.linxyi.lsmusic.dlna.RemotePlaybackState
+import com.linxyi.lsmusic.dlna.isPauseRejected
 import com.linxyi.lsmusic.dlna.selectThumbnailArtworkUri
 import com.linxyi.lsmusic.playback.LocalPlaybackService
 import com.linxyi.lsmusic.playback.RemotePlaybackService
+import com.linxyi.lsmusic.playback.SleepTimerScheduler
 import com.linxyi.lsmusic.listenbrainz.ListenBrainzClient
 import com.linxyi.lsmusic.listenbrainz.ListenBrainzPlaybackObservation
 import com.linxyi.lsmusic.listenbrainz.ListenBrainzPlaybackReport
@@ -68,6 +73,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
+import java.util.UUID
 
 enum class ListenBrainzTokenValidationStatus { IDLE, CHECKING, VALID, INVALID, ERROR }
 
@@ -173,7 +179,7 @@ data class LsMusicUiState(
     val path: List<BrowseLocation> = listOf(BrowseLocation("0")),
     val browsePageKey: BrowsePageKey? = null,
     val browseViewState: BrowseViewState = BrowseViewState(),
-    val queue: List<MediaEntry> = emptyList(),
+    val queue: List<QueueItem> = emptyList(),
     val currentQueueIndex: Int = -1,
     val playbackOrder: PlaybackOrder = PlaybackOrder(),
     val playbackGeneration: Long = 0L,
@@ -187,6 +193,8 @@ data class LsMusicUiState(
     val lyricsCacheBytes: Long = 0L,
     val isClearingLyricsCache: Boolean = false,
     val preferences: AppPreferences = AppPreferences(),
+    val sleepTimer: SleepTimerState = SleepTimerState(),
+    val sleepTimerPermissionRequest: SleepTimerRequest? = null,
     val listenBrainzTokenValidation: ListenBrainzTokenValidationUiState = ListenBrainzTokenValidationUiState(),
     val pendingListens: List<PendingListen> = emptyList(),
     val isPendingListensUploading: Boolean = false,
@@ -200,6 +208,9 @@ data class LsMusicUiState(
     val exitWarning: UiText? = null,
 ) {
     val currentTrack: MediaEntry?
+        get() = currentQueueItem?.track
+
+    val currentQueueItem: QueueItem?
         get() = queue.getOrNull(currentQueueIndex)
 
     val isBrowsing: Boolean
@@ -243,8 +254,13 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         SessionToken(application, ComponentName(application, LocalPlaybackService::class.java)),
     ).buildAsync()
     private var localController: MediaController? = null
-    private var pendingLocalPlayback: Pair<List<MediaEntry>, Int>? = null
-    private var localPlaybackReadyTrackId: String? = null
+    private var pendingLocalPlayback: String? = null
+    private var localPlaybackReadyQueueId: String? = null
+    @Volatile private var playbackCommandGeneration = 0L
+    private val sleepTimerScheduler = SleepTimerScheduler(application)
+    private var sleepTimerDeadlineJob: Job? = null
+    private var sleepTimerActionJob: Job? = null
+    private var sleepTimerAlarmCompletion: (() -> Unit)? = null
     private var initialServerSelectionResolved = false
     private var initialRendererSelectionResolved = false
     private var userSelectedServer = false
@@ -290,6 +306,17 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
 
     private val remoteMediaCommandReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action == LocalPlaybackService.ACTION_SLEEP_BOUNDARY) {
+                val timer = _uiState.value.sleepTimer
+                if (timer.token != intent.getStringExtra(LocalPlaybackService.EXTRA_TIMER_TOKEN)) return
+                if (timer.phase != SleepTimerPhase.FINISHING_TRACK) return
+                if (intent.getBooleanExtra(LocalPlaybackService.EXTRA_COMPLETED, false)) {
+                    finishSleepTrack()
+                } else {
+                    cancelSleepTimer()
+                }
+                return
+            }
             if (intent.action != RemotePlaybackService.ACTION_REMOTE_CONTROL) return
             handleRemoteMediaCommand(
                 intent.getStringExtra(RemotePlaybackService.EXTRA_COMMAND),
@@ -304,24 +331,27 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         override fun onPlaybackStateChanged(playbackState: Int) = updateLocalPlaybackState()
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-            if (exiting) return
+            if (exiting || _uiState.value.selectedRendererId != LOCAL_RENDERER_ID) return
             if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT) {
-                val currentTrackId = _uiState.value.currentTrack?.id
+                val currentTrackId = _uiState.value.currentQueueItem?.queueId
                 if (
                     isConfirmedLocalRepeatTransition(
                         currentTrackId = currentTrackId,
-                        playbackReadyTrackId = localPlaybackReadyTrackId,
+                        playbackReadyTrackId = localPlaybackReadyQueueId,
                         transitionedTrackId = mediaItem?.mediaId,
                     )
                 ) {
-                    localPlaybackReadyTrackId = null
+                    localPlaybackReadyQueueId = null
                     handleAutomaticTrackEnd()
                 }
                 updateLocalPlaybackState()
                 return
             }
-            val index = _uiState.value.queue.indexOfFirst { it.id == mediaItem?.mediaId }
+            if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED &&
+                mediaItem?.mediaId != _uiState.value.currentQueueItem?.queueId) return
+            val index = _uiState.value.queue.indexOfFirst { it.queueId == mediaItem?.mediaId }
             if (index >= 0) {
+                if (index != _uiState.value.currentQueueIndex) cancelFinishingSleepTimer()
                 _uiState.update {
                     it.copy(
                         currentQueueIndex = index,
@@ -339,6 +369,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
 
         override fun onPlayerError(error: PlaybackException) {
             if (!exiting && _uiState.value.selectedRendererId == LOCAL_RENDERER_ID) {
+                cancelFinishingSleepTimer()
                 _uiState.update { it.copy(playbackState = RemotePlaybackState.STOPPED) }
                 showError(UiText.Resource(R.string.local_playback_failed, listOf(error.localizedMessage ?: getApplication<Application>().getString(R.string.unknown_playback_error))))
             }
@@ -349,7 +380,9 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         ContextCompat.registerReceiver(
             application,
             remoteMediaCommandReceiver,
-            IntentFilter(RemotePlaybackService.ACTION_REMOTE_CONTROL),
+            IntentFilter(RemotePlaybackService.ACTION_REMOTE_CONTROL).apply {
+                addAction(LocalPlaybackService.ACTION_SLEEP_BOUNDARY)
+            },
             ContextCompat.RECEIVER_NOT_EXPORTED,
         )
         controllerFuture.addListener(
@@ -359,11 +392,22 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
                         if (exiting || localControllerReleased) return@onSuccess
                         localController = controller
                         controller.addListener(localPlayerListener)
-                        pendingLocalPlayback?.let { (queue, index) -> playLocally(controller, queue, index) }
+                        pendingLocalPlayback?.let { queueId ->
+                            val latest = _uiState.value
+                            if (latest.currentQueueItem?.queueId == queueId && latest.playbackState == RemotePlaybackState.PLAYING) {
+                                playLocally(controller, latest.queue, latest.currentQueueIndex)
+                            }
+                        }
                         updateLocalPlaybackState()
                     }
                     .onFailure {
                         if (!exiting) {
+                            pendingLocalPlayback = null
+                            if (_uiState.value.selectedRendererId == LOCAL_RENDERER_ID) cancelFinishingSleepTimer()
+                            _uiState.update { state ->
+                                if (state.selectedRendererId == LOCAL_RENDERER_ID) state.copy(playbackState = RemotePlaybackState.STOPPED)
+                                else state
+                            }
                             showError(UiText.Resource(
                                 R.string.local_player_connection_failed,
                                 listOf(it.localizedMessage ?: getApplication<Application>().getString(R.string.unknown_network_or_service_error)),
@@ -588,6 +632,8 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         val state = _uiState.value
         if (state.selectedRendererId == id) return
         val device = state.renderers.firstOrNull { it.id == id } ?: return
+        cancelFinishingSleepTimer()
+        playbackCommandGeneration++
         userSelectedRenderer = true
         remotePlaybackObservedPlaying = false
         remotePlaybackObservedProgress = false
@@ -728,102 +774,104 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun playNow(track: MediaEntry) {
-        if (exiting) return
-        val rendererId = _uiState.value.selectedRendererId
-            ?: return showError(UiText.Resource(R.string.select_player_first))
-        val oldQueue = _uiState.value.queue
-        val index = oldQueue.indexOfFirst { it.id == track.id }.takeIf { it >= 0 } ?: oldQueue.size
-        val queue = if (index == oldQueue.size) oldQueue + track else oldQueue
-        _uiState.update {
-            it.copy(
-                queue = queue,
-                currentQueueIndex = index,
-                playbackOrder = it.playbackOrder.markPlayed(track.id),
-                playbackGeneration = it.playbackGeneration + 1L,
-                playbackState = RemotePlaybackState.PLAYING,
-                positionMs = 0L,
-                durationMs = parseTimeMs(track.duration),
-                bufferedPositionMs = 0L,
-            )
-        }
-        playOnRenderer(rendererId, track)
-    }
+    /** Library actions use preferences; queue selection and transport controls bypass them. */
+    fun playNow(track: MediaEntry) = playAll(listOf(track))
 
-    fun addToQueue(track: MediaEntry) {
-        if (exiting) return
-        if (track.isContainer || track.resourceUri == null) return
-        if (_uiState.value.queue.any { it.id == track.id }) return
-        _uiState.update { state -> state.copy(queue = state.queue + track) }
-        localController?.takeIf { it.mediaItemCount > 0 }?.addMediaItem(track.toMediaItem())
-    }
-
-    /** Replaces the controller queue and immediately starts the first playable track. */
     fun playAll(tracks: List<MediaEntry>) {
         if (exiting) return
-        val playable = tracks.filter { !it.isContainer && it.resourceUri != null }
-        if (playable.isEmpty()) return showError(UiText.Resource(R.string.no_playable_tracks))
-        val rendererId = _uiState.value.selectedRendererId ?: return showError(UiText.Resource(R.string.select_player_first))
-        val first = playable.first()
-        _uiState.update {
-            it.copy(
-                queue = playable,
-                currentQueueIndex = 0,
-                playbackOrder = it.playbackOrder.resetForQueue(first.id),
-                playbackGeneration = it.playbackGeneration + 1L,
-                playbackState = RemotePlaybackState.PLAYING,
-                positionMs = 0L,
-                durationMs = parseTimeMs(first.duration),
-                bufferedPositionMs = 0L,
-            )
+        val state = _uiState.value
+        val mode = playbackRequestMode(state.preferences, state.currentTrack != null, state.playbackState)
+        val result = applyPlaybackRequest(state.queue, tracks, mode)
+            ?: return showError(UiText.Resource(R.string.no_playable_tracks))
+        if (result.startIndex == null) {
+            appendQueueItems(result.addedItems)
+            return
         }
-        playOnRenderer(rendererId, first)
+        if (state.selectedRendererId == null) return showError(UiText.Resource(R.string.select_player_first))
+        cancelFinishingSleepTimer()
+        playAt(
+            result.startIndex,
+            playbackOrder = if (mode == PlaybackRequestMode.REPLACE_AND_PLAY) {
+                state.playbackOrder.resetForQueue(null)
+            } else state.playbackOrder,
+            queue = result.queue,
+        )
     }
 
-    /** Replaces the queue with the supplied tracks in a one-time random order. */
-    fun shufflePlay(tracks: List<MediaEntry>) {
-        playAll(tracks.shuffled())
-    }
+    /** Randomizes only this request, independently of the now-playing shuffle mode. */
+    fun shufflePlay(tracks: List<MediaEntry>) = playAll(tracks.shuffled())
 
-    /** Appends every playable track, preserving the existing queue and playback. */
+    fun addToQueue(track: MediaEntry) = addAllToQueue(listOf(track))
+
     fun addAllToQueue(tracks: List<MediaEntry>) {
         if (exiting) return
-        val playable = tracks.filter { !it.isContainer && it.resourceUri != null }
-        if (playable.isEmpty()) return showError(UiText.Resource(R.string.no_tracks_to_queue))
-        _uiState.update { state -> state.copy(queue = state.queue + playable) }
-        localController?.takeIf { it.mediaItemCount > 0 }
-            ?.addMediaItems(playable.map { it.toMediaItem() })
+        val result = applyPlaybackRequest(_uiState.value.queue, tracks, PlaybackRequestMode.APPEND_ONLY)
+            ?: return showError(UiText.Resource(R.string.no_tracks_to_queue))
+        appendQueueItems(result.addedItems)
+    }
+
+    private fun appendQueueItems(items: List<QueueItem>) {
+        _uiState.update { it.copy(queue = it.queue + items) }
+        // A pending start reads the latest application queue when the controller connects.
+        if (_uiState.value.selectedRendererId == LOCAL_RENDERER_ID) {
+            localController?.takeIf { it.mediaItemCount > 0 }?.addMediaItems(items.map { it.toMediaItem() })
+        }
+    }
+
+    fun playQueueItem(queueId: String) {
+        if (exiting) return
+        val index = _uiState.value.queue.indexOfFirst { it.queueId == queueId }
+        if (index < 0) return
+        cancelFinishingSleepTimer()
+        playAt(index)
     }
 
     fun togglePlayback() {
         if (exiting) return
         val state = _uiState.value
         val rendererId = state.selectedRendererId ?: return showError(UiText.Resource(R.string.select_dlna_player_first))
-        val track = state.currentTrack ?: return showError(UiText.Resource(R.string.queue_is_empty))
+        state.currentTrack ?: return showError(UiText.Resource(R.string.queue_is_empty))
+        if (state.playbackState == RemotePlaybackState.PLAYING) cancelFinishingSleepTimer()
         if (rendererId == LOCAL_RENDERER_ID) {
             when (state.playbackState) {
-                RemotePlaybackState.PLAYING -> localController?.pause()
-                RemotePlaybackState.PAUSED -> localController?.play()
-                RemotePlaybackState.STOPPED -> playNow(track)
+                RemotePlaybackState.PLAYING -> {
+                    pendingLocalPlayback = null
+                    playbackCommandGeneration++
+                    localController?.pause()
+                    _uiState.update { it.copy(playbackState = RemotePlaybackState.PAUSED) }
+                }
+                RemotePlaybackState.PAUSED -> {
+                    val controller = localController
+                    if (controller == null || controller.currentMediaItem?.mediaId != state.currentQueueItem?.queueId) {
+                        playAt(state.currentQueueIndex)
+                    } else controller.play()
+                }
+                RemotePlaybackState.STOPPED -> playAt(state.currentQueueIndex)
             }
             return
         }
         when (state.playbackState) {
             RemotePlaybackState.PLAYING -> {
                 _uiState.update { it.copy(playbackState = RemotePlaybackState.PAUSED) }
-                dlna.pause(rendererId, onError = ::showError)
+                dlna.pause(rendererId, onError = ::showError, isCurrent = beginPlaybackCommand())
             }
             RemotePlaybackState.PAUSED -> {
                 _uiState.update { it.copy(playbackState = RemotePlaybackState.PLAYING) }
-                dlna.play(rendererId, onError = ::showError)
+                dlna.play(rendererId, onError = ::showError, isCurrent = beginPlaybackCommand())
             }
-            RemotePlaybackState.STOPPED -> playNow(track)
+            RemotePlaybackState.STOPPED -> playAt(state.currentQueueIndex)
         }
     }
 
-    fun next() = advanceToNext(automatic = false)
+    fun next() {
+        cancelFinishingSleepTimer()
+        advanceToNext(automatic = false)
+    }
 
-    fun previous() = playAt(_uiState.value.currentQueueIndex - 1)
+    fun previous() {
+        cancelFinishingSleepTimer()
+        playAt(_uiState.value.currentQueueIndex - 1)
+    }
 
     private fun advanceToNext(automatic: Boolean) {
         if (exiting) return
@@ -849,7 +897,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
                 )
             }
             if (state.selectedRendererId != LOCAL_RENDERER_ID) {
-                state.selectedRendererId?.let { playOnRenderer(it, state.queue[selection.index]) }
+                state.selectedRendererId?.let { playOnRenderer(it, state.queue[selection.index].track) }
             }
             return
         }
@@ -857,6 +905,16 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun handleAutomaticTrackEnd() {
+        val before = _uiState.value
+        before.sleepTimer.token?.let { applySleepTimerDeadline(it) }
+        val state = _uiState.value
+        if (state.sleepTimer.phase == SleepTimerPhase.APPLYING) return
+        if (state.sleepTimer.shouldStopAfterTrack(state.currentQueueItem?.queueId, state.playbackGeneration)) {
+            finishSleepTrack()
+            return
+        }
+        // The deadline can synchronously pause a local player and consume the timer.
+        if (state.playbackState != RemotePlaybackState.PLAYING) return
         advanceToNext(automatic = true)
     }
 
@@ -874,15 +932,18 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    private fun playAt(index: Int, playbackOrder: PlaybackOrder? = null) {
+    private fun playAt(index: Int, playbackOrder: PlaybackOrder? = null, queue: List<QueueItem>? = null) {
         if (exiting) return
         val state = _uiState.value
-        val track = state.queue.getOrNull(index) ?: return
+        val targetQueue = queue ?: state.queue
+        val item = targetQueue.getOrNull(index) ?: return
+        val track = item.track
         val rendererId = state.selectedRendererId ?: return showError(UiText.Resource(R.string.select_player_first))
         _uiState.update {
             it.copy(
+                queue = targetQueue,
                 currentQueueIndex = index,
-                playbackOrder = (playbackOrder ?: it.playbackOrder).markPlayed(track.id),
+                playbackOrder = (playbackOrder ?: it.playbackOrder).markPlayed(item.queueId),
                 playbackGeneration = it.playbackGeneration + 1L,
                 playbackState = RemotePlaybackState.PLAYING,
                 positionMs = 0L,
@@ -895,36 +956,36 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
 
     fun removeFromQueue(index: Int) {
         if (exiting) return
-        val currentState = _uiState.value
-        val controller = localController
-        val playerIndex = if (currentState.selectedRendererId == LOCAL_RENDERER_ID && controller != null) {
-            currentState.queue.getOrNull(index)?.id?.let { removedTrackId ->
-                (0 until controller.mediaItemCount).firstOrNull { playerItemIndex ->
-                    controller.getMediaItemAt(playerItemIndex).mediaId == removedTrackId
-                }
-            }
-        } else {
-            null
+        val state = _uiState.value
+        val removal = removeQueueOccurrence(state.queue, state.currentQueueIndex, index) ?: return
+        val removedId = state.queue[index].queueId
+        val continuePlaying = removal.removedCurrent && removal.currentIndex >= 0 &&
+            state.playbackState == RemotePlaybackState.PLAYING
+        if (removal.removedCurrent) {
+            cancelFinishingSleepTimer()
+            pendingLocalPlayback = null
+            if (!continuePlaying) stopRenderer(state.selectedRendererId)
         }
-        _uiState.update { state ->
-            if (index !in state.queue.indices) return@update state
-            val queue = state.queue.toMutableList().also { it.removeAt(index) }
-            val current = when {
-                queue.isEmpty() -> -1
-                index < state.currentQueueIndex -> state.currentQueueIndex - 1
-                index == state.currentQueueIndex -> state.currentQueueIndex.coerceAtMost(queue.lastIndex)
-                else -> state.currentQueueIndex
+        _uiState.update { it.copy(
+            queue = removal.queue,
+            currentQueueIndex = removal.currentIndex,
+            playbackOrder = it.playbackOrder.copy(
+                shuffledQueueIds = it.playbackOrder.shuffledQueueIds.intersect(removal.queue.mapTo(mutableSetOf()) { item -> item.queueId }),
+            ),
+            playbackState = if (removal.removedCurrent || removal.queue.isEmpty()) RemotePlaybackState.STOPPED else it.playbackState,
+            positionMs = if (removal.removedCurrent) 0L else it.positionMs,
+            durationMs = if (removal.removedCurrent) parseTimeMs(removal.queue.getOrNull(removal.currentIndex)?.track?.duration) else it.durationMs,
+            bufferedPositionMs = if (removal.removedCurrent) 0L else it.bufferedPositionMs,
+        ) }
+        if (continuePlaying) {
+            playAt(removal.currentIndex)
+        } else if (!removal.removedCurrent && state.selectedRendererId == LOCAL_RENDERER_ID) {
+            // The controller's ordering can differ after a drag. Remove the exact occurrence.
+            localController?.let { controller ->
+                (0 until controller.mediaItemCount).firstOrNull { controller.getMediaItemAt(it).mediaId == removedId }
+                    ?.let(controller::removeMediaItem)
             }
-            state.copy(
-                queue = queue,
-                currentQueueIndex = current,
-                playbackOrder = state.playbackOrder.copy(
-                    shuffledTrackIds = state.playbackOrder.shuffledTrackIds.intersect(queue.mapTo(mutableSetOf()) { it.id }),
-                ),
-                playbackState = if (queue.isEmpty()) RemotePlaybackState.STOPPED else state.playbackState,
-            )
         }
-        if (playerIndex != null) controller?.removeMediaItem(playerIndex)
     }
 
     fun moveQueueItem(fromIndex: Int, toIndex: Int) {
@@ -949,6 +1010,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
 
     fun clearQueue() {
         if (exiting) return
+        cancelFinishingSleepTimer()
         stopRenderer(_uiState.value.selectedRendererId)
         _uiState.update {
             it.copy(
@@ -1115,7 +1177,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun toggleShuffle() = _uiState.update { state ->
-        state.copy(playbackOrder = state.playbackOrder.toggleShuffle(state.currentTrack?.id))
+        state.copy(playbackOrder = state.playbackOrder.toggleShuffle(state.currentQueueItem?.queueId))
     }
 
     fun setAlbumSort(sort: AlbumSort) {
@@ -1127,6 +1189,216 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun setGallerySize(size: GallerySize) = updatePreferences { it.copy(gallerySize = size) }
+
+    fun setEnqueueWhilePlaying(enabled: Boolean) = updatePreferences { it.copy(enqueueWhilePlaying = enabled) }
+
+    fun setMiniPlayerEnabled(enabled: Boolean) = updatePreferences { it.copy(miniPlayerEnabled = enabled) }
+
+    fun setClearQueueOnPlay(enabled: Boolean) = updatePreferences { it.copy(clearQueueOnPlay = enabled) }
+
+    fun requestSleepTimer(minutes: Int, finishCurrentTrack: Boolean) {
+        if (exiting || minutes !in 1..180) return
+        val request = SleepTimerRequest(minutes, finishCurrentTrack)
+        updatePreferences { it.copy(sleepTimerMinutes = minutes, sleepTimerFinishTrack = finishCurrentTrack) }
+        if (sleepTimerScheduler.canSchedule()) {
+            startSleepTimer(request)
+        } else {
+            cancelSleepTimer()
+            _uiState.update { it.copy(sleepTimerPermissionRequest = request) }
+        }
+    }
+
+    fun onSleepTimerPermissionResult() {
+        val request = _uiState.value.sleepTimerPermissionRequest ?: return
+        _uiState.update { it.copy(sleepTimerPermissionRequest = null) }
+        if (sleepTimerScheduler.canSchedule()) startSleepTimer(request)
+        else showError(UiText.Resource(R.string.sleep_timer_permission_denied))
+    }
+
+    fun dismissSleepTimerPermission() {
+        _uiState.update { it.copy(sleepTimerPermissionRequest = null) }
+    }
+
+    private fun startSleepTimer(request: SleepTimerRequest) {
+        cancelSleepTimer()
+        val token = UUID.randomUUID().toString()
+        val deadline = SystemClock.elapsedRealtime() + request.minutes * 60_000L
+        _uiState.update {
+            it.copy(sleepTimer = SleepTimerState(
+                phase = SleepTimerPhase.COUNTING_DOWN,
+                token = token,
+                deadlineElapsedMs = deadline,
+                finishCurrentTrack = request.finishCurrentTrack,
+            ))
+        }
+        try {
+            sleepTimerScheduler.schedule(token, deadline) { complete ->
+                applySleepTimerDeadline(token, complete)
+            }
+            // Also check while the app is awake; the alarm supplies wakeup during device sleep.
+            sleepTimerDeadlineJob = viewModelScope.launch {
+                while (SystemClock.elapsedRealtime() < deadline) {
+                    delay((deadline - SystemClock.elapsedRealtime()).coerceAtLeast(1L))
+                }
+                applySleepTimerDeadline(token)
+            }
+        } catch (_: RuntimeException) {
+            cancelSleepTimer()
+            showError(UiText.Resource(R.string.sleep_timer_permission_denied))
+        }
+    }
+
+    fun cancelSleepTimer() {
+        sleepTimerScheduler.cancel()
+        sleepTimerDeadlineJob?.cancel()
+        sleepTimerDeadlineJob = null
+        sleepTimerActionJob?.cancel()
+        sleepTimerActionJob = null
+        sleepTimerAlarmCompletion?.invoke()
+        sleepTimerAlarmCompletion = null
+        if (_uiState.value.sleepTimer.phase == SleepTimerPhase.APPLYING) playbackCommandGeneration++
+        setLocalSleepBoundary(null)
+        _uiState.update { it.copy(sleepTimer = SleepTimerState(), sleepTimerPermissionRequest = null) }
+    }
+
+    private fun cancelFinishingSleepTimer() {
+        if (_uiState.value.sleepTimer.phase in setOf(SleepTimerPhase.FINISHING_TRACK, SleepTimerPhase.APPLYING)) {
+            cancelSleepTimer()
+        }
+    }
+
+    private fun applySleepTimerDeadline(token: String, complete: () -> Unit = {}) {
+        val state = _uiState.value
+        val action = sleepTimerDeadlineAction(
+            state.sleepTimer, token, SystemClock.elapsedRealtime(), state.currentQueueItem?.queueId, state.playbackState,
+        )
+        if (exiting || action == SleepTimerDeadlineAction.NONE) {
+            complete()
+            return
+        }
+        sleepTimerScheduler.cancel()
+        sleepTimerDeadlineJob?.cancel()
+        // Expiry must also invalidate a controller startup or a renderer's delayed Play.
+        val playbackWasPending = pendingLocalPlayback != null ||
+            (state.selectedRendererId != LOCAL_RENDERER_ID && !remotePlaybackObservedPlaying)
+        pendingLocalPlayback = null
+        playbackCommandGeneration++
+        when (action) {
+            SleepTimerDeadlineAction.COMPLETE -> {
+                cancelSleepTimer()
+                complete()
+            }
+            SleepTimerDeadlineAction.FINISH_TRACK -> {
+                if (playbackWasPending) {
+                    pauseForSleepTimer(token, complete)
+                    return
+                }
+                val timer = state.sleepTimer.copy(
+                    phase = SleepTimerPhase.FINISHING_TRACK,
+                    queueId = state.currentQueueItem?.queueId,
+                    playbackGeneration = state.playbackGeneration,
+                )
+                _uiState.update { it.copy(sleepTimer = timer) }
+                if (state.selectedRendererId == LOCAL_RENDERER_ID) setLocalSleepBoundary(timer)
+                complete()
+            }
+            SleepTimerDeadlineAction.PAUSE -> pauseForSleepTimer(token, complete)
+            SleepTimerDeadlineAction.NONE -> complete()
+        }
+    }
+
+    private fun setLocalSleepBoundary(timer: SleepTimerState?) {
+        val controller = localController ?: return
+        val args = Bundle().apply {
+            putString(LocalPlaybackService.EXTRA_TIMER_TOKEN, timer?.token)
+            putString(LocalPlaybackService.EXTRA_QUEUE_ID, timer?.queueId)
+        }
+        val result = controller.sendCustomCommand(SessionCommand(LocalPlaybackService.COMMAND_SLEEP_BOUNDARY, Bundle.EMPTY), args)
+        if (timer == null) return
+        result.addListener({
+            if (_uiState.value.sleepTimer.token != timer.token) return@addListener
+            if (runCatching { result.get().resultCode }.getOrNull() != SessionResult.RESULT_SUCCESS) {
+                // If the service cannot arm a boundary, pause now instead of running indefinitely.
+                pauseForSleepTimer(requireNotNull(timer.token)) {}
+            }
+        }, ContextCompat.getMainExecutor(getApplication()))
+    }
+
+    private fun pauseForSleepTimer(token: String, complete: () -> Unit) {
+        val state = _uiState.value
+        if (state.sleepTimer.token != token) {
+            complete()
+            return
+        }
+        val rendererId = state.selectedRendererId ?: run {
+            cancelSleepTimer()
+            complete()
+            return
+        }
+        pendingLocalPlayback = null
+        playbackCommandGeneration++
+        val command = playbackCommandGeneration
+        val isCurrent = {
+            !exiting && playbackCommandGeneration == command && _uiState.value.sleepTimer.token == token &&
+                _uiState.value.selectedRendererId == rendererId &&
+                _uiState.value.currentQueueItem?.queueId == state.currentQueueItem?.queueId &&
+                _uiState.value.playbackGeneration == state.playbackGeneration
+        }
+        setLocalSleepBoundary(null)
+        _uiState.update { it.copy(sleepTimer = it.sleepTimer.copy(phase = SleepTimerPhase.APPLYING)) }
+        sleepTimerAlarmCompletion = complete
+        if (rendererId == LOCAL_RENDERER_ID) {
+            localController?.pause()
+            _uiState.update { it.copy(playbackState = RemotePlaybackState.PAUSED) }
+            cancelSleepTimer()
+            return
+        }
+        val success: (Boolean) -> Unit = { stopped ->
+            viewModelScope.launch {
+                if (isCurrent()) {
+                    _uiState.update { it.copy(
+                        playbackState = if (stopped) RemotePlaybackState.STOPPED else RemotePlaybackState.PAUSED,
+                        positionMs = if (stopped) 0L else it.positionMs,
+                    ) }
+                    cancelSleepTimer()
+                    if (stopped) showError(UiText.Resource(R.string.sleep_timer_stopped_fallback))
+                }
+            }
+        }
+        val failure: (UiText) -> Unit = { error ->
+            viewModelScope.launch { if (isCurrent()) failSleepTimer(error) }
+        }
+        sleepTimerActionJob = viewModelScope.launch {
+            delay(15_000L)
+            if (isCurrent()) failSleepTimer(UiText.Resource(R.string.sleep_timer_device_timeout))
+        }
+        dlna.pause(rendererId, onComplete = { success(false) }, isCurrent = isCurrent, onError = { error ->
+            if (isPauseRejected(error)) {
+                dlna.stop(rendererId, onComplete = { success(true) }, onError = failure, isCurrent = isCurrent)
+            } else failure(error)
+        })
+    }
+
+    private fun failSleepTimer(error: UiText) {
+        val message = UiText.Resource(R.string.sleep_timer_failed, listOf(error))
+        val token = _uiState.value.sleepTimer.token
+        cancelSleepTimer()
+        _uiState.update { it.copy(sleepTimer = SleepTimerState(phase = SleepTimerPhase.FAILED, token = token, error = message)) }
+        showError(message)
+    }
+
+    private fun finishSleepTrack() {
+        val state = _uiState.value
+        if (!state.sleepTimer.shouldStopAfterTrack(state.currentQueueItem?.queueId, state.playbackGeneration)) return
+        cancelSleepTimer()
+        pendingLocalPlayback = null
+        playbackCommandGeneration++
+        if (state.selectedRendererId == LOCAL_RENDERER_ID) {
+            localController?.stop()
+            localController?.seekTo(0L)
+        }
+        _uiState.update { it.copy(playbackState = RemotePlaybackState.STOPPED, positionMs = 0L, bufferedPositionMs = 0L) }
+    }
 
     fun setDefaultGridLayout(enabled: Boolean) = updatePreferences { it.copy(useGridByDefault = enabled) }
 
@@ -1492,13 +1764,24 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    private fun playbackCommandIdentity(): PlaybackCommandIdentity = _uiState.value.let {
+        PlaybackCommandIdentity(it.selectedRendererId, it.currentQueueItem?.queueId, it.playbackGeneration, playbackCommandGeneration)
+    }
+
+    private fun beginPlaybackCommand(): () -> Boolean {
+        playbackCommandGeneration++
+        val requested = playbackCommandIdentity()
+        return { !exiting && playbackCommandIdentity() == requested }
+    }
+
     private fun playOnRenderer(rendererId: String, track: MediaEntry) {
         if (exiting) return
+        val isCurrent = beginPlaybackCommand()
         if (rendererId == LOCAL_RENDERER_ID) {
             val state = _uiState.value
             val controller = localController
             if (controller == null) {
-                pendingLocalPlayback = state.queue to state.currentQueueIndex
+                pendingLocalPlayback = state.currentQueueItem?.queueId
             } else {
                 playLocally(controller, state.queue, state.currentQueueIndex)
             }
@@ -1511,15 +1794,21 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
                 rendererId,
                 track,
                 playImmediately = true,
+                isCurrent = isCurrent,
                 onError = { message ->
-                    _uiState.update { it.copy(playbackState = RemotePlaybackState.STOPPED) }
-                    showError(message)
+                    viewModelScope.launch {
+                        if (isCurrent()) {
+                            _uiState.update { it.copy(playbackState = RemotePlaybackState.STOPPED) }
+                            showError(message)
+                        }
+                    }
                 },
             )
         }
     }
 
     private fun stopRenderer(rendererId: String?) {
+        playbackCommandGeneration++
         remotePlaybackObservedPlaying = false
         remotePlaybackObservedProgress = false
         remoteLastObservedPositionMs = null
@@ -1527,7 +1816,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
             null -> Unit
             LOCAL_RENDERER_ID -> {
                 pendingLocalPlayback = null
-                localPlaybackReadyTrackId = null
+                localPlaybackReadyQueueId = null
                 localController?.stop()
                 localController?.clearMediaItems()
             }
@@ -1543,23 +1832,25 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
             ?: return
         when (command) {
             RemotePlaybackService.COMMAND_PLAY -> when (state.playbackState) {
-                RemotePlaybackState.STOPPED -> state.currentTrack?.let(::playNow)
+                RemotePlaybackState.STOPPED -> playAt(state.currentQueueIndex)
                 RemotePlaybackState.PLAYING -> Unit
                 RemotePlaybackState.PAUSED -> {
                     _uiState.update { it.copy(playbackState = RemotePlaybackState.PLAYING) }
-                    dlna.play(rendererId, onError = ::showError)
+                    dlna.play(rendererId, onError = ::showError, isCurrent = beginPlaybackCommand())
                 }
             }
             RemotePlaybackService.COMMAND_PAUSE -> if (state.playbackState == RemotePlaybackState.PLAYING) {
+                cancelFinishingSleepTimer()
                 _uiState.update { it.copy(playbackState = RemotePlaybackState.PAUSED) }
-                dlna.pause(rendererId, onError = ::showError)
+                dlna.pause(rendererId, onError = ::showError, isCurrent = beginPlaybackCommand())
             }
             RemotePlaybackService.COMMAND_STOP -> {
+                cancelFinishingSleepTimer()
                 remotePlaybackObservedPlaying = false
                 remotePlaybackObservedProgress = false
                 remoteLastObservedPositionMs = null
                 _uiState.update { it.copy(playbackState = RemotePlaybackState.STOPPED, positionMs = 0L) }
-                dlna.stop(rendererId, onError = ::showError)
+                dlna.stop(rendererId, onError = ::showError, isCurrent = beginPlaybackCommand())
             }
             RemotePlaybackService.COMMAND_NEXT -> next()
             RemotePlaybackService.COMMAND_PREVIOUS -> previous()
@@ -1601,10 +1892,10 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    private fun playLocally(controller: MediaController, queue: List<MediaEntry>, index: Int) {
+    private fun playLocally(controller: MediaController, queue: List<QueueItem>, index: Int) {
         if (exiting) return
         pendingLocalPlayback = null
-        localPlaybackReadyTrackId = null
+        localPlaybackReadyQueueId = null
         if (index !in queue.indices) return
         controller.setMediaItems(queue.map { it.toMediaItem() }, index, 0L)
         // Repeating the current Media3 item gives the ViewModel one transition point at every
@@ -1614,19 +1905,21 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         controller.shuffleModeEnabled = false
         controller.prepare()
         controller.play()
+        _uiState.value.sleepTimer.takeIf { it.phase == SleepTimerPhase.FINISHING_TRACK }?.let(::setLocalSleepBoundary)
     }
 
-    private fun MediaEntry.toMediaItem(): MediaItem {
-        val uri = requireNotNull(resourceUri) { "Track has no playable resource URL" }
+    private fun QueueItem.toMediaItem(): MediaItem {
+        val track = track
+        val uri = requireNotNull(track.resourceUri) { "Track has no playable resource URL" }
         return MediaItem.Builder()
             .setUri(uri)
-            .setMediaId(id)
+            .setMediaId(queueId)
             .setMediaMetadata(
                 MediaMetadata.Builder()
-                    .setTitle(title)
-                    .setArtist(creator)
-                    .setAlbumTitle(album)
-                    .setArtworkUri(artworkUri?.let(Uri::parse))
+                    .setTitle(track.title)
+                    .setArtist(track.creator)
+                    .setAlbumTitle(track.album)
+                    .setArtworkUri(track.artworkUri?.let(Uri::parse))
                     .build(),
             )
             .build()
@@ -1636,11 +1929,13 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         if (exiting) return
         val controller = localController ?: return
         if (_uiState.value.selectedRendererId != LOCAL_RENDERER_ID) return
+        if (pendingLocalPlayback != null) return
+        if (controller.currentMediaItem?.mediaId != _uiState.value.currentQueueItem?.queueId) return
         if (
             controller.isPlaying &&
-            controller.currentMediaItem?.mediaId == _uiState.value.currentTrack?.id
+            controller.currentMediaItem?.mediaId == _uiState.value.currentQueueItem?.queueId
         ) {
-            localPlaybackReadyTrackId = controller.currentMediaItem?.mediaId
+            localPlaybackReadyQueueId = controller.currentMediaItem?.mediaId
         }
         _uiState.update {
             it.copy(
@@ -1662,12 +1957,13 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         if (rendererId == LOCAL_RENDERER_ID) {
             localController?.let(::refreshLocalProgress)
         } else {
-            val requestedTrackId = state.currentTrack?.id ?: return
+            val requestedIdentity = playbackCommandIdentity()
+            if (state.currentQueueItem == null) return
             dlna.getPositionInfo(rendererId, onResult = { position, duration ->
                 viewModelScope.launch {
                     val positionMs = parseTimeMs(position)
                     _uiState.update {
-                        if (!exiting && it.selectedRendererId == rendererId && it.currentTrack?.id == requestedTrackId) {
+                        if (!exiting && playbackCommandIdentity() == requestedIdentity) {
                             remoteLastObservedPositionMs?.let { previousPositionMs ->
                                 if (positionMs > previousPositionMs) remotePlaybackObservedProgress = true
                             }
@@ -1686,8 +1982,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
                 viewModelScope.launch {
                     val current = _uiState.value
                     if (
-                        exiting || current.selectedRendererId != rendererId ||
-                        current.currentTrack?.id != requestedTrackId
+                        exiting || playbackCommandIdentity() != requestedIdentity
                     ) return@launch
                     when (transportState?.uppercase()) {
                         "PLAYING" -> remotePlaybackObservedPlaying = true
@@ -1709,6 +2004,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     private fun refreshLocalProgress(controller: MediaController) {
         if (exiting) return
         if (_uiState.value.selectedRendererId != LOCAL_RENDERER_ID) return
+        if (pendingLocalPlayback != null || controller.currentMediaItem?.mediaId != _uiState.value.currentQueueItem?.queueId) return
         _uiState.update {
             it.copy(
                 positionMs = controller.currentPosition.coerceAtLeast(0L),
@@ -1722,6 +2018,8 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     fun exitApp() = exitCoordinator.exit()
 
     private fun beginExit() {
+        cancelSleepTimer()
+        playbackCommandGeneration++
         val state = _uiState.value
         exitPreferences = state.preferences
         exitRendererId = remoteRendererToStopOnExit(state)
@@ -1758,7 +2056,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         albumArtworkJob?.cancel()
         dlna.beginShutdown()
         pendingLocalPlayback = null
-        localPlaybackReadyTrackId = null
+        localPlaybackReadyQueueId = null
         localController?.removeListener(localPlayerListener)
         localController?.stop()
         localController?.clearMediaItems()
@@ -1862,6 +2160,8 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     override fun onCleared() {
+        cancelSleepTimer()
+        playbackCommandGeneration++
         lyricsJob?.cancel()
         albumArtworkJob?.cancel()
         nowPlayingJob?.cancel()

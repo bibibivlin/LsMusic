@@ -1,6 +1,7 @@
 package com.linxyi.lsmusic.ui
 
 import android.graphics.Bitmap
+import android.content.res.Configuration
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -9,6 +10,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.v2.createComposeRule
@@ -20,15 +23,20 @@ import com.linxyi.lsmusic.listenbrainz.PendingListen
 import com.linxyi.lsmusic.ui.theme.LsMusicTheme
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertFalse
 import org.junit.Rule
 import org.junit.Test
 import java.io.File
+import java.util.Locale
 
 /** Renders production routes with in-memory state. Never starts discovery or contacts an account. */
 class SettingsUiTest {
     @get:Rule val compose = createComposeRule()
     private var state by mutableStateOf(LsMusicUiState(destination = AppDestination.SETTINGS, isSearching = false))
     private var exits = 0
+    private var libraryPlayClicks = 0
+    private var timerRequest: SleepTimerRequest? = null
+    private var resourceContext = InstrumentationRegistry.getInstrumentation().targetContext
 
     @Test
     fun homeKeepsDevicesAndOrdersCategoriesBeforeIndependentExit() {
@@ -39,7 +47,7 @@ class SettingsUiTest {
         compose.onNodeWithText(text(R.string.settings_gallery_size)).assertDoesNotExist()
         compose.onNodeWithText(text(R.string.settings_online_lyrics)).assertDoesNotExist()
         compose.onNodeWithText(text(R.string.listenbrainz_api)).assertDoesNotExist()
-        listOf("appearance", "lyrics", "network", "about").forEachIndexed { index, key ->
+        listOf("appearance", "playback", "lyrics", "network", "about").forEachIndexed { index, key ->
             compose.onNodeWithTag("settings-list").performScrollToIndex(index + 2)
             compose.waitUntil(5_000L) { compose.onNodeWithTag("settings-link-$key").isDisplayed() }
         }
@@ -108,9 +116,9 @@ class SettingsUiTest {
 
     @Test
     fun exitScrollsAboveMiniPlayerAndImmediatelyShowsProgress() {
-        state = state.copy(queue = listOf(track()), currentQueueIndex = 0, playbackState = RemotePlaybackState.PAUSED)
+        state = state.copy(queue = listOf(QueueItem.create(track())), currentQueueIndex = 0, playbackState = RemotePlaybackState.PAUSED)
         render()
-        compose.onNodeWithTag("settings-list").performScrollToIndex(6)
+        compose.onNodeWithTag("settings-list").performScrollToIndex(7)
         compose.onNodeWithText(text(R.string.exit)).assertIsDisplayed()
         val exitBottom = compose.onNodeWithText(text(R.string.exit)).fetchSemanticsNode().boundsInRoot.bottom
         val playerTop = compose.onNodeWithText("Offline track").fetchSemanticsNode().boundsInRoot.top
@@ -140,13 +148,92 @@ class SettingsUiTest {
     @Test
     fun largeFontKeepsExitAndAboutLinksReachable() {
         render(fontScale = 1.5f)
-        compose.onNodeWithTag("settings-list").performScrollToIndex(6)
+        compose.onNodeWithTag("settings-list").performScrollToIndex(7)
         compose.onNodeWithText(text(R.string.exit)).assertIsDisplayed()
         screenshot("settings-large-font")
         open("about")
         compose.onNodeWithTag("settings-list").performScrollToNode(hasTestTag("settings-link-third-party-notices"))
         compose.onNodeWithTag("settings-link-third-party-notices").assertIsDisplayed()
     }
+
+    @Test
+    fun playbackSwitchesHaveDefaultsAndMiniPlayerCanBeHiddenImmediately() {
+        state = state.copy(queue = listOf(QueueItem("current", track())), currentQueueIndex = 0)
+        render()
+        open("playback")
+        switch("enqueue-while-playing").assertIsOff().performClick()
+        switch("mini-player").assertIsOn().performClick()
+        compose.onNodeWithText("Offline track").assertDoesNotExist()
+        switch("clear-queue-on-play").performScrollTo().assertIsOn().performClick()
+        compose.runOnIdle {
+            assertTrue(state.preferences.enqueueWhilePlaying)
+            assertFalse(state.preferences.miniPlayerEnabled)
+            assertFalse(state.preferences.clearQueueOnPlay)
+        }
+        screenshot("settings-playback")
+        back()
+        open("playback")
+        switch("enqueue-while-playing").assertIsOn()
+        switch("mini-player").assertIsOff()
+        switch("clear-queue-on-play").performScrollTo().assertIsOff()
+    }
+
+    @Test
+    fun sleepTimerValidatesCustomDurationAndOffersFinishTrackAndCancellation() {
+        render()
+        open("playback")
+        compose.onNodeWithTag("settings-list").performScrollToNode(hasText(text(R.string.sleep_timer_custom)))
+        compose.onNodeWithText(text(R.string.sleep_timer_custom)).performScrollTo().performClick()
+        compose.onNodeWithTag("sleep-timer-minutes").performScrollTo().performTextReplacement("0")
+        compose.onNodeWithTag("sleep-timer-start").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithTag("sleep-timer-minutes").performScrollTo().performTextReplacement("181")
+        compose.onNodeWithTag("sleep-timer-start").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithTag("sleep-timer-minutes").performScrollTo().performTextReplacement("12")
+        compose.onNodeWithTag("sleep-timer-finish-track").performScrollTo().performClick()
+        compose.onNodeWithTag("sleep-timer-start").performScrollTo().performClick()
+        compose.runOnIdle { assertEquals(SleepTimerRequest(12, true), timerRequest) }
+        compose.onNodeWithTag("sleep-timer-cancel").performScrollTo().performClick()
+        compose.runOnIdle { assertEquals(SleepTimerPhase.OFF, state.sleepTimer.phase) }
+        compose.onNodeWithTag("sleep-timer-status").performScrollTo()
+        screenshot("settings-sleep-timer")
+    }
+
+    @Test
+    fun queueSelectionUsesOccurrenceIdentityAndBypassesLibraryAction() {
+        state = state.copy(
+            destination = AppDestination.QUEUE,
+            queue = List(3) { QueueItem("copy-$it", track()) },
+            currentQueueIndex = 0,
+            preferences = AppPreferences(enqueueWhilePlaying = true, clearQueueOnPlay = true, miniPlayerEnabled = false),
+        )
+        render()
+        compose.onNode(hasClickAction() and hasText("Offline track") and hasAnyAncestor(hasTestTag("queue-item-copy-2"))).performClick()
+        compose.runOnIdle {
+            assertEquals("copy-2", state.currentQueueItem?.queueId)
+            assertEquals(3, state.queue.size)
+            assertEquals(0, libraryPlayClicks)
+        }
+        compose.onAllNodesWithContentDescription(text(R.string.playing)).assertCountEquals(1)
+    }
+
+    @Test
+    fun playbackSettingsRemainReachableInChineseWithLargeFont() {
+        render(fontScale = 1.5f, locale = Locale.SIMPLIFIED_CHINESE)
+        open("playback")
+        assertEquals("迷你播放器", text(R.string.mini_player))
+        switch("enqueue-while-playing").performScrollTo().assertIsOff()
+        screenshot("settings-playback-chinese-large-font")
+        switch("mini-player").performScrollTo().assertIsOn()
+        switch("clear-queue-on-play").performScrollTo().assertIsOn()
+        compose.onNodeWithTag("settings-list").performScrollToNode(hasTestTag("sleep-timer-start"))
+        compose.onNodeWithTag("sleep-timer-finish-track").performScrollTo().assertIsOff()
+        compose.onNodeWithTag("sleep-timer-start").performScrollTo().assertIsDisplayed().assertIsEnabled()
+        screenshot("settings-sleep-timer-chinese-large-font")
+        back()
+        compose.runOnIdle { assertEquals(AppDestination.SETTINGS, state.destination) }
+    }
+
+    private fun switch(key: String) = compose.onNode(isToggleable() and hasAnyAncestor(hasTestTag("setting-$key")))
 
     private fun open(key: String) {
         compose.onNodeWithTag("settings-list").performScrollToNode(hasTestTag("settings-link-$key"))
@@ -160,12 +247,21 @@ class SettingsUiTest {
         compose.waitForIdle()
     }
 
-    private fun text(id: Int): String = InstrumentationRegistry.getInstrumentation().targetContext.getString(id)
+    private fun text(id: Int): String = resourceContext.getString(id)
 
-    private fun render(fontScale: Float? = null) {
+    private fun render(fontScale: Float? = null, locale: Locale? = null) {
+        if (locale != null) {
+            resourceContext = resourceContext.createConfigurationContext(
+                Configuration(resourceContext.resources.configuration).apply { setLocale(locale) },
+            )
+        }
         compose.setContent {
             val density = LocalDensity.current
-            CompositionLocalProvider(LocalDensity provides Density(density.density, fontScale ?: density.fontScale)) {
+            CompositionLocalProvider(
+                LocalContext provides resourceContext,
+                LocalConfiguration provides resourceContext.resources.configuration,
+                LocalDensity provides Density(density.density, fontScale ?: density.fontScale),
+            ) {
             LsMusicTheme(dynamicColor = false) {
                 ExitProgressDialog(state.exitStatus, state.exitError) {}
                 LsMusicContent(
@@ -173,7 +269,7 @@ class SettingsUiTest {
                     snackbar = remember { SnackbarHostState() },
                     onDestination = { state = state.copy(destination = it) },
                     onRefresh = {}, onSelectServer = {}, onSelectRenderer = {},
-                    onOpen = {}, onNavigateTo = {}, onPlay = {}, onQueue = {}, onPlayAll = {},
+                    onOpen = {}, onNavigateTo = {}, onPlay = { libraryPlayClicks++ }, onQueue = {}, onPlayAll = {},
                     onShufflePlay = {}, onQueueAll = {}, onAlbumSort = {},
                     onSaveBrowseViewState = { _, _ -> }, onResolveAlbumArtwork = { _, _ -> },
                     onTogglePlayback = {}, onPrevious = {}, onNext = {}, onCycleRepeat = {},
@@ -186,6 +282,18 @@ class SettingsUiTest {
                     onListenBrainzToken = {}, onListenBrainzMinimumSeconds = {}, onListenBrainzMinimumPercent = {},
                     onRetryPendingListens = {}, onRemovePendingListen = {}, onClearPendingListens = {},
                     onExit = { exits++; state = state.copy(exitStatus = ExitStatus.STOPPING, queue = emptyList()) },
+                    onPlayQueueItem = { queueId -> state = state.copy(currentQueueIndex = state.queue.indexOfFirst { it.queueId == queueId }) },
+                    onEnqueueWhilePlaying = { state = state.copy(preferences = state.preferences.copy(enqueueWhilePlaying = it)) },
+                    onMiniPlayerEnabled = { state = state.copy(preferences = state.preferences.copy(miniPlayerEnabled = it)) },
+                    onClearQueueOnPlay = { state = state.copy(preferences = state.preferences.copy(clearQueueOnPlay = it)) },
+                    onStartSleepTimer = { minutes, finish ->
+                        timerRequest = SleepTimerRequest(minutes, finish)
+                        state = state.copy(sleepTimer = SleepTimerState(
+                            phase = SleepTimerPhase.COUNTING_DOWN, token = "fixture",
+                            deadlineElapsedMs = android.os.SystemClock.elapsedRealtime() + minutes * 60_000L,
+                        ))
+                    },
+                    onCancelSleepTimer = { state = state.copy(sleepTimer = SleepTimerState()) },
                 )
             }
             }

@@ -149,7 +149,7 @@ class ThemeRenderingUiTest {
             isContainer = false,
         )
         val state = LsMusicUiState(
-            queue = listOf(track),
+            queue = listOf(com.linxyi.lsmusic.ui.QueueItem.create(track)),
             currentQueueIndex = 0,
             durationMs = 180_000L,
             preferences = darkPreferences(),
