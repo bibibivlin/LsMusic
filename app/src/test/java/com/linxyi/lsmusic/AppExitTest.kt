@@ -28,7 +28,7 @@ class AppExitTest {
     fun exitStopsOnlyTheRemoteRendererWithAnActiveApplicationTrack() {
         val selected = LsMusicUiState(selectedRendererId = "renderer")
         assertNull(remoteRendererToStopOnExit(selected))
-        val playing = selected.copy(queue = listOf(track), currentQueueIndex = 0, playbackState = RemotePlaybackState.PLAYING)
+        val playing = selected.copy(queue = listOf(com.linxyi.lsmusic.ui.QueueItem.create(track)), currentQueueIndex = 0, playbackState = RemotePlaybackState.PLAYING)
         assertEquals("renderer", remoteRendererToStopOnExit(playing))
         assertEquals("renderer", remoteRendererToStopOnExit(playing.copy(playbackState = RemotePlaybackState.PAUSED)))
         assertNull(remoteRendererToStopOnExit(playing.copy(playbackState = RemotePlaybackState.STOPPED)))

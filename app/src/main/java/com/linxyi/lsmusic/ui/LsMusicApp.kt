@@ -436,6 +436,11 @@ fun LsMusicApp(viewModel: LsMusicViewModel) {
             }
         }
 
+        SleepTimerPermissionEffect(
+            state.sleepTimerPermissionRequest,
+            onResult = viewModel::onSleepTimerPermissionResult,
+            onDismiss = viewModel::dismissSleepTimerPermission,
+        )
         ExitProgressDialog(state.exitStatus, state.exitError, viewModel::exitApp)
         LsMusicContent(
             state = state,
@@ -447,6 +452,12 @@ fun LsMusicApp(viewModel: LsMusicViewModel) {
             onOpen = viewModel::open,
             onNavigateTo = viewModel::navigateTo,
             onPlay = viewModel::playNow,
+            onPlayQueueItem = viewModel::playQueueItem,
+            onEnqueueWhilePlaying = viewModel::setEnqueueWhilePlaying,
+            onMiniPlayerEnabled = viewModel::setMiniPlayerEnabled,
+            onClearQueueOnPlay = viewModel::setClearQueueOnPlay,
+            onStartSleepTimer = viewModel::requestSleepTimer,
+            onCancelSleepTimer = viewModel::cancelSleepTimer,
             onQueue = viewModel::addToQueue,
             onPlayAll = viewModel::playAll,
             onShufflePlay = viewModel::shufflePlay,
@@ -538,6 +549,12 @@ internal fun LsMusicContent(
     onRemovePendingListen: (String) -> Unit,
     onClearPendingListens: () -> Unit,
     onExit: () -> Unit = {},
+    onPlayQueueItem: (String) -> Unit = {},
+    onEnqueueWhilePlaying: (Boolean) -> Unit = {},
+    onMiniPlayerEnabled: (Boolean) -> Unit = {},
+    onClearQueueOnPlay: (Boolean) -> Unit = {},
+    onStartSleepTimer: (Int, Boolean) -> Unit = { _, _ -> },
+    onCancelSleepTimer: () -> Unit = {},
 ) {
     val destinationStateHolder = rememberSaveableStateHolder()
     val libraryState = remember(
@@ -573,7 +590,7 @@ internal fun LsMusicContent(
     }
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val expanded = maxWidth >= 720.dp
-        val showMiniPlayer = state.currentTrack != null && state.destination != AppDestination.NOW_PLAYING
+        val showMiniPlayer = state.preferences.miniPlayerEnabled && state.currentTrack != null && state.destination != AppDestination.NOW_PLAYING
         val bottomContentPadding = DefaultScreenBottomPadding +
             if (showMiniPlayer) MiniPlayerContentInset else 0.dp
         Row(Modifier.fillMaxSize()) {
@@ -617,7 +634,7 @@ internal fun LsMusicContent(
                             )
                             AppDestination.QUEUE -> QueueScreen(
                                 state,
-                                onPlay,
+                                onPlayQueueItem,
                                 onRemoveQueue,
                                 onMoveQueue,
                                 onClearQueue,
@@ -636,6 +653,7 @@ internal fun LsMusicContent(
                             )
                             AppDestination.SETTINGS,
                             AppDestination.SETTINGS_APPEARANCE,
+                            AppDestination.SETTINGS_PLAYBACK,
                             AppDestination.SETTINGS_LYRICS,
                             AppDestination.SETTINGS_NETWORK,
                             AppDestination.SETTINGS_ABOUT,
@@ -661,6 +679,11 @@ internal fun LsMusicContent(
                                         onThemeMode = onThemeMode,
                                         onDynamicColor = onDynamicColor,
                                         onPresetPalette = onPresetPalette,
+                                        onEnqueueWhilePlaying = onEnqueueWhilePlaying,
+                                        onMiniPlayerEnabled = onMiniPlayerEnabled,
+                                        onClearQueueOnPlay = onClearQueueOnPlay,
+                                        onStartSleepTimer = onStartSleepTimer,
+                                        onCancelSleepTimer = onCancelSleepTimer,
                                         onLyricsEnabled = onLyricsEnabled,
                                         onLyricsProviderOrder = onLyricsProviderOrder,
                                         onLyricsTranslationMode = onLyricsTranslationMode,
@@ -1978,31 +2001,8 @@ private data class QueueDisplayItem(
     val entry: MediaEntry,
 )
 
-private class QueueDisplayKeyGenerator {
-    private var nextKey = 0L
-
-    fun next(entry: MediaEntry): String = "queue:${nextKey++}:${entry.id}"
-}
-
-private fun reconcileQueueDisplayItems(
-    currentItems: List<QueueDisplayItem>,
-    queue: List<MediaEntry>,
-    keyGenerator: QueueDisplayKeyGenerator,
-): List<QueueDisplayItem> {
-    val unmatchedItems = currentItems.toMutableList()
-    return queue.mapIndexed { index, entry ->
-        val matchIndex = unmatchedItems.indexOfFirst { it.entry.id == entry.id }
-        if (matchIndex >= 0) {
-            unmatchedItems.removeAt(matchIndex).copy(stateIndex = index, entry = entry)
-        } else {
-            QueueDisplayItem(
-                key = keyGenerator.next(entry),
-                stateIndex = index,
-                entry = entry,
-            )
-        }
-    }
-}
+private fun queueDisplayItems(queue: List<QueueItem>): List<QueueDisplayItem> =
+    queue.mapIndexed { index, item -> QueueDisplayItem(item.queueId, index, item.track) }
 
 private data class QueueDragHandleInfo(
     val itemKey: String,
@@ -2043,7 +2043,7 @@ private suspend fun PointerInputScope.detectQueueReorderGestures(
 @Composable
 private fun QueueScreen(
     state: LsMusicUiState,
-    onPlay: (MediaEntry) -> Unit,
+    onPlay: (String) -> Unit,
     onRemove: (Int) -> Unit,
     onMove: (Int, Int) -> Unit,
     onClear: () -> Unit,
@@ -2066,18 +2066,7 @@ private fun QueueScreen(
         }
         return
     }
-    val queueDisplayKeyGenerator = remember { QueueDisplayKeyGenerator() }
-    var displayedQueue by remember {
-        mutableStateOf(
-            state.queue.mapIndexed { index, entry ->
-                QueueDisplayItem(
-                    key = queueDisplayKeyGenerator.next(entry),
-                    stateIndex = index,
-                    entry = entry,
-                )
-            },
-        )
-    }
+    var displayedQueue by remember { mutableStateOf(queueDisplayItems(state.queue)) }
     val listState = rememberLazyListState()
     val reorderState = remember(listState) {
         LazyListReorderState(listState = listState, itemIndexOffset = 1)
@@ -2104,11 +2093,7 @@ private fun QueueScreen(
         suppressQueueItemClicks()
     }
     LaunchedEffect(state.queue) {
-        displayedQueue = reconcileQueueDisplayItems(
-            currentItems = displayedQueue,
-            queue = state.queue,
-            keyGenerator = queueDisplayKeyGenerator,
-        )
+        displayedQueue = queueDisplayItems(state.queue)
     }
     val density = LocalDensity.current
     val reorderEdgeSizePx = with(density) { ReorderEdgeScrollSize.toPx() }
@@ -2161,7 +2146,7 @@ private fun QueueScreen(
             DisposableEffect(queueItem.key) {
                 onDispose { dragHandles.remove(queueItem.key) }
             }
-            val playing = item.id == state.currentTrack?.id
+            val playing = queueItem.key == state.currentQueueItem?.queueId
             val scale by animateFloatAsState(if (dragged) 1.025f else 1f, label = "queue-drag-scale")
             val elevation by animateDpAsState(if (dragged) 6.dp else 0.dp, label = "queue-drag-elevation")
             val normalContainerColor = if (playing) {
@@ -2176,6 +2161,7 @@ private fun QueueScreen(
             Surface(
                 modifier = reorderPlacementModifier(dragged)
                     .fillMaxWidth()
+                    .testTag("queue-item-${queueItem.key}")
                     .zIndex(if (dragged) 1f else 0f)
                     .graphicsLayer {
                         translationY = if (dragged) reorderState.draggedItemOffset else 0f
@@ -2193,7 +2179,7 @@ private fun QueueScreen(
                             .clip(RoundedCornerShape(14.dp))
                             .clickable {
                                 if (SystemClock.elapsedRealtime() >= suppressItemClicksUntilMs) {
-                                    onPlay(item)
+                                    onPlay(queueItem.key)
                                 }
                             },
                         verticalAlignment = Alignment.CenterVertically,
@@ -2862,7 +2848,7 @@ private fun LibraryPreview() {
                 selectedServerId = server.id,
                 selectedRendererId = renderer.id,
                 entries = tracks,
-                queue = tracks.filterNot { it.isContainer },
+                queue = tracks.filterNot { it.isContainer }.map(QueueItem::create),
                 currentQueueIndex = 0,
                 playbackState = RemotePlaybackState.PLAYING,
                 isSearching = false,

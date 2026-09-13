@@ -120,6 +120,11 @@ internal fun SettingsScreen(
     bottomContentPadding: Dp,
     onNavigate: (AppDestination) -> Unit = {},
     onExit: () -> Unit = {},
+    onEnqueueWhilePlaying: (Boolean) -> Unit = {},
+    onMiniPlayerEnabled: (Boolean) -> Unit = {},
+    onClearQueueOnPlay: (Boolean) -> Unit = {},
+    onStartSleepTimer: (Int, Boolean) -> Unit = { _, _ -> },
+    onCancelSleepTimer: () -> Unit = {},
 ) {
     var listenBrainzTokenDraft by rememberSaveable(preferences.listenBrainzToken) {
         mutableStateOf(preferences.listenBrainzToken)
@@ -176,6 +181,12 @@ internal fun SettingsScreen(
                     Text(stringResource(R.string.exit))
                 }
             }
+        }
+        if (state.destination == AppDestination.SETTINGS_PLAYBACK) {
+            playbackSettingsItems(
+                preferences, state.sleepTimer, onEnqueueWhilePlaying, onMiniPlayerEnabled,
+                onClearQueueOnPlay, onStartSleepTimer, onCancelSleepTimer,
+            )
         }
         if (state.destination == AppDestination.SETTINGS_APPEARANCE) {
             item {
@@ -619,7 +630,7 @@ private fun LyricsProviderOrderSetting(
 }
 
 @Composable
-private fun SettingCard(
+internal fun SettingCard(
     title: String,
     description: String,
     content: @Composable () -> Unit,
@@ -640,15 +651,16 @@ private fun SettingCard(
 }
 
 @Composable
-private fun SwitchSettingCard(
+internal fun SwitchSettingCard(
     title: String,
     description: String,
     checked: Boolean,
-    enabled: Boolean = true,
     onCheckedChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
 ) {
     Surface(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth(),
         shape = RoundedCornerShape(26.dp),
         color = MaterialTheme.colorScheme.surfaceContainer,
     ) {
@@ -789,6 +801,14 @@ private fun LazyListScope.settingsCategoryItems(onNavigate: (AppDestination) -> 
         ) {
             onNavigate(AppDestination.SETTINGS_APPEARANCE)
         }
+    }
+    item(key = "playback", contentType = "category") {
+        SettingsLink(
+            titleRes = R.string.settings_playback,
+            descriptionRes = R.string.settings_playback_description,
+            testKey = "playback",
+            icon = Icons.AutoMirrored.Rounded.PlaylistPlay,
+        ) { onNavigate(AppDestination.SETTINGS_PLAYBACK) }
     }
     item(key = "lyrics", contentType = "category") {
         SettingsLink(

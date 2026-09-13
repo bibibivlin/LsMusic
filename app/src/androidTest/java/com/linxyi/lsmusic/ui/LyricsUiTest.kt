@@ -261,7 +261,7 @@ class LyricsUiTest {
                 resourceUri = "https://example.test/track.flac",
                 isContainer = false,
             ),
-        ),
+        ).map(QueueItem::create),
         currentQueueIndex = 0,
         durationMs = 180_000L,
         lyricsLoadState = lyricsLoadState,

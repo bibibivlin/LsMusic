@@ -38,7 +38,21 @@ Android 12 or later is required. The `SHA256SUMS.txt` file in a release can be u
 
 If no remote player is available, choose this device as the player.
 
-The Settings home page keeps the complete media-library and player selection area. Appearance, Lyrics, and Network open as separate pages with slide and fade transitions. About includes the app version, project home page, privacy information, and open-source notices.
+The Settings home page keeps the complete media-library and player selection area. Appearance, Playback, Lyrics, and Network open as separate pages with slide and fade transitions. About includes the app version, project home page, privacy information, and open-source notices.
+
+## Playback settings
+
+Settings > Playback provides the same controls for local and DLNA playback:
+
+- **Add to queue instead of interrupting playback** is off by default. When enabled, tapping a library song, Play all, or Shuffle play adds the selected tracks to the end of the queue without interrupting the current song. It does not apply while paused or stopped.
+- **Mini player** is on by default. Turn it off to hide the mini player on other pages; playback controls remain available on the Now playing page through bottom navigation.
+- **Clear the current queue when starting playback** is on by default. Turn it off to append library selections and immediately play the first newly added track. The enqueue-only option above takes priority when it applies.
+
+The queue allows duplicate songs as separate entries. Tapping an entry in the queue always plays that occurrence. Pause/resume, previous/next, and system media controls are unaffected by the library playback preferences.
+
+The same page includes a **sleep timer** with 15, 30, 45, 60, and 90 minute presets and custom durations from 1 to 180 minutes. You can view the remaining time, restart the timer, or cancel it. The app remembers your last duration and mode, but you must start each timer explicitly. On first use, grant Alarms & reminders access in Android settings before the countdown starts. Pausing, changing tracks or players, running in the background, and locking the screen do not reset the countdown.
+
+By default, the timer pauses playback at the deadline and preserves your position. Enable **Finish the song playing when the timer expires** to stop after the song playing at the deadline ends, even when repeat is enabled. Pausing or stopping while waiting completes the timer; manually changing tracks or players cancels the wait. After the timer stops a finished track, playing again starts that track from the beginning. An active timer does not resume after exiting the app, process termination, or a device restart. If a DLNA device rejects Pause, the app tries Stop and keeps the queue. A disconnected device or an unconfirmed result is reported as a failure.
 
 ## Exiting the app
 
@@ -86,6 +100,8 @@ L's Music contains no ads, profiling, or telemetry SDK. Online lyrics and Listen
 ```
 
 The debug APK is written to `app/build/outputs/apk/debug/app-debug.apk`. Without release-signing environment variables, the local release APK is unsigned by default. Validate DLNA behavior and optimized release builds on a physical device and a non-isolated Wi-Fi network.
+
+Run playback and timer device tests in a separate app to keep existing accounts and listening history untouched: `./gradlew -I gradle/playback-qa.init.gradle :app:connectedDebugAndroidTest`. Set `ANDROID_SERIAL` first if multiple devices are connected. Afterwards, run `:app:assembleDebug` again to produce an APK with the normal application ID.
 
 ## Project information
 

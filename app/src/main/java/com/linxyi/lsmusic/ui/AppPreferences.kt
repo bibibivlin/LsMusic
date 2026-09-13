@@ -44,6 +44,11 @@ data class AppPreferences(
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val useDynamicColor: Boolean = true,
     val presetPalette: PresetPalette = PresetPalette.MIST,
+    val enqueueWhilePlaying: Boolean = false,
+    val miniPlayerEnabled: Boolean = true,
+    val clearQueueOnPlay: Boolean = true,
+    val sleepTimerMinutes: Int = 30,
+    val sleepTimerFinishTrack: Boolean = false,
     val lyricsEnabled: Boolean = false,
     val lyricsProviderOrder: List<LyricsProviderId> = LyricsProviderId.entries,
     val lyricsTranslationMode: LyricsTranslationMode = LyricsTranslationMode.ORIGINAL,
@@ -104,6 +109,11 @@ class AppPreferencesStore(context: Context) {
         themeMode = preferences.enumValue(KEY_THEME_MODE, ThemeMode.SYSTEM),
         useDynamicColor = preferences.getBoolean(KEY_DYNAMIC_COLOR, true),
         presetPalette = preferences.enumValue(KEY_PRESET_PALETTE, PresetPalette.MIST),
+        enqueueWhilePlaying = preferences.getBoolean(KEY_ENQUEUE_WHILE_PLAYING, false),
+        miniPlayerEnabled = preferences.getBoolean(KEY_MINI_PLAYER_ENABLED, true),
+        clearQueueOnPlay = preferences.getBoolean(KEY_CLEAR_QUEUE_ON_PLAY, true),
+        sleepTimerMinutes = preferences.getInt(KEY_SLEEP_TIMER_MINUTES, 30).coerceIn(1, 180),
+        sleepTimerFinishTrack = preferences.getBoolean(KEY_SLEEP_TIMER_FINISH_TRACK, false),
         lyricsEnabled = preferences.getBoolean(KEY_LYRICS_ENABLED, false),
         lyricsProviderOrder = parseLyricsProviderOrder(preferences.getString(KEY_LYRICS_PROVIDER_ORDER, null)),
         lyricsTranslationMode = preferences.enumValue(
@@ -164,6 +174,11 @@ class AppPreferencesStore(context: Context) {
             .putString(KEY_THEME_MODE, value.themeMode.name)
             .putBoolean(KEY_DYNAMIC_COLOR, value.useDynamicColor)
             .putString(KEY_PRESET_PALETTE, value.presetPalette.name)
+            .putBoolean(KEY_ENQUEUE_WHILE_PLAYING, value.enqueueWhilePlaying)
+            .putBoolean(KEY_MINI_PLAYER_ENABLED, value.miniPlayerEnabled)
+            .putBoolean(KEY_CLEAR_QUEUE_ON_PLAY, value.clearQueueOnPlay)
+            .putInt(KEY_SLEEP_TIMER_MINUTES, value.sleepTimerMinutes.coerceIn(1, 180))
+            .putBoolean(KEY_SLEEP_TIMER_FINISH_TRACK, value.sleepTimerFinishTrack)
             .putBoolean(KEY_LYRICS_ENABLED, value.lyricsEnabled)
             .putString(
                 KEY_LYRICS_PROVIDER_ORDER,
@@ -218,6 +233,11 @@ class AppPreferencesStore(context: Context) {
     }
 
     private companion object {
+        const val KEY_ENQUEUE_WHILE_PLAYING = "enqueue_while_playing"
+        const val KEY_MINI_PLAYER_ENABLED = "mini_player_enabled"
+        const val KEY_CLEAR_QUEUE_ON_PLAY = "clear_queue_on_play"
+        const val KEY_SLEEP_TIMER_MINUTES = "sleep_timer_minutes"
+        const val KEY_SLEEP_TIMER_FINISH_TRACK = "sleep_timer_finish_track"
         const val PREFERENCES_NAME = "ls_music_preferences"
         const val SECRETS_NAME = "ls_music_secrets"
         const val KEY_LAST_SERVER_ID = "last_server_id"
