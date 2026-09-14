@@ -24,7 +24,7 @@ L's Music 是一个 Android DLNA / UPnP 音乐控制器。它可以浏览家庭�
 ## 下载与安装
 
 1. 前往 [GitHub Releases](https://github.com/bibibivlin/LsMusic/releases)。
-2. 下载名称形如 `LsMusic-v1.0.0.apk` 的安装包。
+2. 下载名称形如 `LsMusic-v1.1.0.apk` 的安装包。
 3. 按 Android 提示允许当前应用安装未知来源应用，然后完成安装。
 
 应用需要 Android 12 或更高版本。Release 中的 `SHA256SUMS.txt` 可用于核对下载文件是否完整。
