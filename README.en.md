@@ -24,7 +24,7 @@ L's Music is an Android DLNA / UPnP music controller. Browse music libraries on 
 ## Download and installation
 
 1. Open [GitHub Releases](https://github.com/bibibivlin/LsMusic/releases).
-2. Download an APK such as `LsMusic-v1.0.0.apk`.
+2. Download an APK such as `LsMusic-v1.1.0.apk`.
 3. Follow Android's prompt to allow installation from the current unknown-source app, then finish the installation.
 
 Android 12 or later is required. The `SHA256SUMS.txt` file in a release can be used to verify the download.
