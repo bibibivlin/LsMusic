@@ -3,7 +3,8 @@
 package com.linxyi.lsmusic.ui
 
 import android.os.SystemClock
-import androidx.activity.compose.BackHandler
+import androidx.activity.compose.PredictiveBackHandler
+import androidx.activity.BackEventCompat
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
@@ -20,6 +21,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.awaitLongPressOrCancellation
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.horizontalScroll
@@ -173,6 +175,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.progressBarRangeInfo
@@ -424,15 +427,29 @@ fun LsMusicApp(viewModel: LsMusicViewModel) {
             }
         }
 
-        BackHandler(
+        val backProgress = remember { androidx.compose.animation.core.Animatable(0f) }
+        var backEdge by remember { mutableIntStateOf(BackEventCompat.EDGE_LEFT) }
+        PredictiveBackHandler(
             enabled = state.exitStatus != ExitStatus.IDLE || state.destination.settingsParent != null ||
                 (state.destination == AppDestination.LIBRARY && state.path.size > 1),
-        ) {
-            if (state.exitStatus != ExitStatus.IDLE) return@BackHandler
-            if (state.destination.settingsParent != null) {
-                viewModel.setDestination(requireNotNull(state.destination.settingsParent))
-            } else {
-                viewModel.navigateTo(state.path.lastIndex - 1)
+        ) { events ->
+            try {
+                events.collect { event ->
+                    backEdge = event.swipeEdge
+                    if (state.exitStatus == ExitStatus.IDLE) backProgress.snapTo(event.progress)
+                }
+                if (state.exitStatus == ExitStatus.IDLE) {
+                    if (state.destination.settingsParent != null) {
+                        viewModel.setDestination(requireNotNull(state.destination.settingsParent))
+                    } else {
+                        viewModel.navigateTo(state.path.lastIndex - 1)
+                    }
+                }
+            } finally {
+                // A cancelled gesture must restore the page without changing navigation.
+                kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+                    backProgress.animateTo(0f, tween(180))
+                }
             }
         }
 
@@ -445,6 +462,8 @@ fun LsMusicApp(viewModel: LsMusicViewModel) {
         LsMusicContent(
             state = state,
             snackbar = snackbar,
+            backProgress = backProgress.value,
+            backEdge = backEdge,
             onDestination = viewModel::setDestination,
             onRefresh = viewModel::refreshDevices,
             onSelectServer = viewModel::selectServer,
@@ -555,6 +574,8 @@ internal fun LsMusicContent(
     onClearQueueOnPlay: (Boolean) -> Unit = {},
     onStartSleepTimer: (Int, Boolean) -> Unit = { _, _ -> },
     onCancelSleepTimer: () -> Unit = {},
+    backProgress: Float = 0f,
+    backEdge: Int = BackEventCompat.EDGE_LEFT,
 ) {
     val destinationStateHolder = rememberSaveableStateHolder()
     val libraryState = remember(
@@ -614,7 +635,14 @@ internal fun LsMusicContent(
                 // The now-playing page measures its artwork from the final available height.
                 // Avoid AnimatedContent's intermediate size constraints, which make it visibly resize
                 // once while navigating from another destination on large and foldable screens.
-                Box(Modifier.fillMaxSize().padding(padding)) {
+                Box(Modifier.fillMaxSize().padding(padding).graphicsLayer {
+                    scaleX = 1f - 0.08f * backProgress
+                    scaleY = scaleX
+                    translationX = (if (backEdge == BackEventCompat.EDGE_LEFT) 1 else -1) *
+                        24.dp.toPx() * backProgress
+                    shape = RoundedCornerShape((28 * backProgress).dp)
+                    clip = backProgress > 0f
+                }) {
                     destinationStateHolder.SaveableStateProvider(state.destination.navigationDestination.name) {
                         when (state.destination) {
                             AppDestination.LIBRARY -> LibraryScreen(
@@ -1089,81 +1117,75 @@ internal fun LibraryDirectoryScreen(
                 }
             }
 
-            when (contentStatus) {
-                LibraryContentStatus.LOADING -> item(
-                    span = { GridItemSpan(maxLineSpan) },
-                    contentType = "library-status",
-                ) {
-                    LoadingPanel(stringResource(R.string.loading_music_library))
-                }
-                LibraryContentStatus.NO_SERVER -> item(
-                    span = { GridItemSpan(maxLineSpan) },
-                    contentType = "library-status",
-                ) {
-                    EmptyPanel(
-                        icon = Icons.Rounded.Devices,
-                        title = stringResource(R.string.library_not_found_title),
-                        body = stringResource(R.string.library_not_found_body),
-                        action = stringResource(R.string.open_device_settings),
-                        onAction = onOpenSettings,
+            if (contentStatus == LibraryContentStatus.CONTENT) gridItemsIndexed(
+                items = visibleEntries,
+                key = { _, it -> mediaEntryKey(it) },
+                contentType = { _, _ -> if (useGrid) "media-grid-card" else "media-list-row" },
+            ) { index, entry ->
+                if (useGrid) {
+                    MediaGridCard(
+                        entry = entry,
+                        gallerySize = state.preferences.gallerySize,
+                        artworkRequestSizePx = artworkRequestSizePx,
+                        onOpen = { onOpen(entry) },
+                        onQueue = { onQueue(entry) },
+                    )
+                } else {
+                    MediaEntryRow(
+                        entry = entry,
+                        emphasized = index % 5 == 0,
+                        onOpen = { onOpen(entry) },
+                        onPlay = { onPlay(entry) },
+                        onQueue = { onQueue(entry) },
                     )
                 }
-                LibraryContentStatus.SERVER_UNAVAILABLE -> item(
-                    span = { GridItemSpan(maxLineSpan) },
-                    contentType = "library-status",
-                ) {
-                    EmptyPanel(
-                        icon = Icons.Rounded.Devices,
-                        title = stringResource(R.string.library_unavailable_title),
-                        body = stringResource(R.string.library_unavailable_body),
-                        action = stringResource(R.string.open_device_settings),
-                        onAction = onOpenSettings,
-                    )
-                }
-                LibraryContentStatus.LOAD_FAILED -> item(
-                    span = { GridItemSpan(maxLineSpan) },
-                    contentType = "library-status",
-                ) {
-                    EmptyPanel(
-                        icon = Icons.Rounded.MusicNote,
-                        title = stringResource(R.string.library_load_failed_title),
-                        body = stringResource(R.string.library_load_failed_body),
-                        action = stringResource(R.string.open_device_settings),
-                        onAction = onOpenSettings,
-                    )
-                }
-                LibraryContentStatus.EMPTY -> item(
-                    span = { GridItemSpan(maxLineSpan) },
-                    contentType = "library-status",
-                ) {
-                    EmptyPanel(
-                        icon = Icons.Rounded.MusicNote,
-                        title = stringResource(if (query.isBlank()) R.string.empty_directory_title else R.string.no_matching_music_title),
-                        body = stringResource(if (query.isBlank()) R.string.empty_directory_body else R.string.no_matching_music_body),
-                    )
-                }
-                LibraryContentStatus.CONTENT -> gridItemsIndexed(
-                    items = visibleEntries,
-                    key = { _, it -> mediaEntryKey(it) },
-                    contentType = { _, _ -> if (useGrid) "media-grid-card" else "media-list-row" },
-                ) { index, entry ->
-                    if (useGrid) {
-                        MediaGridCard(
-                            entry = entry,
-                            gallerySize = state.preferences.gallerySize,
-                            artworkRequestSizePx = artworkRequestSizePx,
-                            onOpen = { onOpen(entry) },
-                            onQueue = { onQueue(entry) },
-                        )
-                    } else {
-                        MediaEntryRow(
-                            entry = entry,
-                            emphasized = index % 5 == 0,
-                            onOpen = { onOpen(entry) },
-                            onPlay = { onPlay(entry) },
-                            onQueue = { onQueue(entry) },
+            }
+        }
+
+        if (contentStatus != LibraryContentStatus.CONTENT) {
+            CenteredStatusLayout(
+                title = stringResource(R.string.app_name),
+                showTitle = false,
+            ) {
+                when (contentStatus) {
+                    LibraryContentStatus.LOADING -> {
+                        LoadingPanel(stringResource(R.string.loading_music_library))
+                    }
+                    LibraryContentStatus.NO_SERVER -> {
+                        EmptyPanel(
+                            icon = Icons.Rounded.Devices,
+                            title = stringResource(R.string.library_not_found_title),
+                            body = stringResource(R.string.library_not_found_body),
+                            action = stringResource(R.string.open_device_settings),
+                            onAction = onOpenSettings,
                         )
                     }
+                    LibraryContentStatus.SERVER_UNAVAILABLE -> {
+                        EmptyPanel(
+                            icon = Icons.Rounded.Devices,
+                            title = stringResource(R.string.library_unavailable_title),
+                            body = stringResource(R.string.library_unavailable_body),
+                            action = stringResource(R.string.open_device_settings),
+                            onAction = onOpenSettings,
+                        )
+                    }
+                    LibraryContentStatus.LOAD_FAILED -> {
+                        EmptyPanel(
+                            icon = Icons.Rounded.MusicNote,
+                            title = stringResource(R.string.library_load_failed_title),
+                            body = stringResource(R.string.library_load_failed_body),
+                            action = stringResource(R.string.open_device_settings),
+                            onAction = onOpenSettings,
+                        )
+                    }
+                    LibraryContentStatus.EMPTY -> {
+                        EmptyPanel(
+                            icon = Icons.Rounded.MusicNote,
+                            title = stringResource(if (query.isBlank()) R.string.empty_directory_title else R.string.no_matching_music_title),
+                            body = stringResource(if (query.isBlank()) R.string.empty_directory_body else R.string.no_matching_music_body),
+                        )
+                    }
+                    LibraryContentStatus.CONTENT -> Unit
                 }
             }
         }
@@ -1505,6 +1527,13 @@ private fun AlbumDetailScreen(
         isContainer = true,
         isAlbum = true,
     )
+    val openArtworkLabel = stringResource(R.string.open_full_screen_artwork)
+    var showFullScreenArtwork by rememberSaveable(pageKey) { mutableStateOf(false) }
+    if (showFullScreenArtwork) {
+        headerArtworkEntry?.artworkUri?.let { uri ->
+            FullScreenArtwork(uri = uri, title = title, onDismiss = { showFullScreenArtwork = false })
+        }
+    }
     val artists = currentLocation?.albumArtist.orEmpty().ifBlank {
         tracks.map { it.creator }.filter { it.isNotBlank() }.distinct().take(2).joinToString(" · ")
     }
@@ -1564,6 +1593,16 @@ private fun AlbumDetailScreen(
                         }
                         ArtworkTile(
                             entry = entry,
+                            modifier = Modifier.pointerInput(entry.artworkUri) {
+                                detectTapGestures(onDoubleTap = {
+                                    if (!entry.artworkUri.isNullOrBlank()) showFullScreenArtwork = true
+                                })
+                            }.semantics {
+                                onClick(label = openArtworkLabel) {
+                                    showFullScreenArtwork = !entry.artworkUri.isNullOrBlank()
+                                    showFullScreenArtwork
+                                }
+                            },
                             size = artworkSize,
                             imageIdentity = pageKey,
                             requestSizePx = artworkSizePx,
@@ -2050,19 +2089,13 @@ private fun QueueScreen(
     bottomContentPadding: Dp,
 ) {
     if (state.queue.isEmpty()) {
-        Column(
-            modifier = Modifier.fillMaxSize().padding(20.dp, 24.dp, 20.dp, bottomContentPadding),
-        ) {
-            Column {
-                Text(stringResource(R.string.queue_up_next), style = MaterialTheme.typography.headlineLarge)
+        CenteredStatusLayout(
+            title = stringResource(R.string.queue_up_next),
+            supportingContent = {
                 Text(pluralStringResource(R.plurals.queue_summary, 0, 0), color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            Box(
-                modifier = Modifier.fillMaxWidth().weight(1f),
-                contentAlignment = Alignment.Center,
-            ) {
-                EmptyPanel(Icons.AutoMirrored.Rounded.PlaylistPlay, stringResource(R.string.queue_empty))
-            }
+            },
+        ) {
+            EmptyPanel(Icons.AutoMirrored.Rounded.PlaylistPlay, stringResource(R.string.queue_empty))
         }
         return
     }
@@ -2252,21 +2285,11 @@ internal fun NowPlayingScreen(
 ) {
     val track = state.currentTrack
     if (track == null) {
-        Column(
-            modifier = modifier.fillMaxSize().padding(24.dp, 28.dp, 24.dp, 40.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
+        CenteredStatusLayout(
+            title = stringResource(R.string.nav_now_playing),
+            modifier = modifier,
         ) {
-            Text(
-                stringResource(R.string.nav_now_playing),
-                modifier = Modifier.fillMaxWidth(),
-                style = MaterialTheme.typography.headlineLarge,
-            )
-            Box(
-                modifier = Modifier.fillMaxWidth().weight(1f),
-                contentAlignment = Alignment.Center,
-            ) {
-                EmptyPanel(Icons.Rounded.Album, stringResource(R.string.no_current_track))
-            }
+            EmptyPanel(Icons.Rounded.Album, stringResource(R.string.no_current_track))
         }
         return
     }
@@ -2784,6 +2807,31 @@ private fun LoadingPanel(message: String) {
     }
 }
 
+// The status center depends only on the large title and the Scaffold's navigation inset.
+// Search, breadcrumbs and queue counts remain independent of this shared coordinate space.
+@Composable
+internal fun CenteredStatusLayout(
+    title: String,
+    modifier: Modifier = Modifier,
+    showTitle: Boolean = true,
+    supportingContent: @Composable () -> Unit = {},
+    content: @Composable () -> Unit,
+) {
+    Column(modifier.fillMaxSize().padding(start = 20.dp, top = 24.dp, end = 20.dp)) {
+        // Font fallback can give Chinese and Latin titles different measured heights.
+        // A shared scalable title slot keeps those metrics out of the status position.
+        Box(Modifier.fillMaxWidth().height(with(LocalDensity.current) {
+            MaterialTheme.typography.headlineLarge.lineHeight.toDp() + 8.dp
+        })) {
+            if (showTitle) Text(title, style = MaterialTheme.typography.headlineLarge)
+        }
+        Box(Modifier.fillMaxWidth().weight(1f)) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { content() }
+            supportingContent()
+        }
+    }
+}
+
 @Composable
 private fun EmptyPanel(
     icon: ImageVector,
@@ -2798,7 +2846,7 @@ private fun EmptyPanel(
     ) {
         val cardSize = minOf(maxWidth, maxHeight, LargeSquareContentMaxSize)
         Surface(
-            modifier = Modifier.size(cardSize),
+            modifier = Modifier.size(cardSize).testTag("empty-status-card"),
             shape = RoundedCornerShape(34.dp),
             color = MaterialTheme.colorScheme.surfaceContainer,
         ) {
