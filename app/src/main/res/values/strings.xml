@@ -320,4 +320,6 @@
     <string name="sleep_timer_stopped_fallback">The player rejected Pause, so playback was stopped. The queue is kept; this song will restart from the beginning.</string>
     <string name="sleep_timer_device_timeout">The player did not confirm the command.</string>
     <string name="sleep_timer_failed">Sleep timer could not confirm playback was paused: %1$s</string>
+    <string name="open_full_screen_artwork">View full-screen artwork</string>
+    <string name="close_full_screen_artwork">Close artwork</string>
 </resources>

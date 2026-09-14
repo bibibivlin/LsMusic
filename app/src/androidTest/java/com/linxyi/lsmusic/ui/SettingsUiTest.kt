@@ -1,5 +1,6 @@
 package com.linxyi.lsmusic.ui
 
+import androidx.activity.findViewTreeOnBackPressedDispatcherOwner
 import android.graphics.Bitmap
 import android.content.res.Configuration
 import androidx.compose.material3.SnackbarHostState
@@ -13,6 +14,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.Density
+import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.test.platform.app.InstrumentationRegistry
@@ -37,6 +39,76 @@ class SettingsUiTest {
     private var libraryPlayClicks = 0
     private var timerRequest: SleepTimerRequest? = null
     private var resourceContext = InstrumentationRegistry.getInstrumentation().targetContext
+
+    @Test
+    fun albumDoubleTapOpensImmersiveArtworkAndTapClosesIt() {
+        val fixture = File(resourceContext.cacheDir, "fullscreen-artwork-test.png")
+        val bitmap = Bitmap.createBitmap(80, 40, Bitmap.Config.ARGB_8888)
+        bitmap.eraseColor(android.graphics.Color.BLUE)
+        fixture.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        bitmap.recycle()
+        val pageKey = BrowsePageKey("offline", "album")
+        state = state.copy(
+            destination = AppDestination.LIBRARY,
+            path = listOf(BrowseLocation("0"), BrowseLocation(
+                "album", "Offline album", artworkUri = fixture.toURI().toString(),
+                pageKind = LibraryPageKind.ALBUM,
+            )),
+            browsePageKey = pageKey,
+            browseLoadStatus = BrowseLoadStatus.LOADED,
+            entries = listOf(track()),
+        )
+        render()
+        val opener = hasClickLabel(text(R.string.open_full_screen_artwork))
+        compose.onNode(opener).performTouchInput { doubleClick() }
+        val closer = hasClickLabel(text(R.string.close_full_screen_artwork))
+        compose.onNode(closer).assertIsDisplayed()
+        compose.runOnIdle {
+            val windows = android.view.inspector.WindowInspector.getGlobalWindowViews()
+            val dialog = windows.last()
+            val insets = requireNotNull(dialog.rootWindowInsets)
+            assertFalse(insets.isVisible(android.view.WindowInsets.Type.statusBars()))
+            assertFalse(insets.isVisible(android.view.WindowInsets.Type.navigationBars()))
+        }
+        val dispatcher = compose.runOnIdle {
+            requireNotNull(android.view.inspector.WindowInspector.getGlobalWindowViews().last()
+                .findViewTreeOnBackPressedDispatcherOwner()).onBackPressedDispatcher
+        }
+        compose.runOnIdle {
+            dispatcher.dispatchOnBackStarted(androidx.activity.BackEventCompat(0f, 200f, 0f, 0))
+            dispatcher.dispatchOnBackProgressed(androidx.activity.BackEventCompat(100f, 200f, .6f, 0))
+        }
+        compose.waitForIdle()
+        compose.runOnIdle { dispatcher.dispatchOnBackCancelled() }
+        compose.onNode(closer).assertIsDisplayed()
+        compose.runOnIdle { dispatcher.onBackPressed() }
+        compose.onNode(closer).assertDoesNotExist()
+        compose.onNode(opener).performTouchInput { doubleClick() }
+        compose.onNode(closer).performClick()
+        compose.onNode(closer).assertDoesNotExist()
+        compose.onNode(opener).assertIsDisplayed()
+        fixture.delete()
+    }
+
+    private fun hasClickLabel(label: String) = SemanticsMatcher("click label $label") {
+        it.config.getOrNull(androidx.compose.ui.semantics.SemanticsActions.OnClick)?.label == label
+    }
+
+    @Test
+    fun emptyCardsKeepTheSameBoundsAcrossMainDestinations() {
+        state = state.copy(destination = AppDestination.LIBRARY)
+        render(locale = Locale.SIMPLIFIED_CHINESE)
+        val expected = compose.onNodeWithTag("empty-status-card").fetchSemanticsNode().boundsInRoot
+        screenshot("empty-library")
+        listOf(AppDestination.QUEUE, AppDestination.NOW_PLAYING).forEach { destination ->
+            compose.runOnIdle { state = state.copy(destination = destination) }
+            val actual = compose.onNodeWithTag("empty-status-card").fetchSemanticsNode().boundsInRoot
+            assertEquals(expected.top, actual.top, 1f)
+            assertEquals(expected.bottom, actual.bottom, 1f)
+            assertEquals(expected.left, actual.left, 1f)
+            screenshot("empty-${destination.name.lowercase()}")
+        }
+    }
 
     @Test
     fun homeKeepsDevicesAndOrdersCategoriesBeforeIndependentExit() {
@@ -109,6 +181,7 @@ class SettingsUiTest {
         compose.onNodeWithText(text(R.string.app_name)).assertIsDisplayed()
         compose.onNodeWithText(text(R.string.mit_license)).assertIsDisplayed()
         compose.onNodeWithText(text(R.string.settings_devices_title)).assertDoesNotExist()
+        compose.onNodeWithText(text(R.string.open_in_browser)).assertDoesNotExist()
         screenshot("settings-about")
         compose.onNodeWithTag("settings-list").performScrollToNode(hasTestTag("settings-link-third-party-notices"))
         compose.onNodeWithTag("settings-link-third-party-notices").assertIsDisplayed()

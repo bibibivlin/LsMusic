@@ -75,8 +75,7 @@ import androidx.compose.material.icons.automirrored.rounded.ExitToApp
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material.icons.rounded.Palette
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.core.graphics.drawable.toBitmap
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalResources
@@ -845,13 +844,13 @@ private fun LazyListScope.settingsCategoryItems(onNavigate: (AppDestination) -> 
 @Composable
 private fun SettingsLink(
     @androidx.annotation.StringRes titleRes: Int,
-    @androidx.annotation.StringRes descriptionRes: Int,
+    @androidx.annotation.StringRes descriptionRes: Int?,
     testKey: String,
     icon: ImageVector,
     onClick: () -> Unit,
 ) {
     val title = stringResource(titleRes)
-    val description = stringResource(descriptionRes)
+    val description = descriptionRes?.let { stringResource(it) }
     Surface(
         onClick = onClick,
         modifier = Modifier.fillMaxWidth().testTag("settings-link-$testKey"),
@@ -863,7 +862,9 @@ private fun SettingsLink(
             Spacer(Modifier.width(16.dp))
             Column(Modifier.weight(1f)) {
                 Text(title, style = MaterialTheme.typography.titleMedium)
-                Text(description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (description != null) {
+                    Text(description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
             Spacer(Modifier.width(8.dp))
             Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, null)
@@ -875,9 +876,14 @@ private fun LazyListScope.aboutSettingsItems() {
     item(key = "app", contentType = "about") {
         val context = LocalContext.current
         val packageInfo = remember(context) { context.packageManager.getPackageInfo(context.packageName, 0) }
-        val icon = remember(context) { context.packageManager.getApplicationIcon(context.packageName).toBitmap().asImageBitmap() }
         SettingCard(stringResource(R.string.app_name), stringResource(R.string.version_info, packageInfo.versionName.orEmpty(), packageInfo.longVersionCode)) {
-            Image(icon, stringResource(R.string.app_icon), Modifier.size(72.dp))
+            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                Image(
+                    painter = painterResource(R.drawable.ic_launcher_foreground),
+                    contentDescription = stringResource(R.string.app_icon),
+                    modifier = Modifier.size(108.dp),
+                )
+            }
             Spacer(Modifier.height(16.dp))
             Text(stringResource(R.string.about_description))
             Spacer(Modifier.height(12.dp))
@@ -896,7 +902,7 @@ private fun LazyListScope.aboutSettingsItems() {
         item(key = label, contentType = "link") {
             val context = LocalContext.current
             val noBrowserAvailable = stringResource(R.string.no_browser_available)
-            SettingsLink(label, R.string.open_in_browser, testKey, Icons.Rounded.Info) {
+            SettingsLink(label, null, testKey, aboutLinkIcon(testKey)) {
                 try {
                     context.startActivity(Intent(Intent.ACTION_VIEW, "https://github.com/bibibivlin/LsMusic$path".toUri()))
                 } catch (_: android.content.ActivityNotFoundException) {

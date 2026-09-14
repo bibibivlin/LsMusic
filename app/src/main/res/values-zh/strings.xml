@@ -311,4 +311,6 @@
     <string name="sleep_timer_stopped_fallback">播放器拒绝暂停，已改为停止。队列已保留，再次播放将从当前歌曲开头开始。</string>
     <string name="sleep_timer_device_timeout">播放器未确认执行结果。</string>
     <string name="sleep_timer_failed">睡眠定时器无法确认播放已暂停：%1$s</string>
+    <string name="open_full_screen_artwork">全屏查看专辑封面</string>
+    <string name="close_full_screen_artwork">关闭封面</string>
 </resources>
