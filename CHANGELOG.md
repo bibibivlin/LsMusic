@@ -17,6 +17,18 @@
 - 统一本机 Media3 与远程 DLNA 播放的队列、播放顺序和退出行为。
 - 增加更完整的界面、播放、主题、本地化和退出流程测试覆盖。
 
+## [1.2.0] - 2026-10-07
+
+### Added
+
+- 专辑详情页支持双击封面进入沉浸式全屏查看，并可通过点击或返回手势关闭。
+- 支持预测性返回手势动画。
+
+### Changed
+
+- 统一媒体库、播放列表和正在播放空状态卡片的位置，减少页面切换时的位移。
+- 关于页面使用各自对应的项目链接图标，移除重复的浏览器打开说明，并将应用图标透明显示且居中。
+
 ## [1.0.0] - 2026-09-03
 
 ### Added
@@ -32,3 +44,4 @@
 
 [1.0.0]: https://github.com/bibibivlin/LsMusic/releases/tag/v1.0.0
 [1.1.0]: https://github.com/bibibivlin/LsMusic/releases/tag/v1.1.0
+[1.2.0]: https://github.com/bibibivlin/LsMusic/releases/tag/v1.2.0
