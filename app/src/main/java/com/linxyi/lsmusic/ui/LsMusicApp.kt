@@ -60,6 +60,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowLeft
@@ -150,6 +151,7 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.focus.FocusRequester
@@ -259,6 +261,15 @@ internal val ReorderVisualPadding = 8.dp
 private const val ReorderPlacementAnimationDurationMillis = 110
 private const val QueuePostDragClickSuppressionMs = 450L
 private const val ALBUM_DETAIL_HEADER_COUNT = 1
+private val AlbumDetailTwoPaneMinWidth = 840.dp
+private const val ALBUM_DETAIL_TWO_PANE_MIN_ASPECT_RATIO = 1.2f
+private val AlbumDetailFloatingActionSize = 64.dp
+private val AlbumDetailSecondaryActionSize = 56.dp
+private val AlbumDetailFloatingActionSpacing = 12.dp
+private val AlbumDetailFloatingActionEndMargin = 20.dp
+private val AlbumDetailFloatingActionGap = 16.dp
+private val AlbumDetailFloatingActionHeight =
+    AlbumDetailFloatingActionSize + AlbumDetailSecondaryActionSize * 2 + AlbumDetailFloatingActionSpacing * 2
 private const val ALBUM_ART_PREFETCH_SCREENS = 2
 private const val MAX_ACTIVE_ART_PREFETCHES = 4
 private const val ALBUM_ART_PREFETCH_RESUME_DELAY_MS = 150L
@@ -1491,8 +1502,9 @@ private fun AlbumSort.explanation(): String? = when (this) {
 }
 
 @Composable
-private fun AlbumDetailScreen(
+internal fun AlbumDetailScreen(
     state: LibraryUiState,
+    modifier: Modifier = Modifier,
     pageKey: BrowsePageKey,
     initialViewState: BrowseViewState,
     onSaveBrowseViewState: (BrowsePageKey, BrowseViewState) -> Unit,
@@ -1529,7 +1541,6 @@ private fun AlbumDetailScreen(
         isContainer = true,
         isAlbum = true,
     )
-    val openArtworkLabel = stringResource(R.string.open_full_screen_artwork)
     var showFullScreenArtwork by rememberSaveable(pageKey) { mutableStateOf(false) }
     if (showFullScreenArtwork) {
         headerArtworkEntry?.artworkUri?.let { uri ->
@@ -1565,129 +1576,265 @@ private fun AlbumDetailScreen(
         }
     }
 
-    LazyColumn(
-        state = listState,
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(
-            start = 20.dp,
-            top = 24.dp,
-            end = 20.dp,
-            bottom = bottomContentPadding,
-        ),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
-    ) {
-        item {
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalAlignment = Alignment.CenterHorizontally,
+    val albumSummary: @Composable () -> Unit = {
+        AlbumDetailSummary(
+            entry = headerArtworkEntry,
+            pageKey = pageKey,
+            title = title,
+            artists = artists,
+            trackCount = trackCount,
+            entries = state.entries,
+            browseLoadStatus = state.browseLoadStatus,
+            placeholderArtworkUri = currentLocation?.let { location ->
+                selectThumbnailArtworkUri(location.artworkCandidates, location.artworkUri)
+            } ?: representativeTrack?.thumbnailArtworkUri,
+            onResolveAlbumArtwork = onResolveAlbumArtwork,
+            onOpenArtwork = { showFullScreenArtwork = true },
+        )
+    }
+
+    BoxWithConstraints(modifier.fillMaxSize()) {
+        // Measure the actual content area after navigation and system insets.
+        val twoPane = maxWidth >= AlbumDetailTwoPaneMinWidth &&
+            maxWidth >= maxHeight * ALBUM_DETAIL_TWO_PANE_MIN_ASPECT_RATIO
+        Row(Modifier.fillMaxSize()) {
+            if (twoPane) {
+                Column(
+                    modifier = Modifier
+                        .weight(0.4f)
+                        .fillMaxHeight()
+                        .padding(start = 20.dp, top = 24.dp, end = 12.dp, bottom = bottomContentPadding)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.Center,
+                ) {
+                    albumSummary()
+                }
+            }
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.weight(if (twoPane) 0.6f else 1f).fillMaxHeight()
+                    .testTag("album-detail-tracks"),
+                contentPadding = PaddingValues(
+                    start = if (twoPane) 12.dp else 20.dp,
+                    top = 24.dp,
+                    end = 20.dp,
+                    // The last row can move completely above the floating actions.
+                    bottom = bottomContentPadding + if (twoPane) {
+                        AlbumDetailFloatingActionHeight + AlbumDetailFloatingActionGap
+                    } else {
+                        0.dp
+                    },
+                ),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
-                headerArtworkEntry?.let { entry ->
-                    BoxWithConstraints(
-                        modifier = Modifier.fillMaxWidth(),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        val artworkSize = minOf(maxWidth, maxHeight, LargeSquareContentMaxSize)
-                        val artworkSizePx = with(LocalDensity.current) { artworkSize.roundToPx() }
-                        LaunchedEffect(pageKey, artworkSizePx, state.entries, state.browseLoadStatus) {
-                            if (state.browseLoadStatus == BrowseLoadStatus.LOADED) {
-                                onResolveAlbumArtwork(pageKey, artworkSizePx)
-                            }
+                // Keep one header in both layouts so saved track indices remain valid.
+                item(key = "album-detail-header", contentType = "header") {
+                    if (!twoPane) {
+                        Column {
+                            albumSummary()
+                            Spacer(Modifier.height(14.dp))
+                            AlbumPlaybackActions(
+                                tracks = tracks,
+                                enabled = !state.isBrowsing && trackCount > 0,
+                                onPlayAll = onPlayAll,
+                                onShufflePlay = onShufflePlay,
+                                onQueueAll = onQueueAll,
+                            )
                         }
-                        ArtworkTile(
-                            entry = entry,
-                            modifier = Modifier.pointerInput(entry.artworkUri) {
-                                detectTapGestures(onDoubleTap = {
-                                    if (!entry.artworkUri.isNullOrBlank()) showFullScreenArtwork = true
-                                })
-                            }.semantics {
-                                onClick(label = openArtworkLabel) {
-                                    showFullScreenArtwork = !entry.artworkUri.isNullOrBlank()
-                                    showFullScreenArtwork
-                                }
-                            },
-                            size = artworkSize,
-                            imageIdentity = pageKey,
-                            requestSizePx = artworkSizePx,
-                            useCachedAlbumThumbnailAsPlaceholder = true,
-                            preferThumbnailSource = false,
-                            placeholderArtworkUri = currentLocation?.let { location ->
-                                selectThumbnailArtworkUri(location.artworkCandidates, location.artworkUri)
-                            } ?: representativeTrack?.thumbnailArtworkUri,
-                            filterQuality = FilterQuality.High,
+                    }
+                }
+                if (!state.isBrowsing && trackCount == 0) {
+                    item(key = "album-detail-empty", contentType = "empty") {
+                        EmptyPanel(
+                            icon = Icons.Rounded.MusicNote,
+                            title = stringResource(R.string.album_no_playable_tracks_title),
+                            body = stringResource(R.string.album_no_playable_tracks_body),
                         )
                     }
                 }
-                Spacer(Modifier.height(16.dp))
-                Text(title, style = MaterialTheme.typography.headlineSmall, textAlign = TextAlign.Center)
-                if (artists.isNotBlank()) {
-                    Spacer(Modifier.height(6.dp))
-                    Text(artists, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
-                }
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    if (state.isBrowsing) stringResource(R.string.loading_music_content)
-                    else pluralStringResource(R.plurals.track_count, trackCount, trackCount),
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.height(14.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    FilledTonalButton(
-                        onClick = { onPlayAll(tracks) },
-                        enabled = !state.isBrowsing && trackCount > 0,
-                        modifier = Modifier.weight(1f),
-                        contentPadding = PaddingValues(horizontal = 6.dp),
-                    ) {
-                        Icon(Icons.Rounded.PlayArrow, null)
-                        Spacer(Modifier.width(4.dp))
-                        Text(stringResource(R.string.play_all))
-                    }
-                    OutlinedButton(
-                        onClick = { onShufflePlay(tracks) },
-                        enabled = !state.isBrowsing && trackCount > 0,
-                        modifier = Modifier.weight(1f),
-                        contentPadding = PaddingValues(horizontal = 6.dp),
-                    ) {
-                        Icon(Icons.Rounded.Shuffle, null)
-                        Spacer(Modifier.width(4.dp))
-                        Text(stringResource(R.string.shuffle_play))
-                    }
-                    OutlinedButton(
-                        onClick = { onQueueAll(tracks) },
-                        enabled = !state.isBrowsing && trackCount > 0,
-                        modifier = Modifier.weight(1f),
-                        contentPadding = PaddingValues(horizontal = 6.dp),
-                    ) {
-                        Icon(Icons.Rounded.Add, null)
-                        Spacer(Modifier.width(4.dp))
-                        Text(stringResource(R.string.add_to_queue))
-                    }
+                itemsIndexed(
+                    items = tracks,
+                    key = { _, item -> mediaEntryKey(item) },
+                    contentType = { _, _ -> "track" },
+                ) { index, track ->
+                    TrackCollectionRow(
+                        track = track,
+                        number = index + 1,
+                        isPlaying = state.currentTrackId == track.id && state.playbackState == RemotePlaybackState.PLAYING,
+                        onPlay = { onPlay(track) },
+                        onQueue = { onQueue(track) },
+                    )
                 }
             }
         }
-        if (!state.isBrowsing && trackCount == 0) {
-            item {
-                EmptyPanel(
-                    icon = Icons.Rounded.MusicNote,
-                    title = stringResource(R.string.album_no_playable_tracks_title),
-                    body = stringResource(R.string.album_no_playable_tracks_body),
+        if (twoPane) {
+            AlbumFloatingPlaybackActions(
+                tracks = tracks,
+                enabled = !state.isBrowsing && trackCount > 0,
+                onPlayAll = onPlayAll,
+                onShufflePlay = onShufflePlay,
+                onQueueAll = onQueueAll,
+                modifier = Modifier.align(Alignment.BottomEnd)
+                    .padding(end = AlbumDetailFloatingActionEndMargin, bottom = bottomContentPadding),
+            )
+        }
+    }
+}
+
+@Composable
+private fun AlbumDetailSummary(
+    entry: MediaEntry?,
+    pageKey: BrowsePageKey,
+    title: String,
+    artists: String,
+    trackCount: Int,
+    entries: List<MediaEntry>,
+    browseLoadStatus: BrowseLoadStatus,
+    placeholderArtworkUri: String?,
+    onResolveAlbumArtwork: (BrowsePageKey, Int) -> Unit,
+    onOpenArtwork: () -> Unit,
+) {
+    val openArtworkLabel = stringResource(R.string.open_full_screen_artwork)
+    Column(
+        modifier = Modifier.fillMaxWidth().testTag("album-detail-summary"),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        entry?.let {
+            BoxWithConstraints(
+                modifier = Modifier.fillMaxWidth(),
+                contentAlignment = Alignment.Center,
+            ) {
+                val artworkSize = minOf(maxWidth, maxHeight, LargeSquareContentMaxSize)
+                val artworkSizePx = with(LocalDensity.current) { artworkSize.roundToPx() }
+                LaunchedEffect(pageKey, artworkSizePx, entries, browseLoadStatus) {
+                    if (browseLoadStatus == BrowseLoadStatus.LOADED) {
+                        onResolveAlbumArtwork(pageKey, artworkSizePx)
+                    }
+                }
+                ArtworkTile(
+                    entry = entry,
+                    modifier = Modifier.pointerInput(entry.artworkUri) {
+                        detectTapGestures(onDoubleTap = {
+                            if (!entry.artworkUri.isNullOrBlank()) onOpenArtwork()
+                        })
+                    }.semantics {
+                        onClick(label = openArtworkLabel) {
+                            if (!entry.artworkUri.isNullOrBlank()) {
+                                onOpenArtwork()
+                                true
+                            } else {
+                                false
+                            }
+                        }
+                    },
+                    size = artworkSize,
+                    imageIdentity = pageKey,
+                    requestSizePx = artworkSizePx,
+                    useCachedAlbumThumbnailAsPlaceholder = true,
+                    preferThumbnailSource = false,
+                    placeholderArtworkUri = placeholderArtworkUri,
+                    filterQuality = FilterQuality.High,
                 )
             }
         }
-        itemsIndexed(
-            items = tracks,
-            key = { _, item -> mediaEntryKey(item) },
-        ) { index, track ->
-                TrackCollectionRow(
-                    track = track,
-                    number = index + 1,
-                    isPlaying = state.currentTrackId == track.id && state.playbackState == RemotePlaybackState.PLAYING,
-                    onPlay = { onPlay(track) },
-                    onQueue = { onQueue(track) },
-                )
+        Spacer(Modifier.height(16.dp))
+        Text(title, style = MaterialTheme.typography.headlineSmall, textAlign = TextAlign.Center)
+        if (artists.isNotBlank()) {
+            Spacer(Modifier.height(6.dp))
+            Text(artists, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            if (browseLoadStatus == BrowseLoadStatus.LOADING) stringResource(R.string.loading_music_content)
+            else pluralStringResource(R.plurals.track_count, trackCount, trackCount),
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun AlbumPlaybackActions(
+    tracks: List<MediaEntry>,
+    enabled: Boolean,
+    onPlayAll: (List<MediaEntry>) -> Unit,
+    onShufflePlay: (List<MediaEntry>) -> Unit,
+    onQueueAll: (List<MediaEntry>) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().testTag("album-detail-actions"),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        FilledTonalButton(
+            onClick = { onPlayAll(tracks) },
+            enabled = enabled,
+            modifier = Modifier.weight(1f),
+            contentPadding = PaddingValues(horizontal = 6.dp),
+        ) {
+            Icon(Icons.Rounded.PlayArrow, null)
+            Spacer(Modifier.width(4.dp))
+            Text(stringResource(R.string.play_all))
+        }
+        OutlinedButton(
+            onClick = { onShufflePlay(tracks) },
+            enabled = enabled,
+            modifier = Modifier.weight(1f),
+            contentPadding = PaddingValues(horizontal = 6.dp),
+        ) {
+            Icon(Icons.Rounded.Shuffle, null)
+            Spacer(Modifier.width(4.dp))
+            Text(stringResource(R.string.shuffle_play))
+        }
+        OutlinedButton(
+            onClick = { onQueueAll(tracks) },
+            enabled = enabled,
+            modifier = Modifier.weight(1f),
+            contentPadding = PaddingValues(horizontal = 6.dp),
+        ) {
+            Icon(Icons.Rounded.Add, null)
+            Spacer(Modifier.width(4.dp))
+            Text(stringResource(R.string.add_to_queue))
+        }
+    }
+}
+
+@Composable
+private fun AlbumFloatingPlaybackActions(
+    tracks: List<MediaEntry>,
+    enabled: Boolean,
+    onPlayAll: (List<MediaEntry>) -> Unit,
+    onShufflePlay: (List<MediaEntry>) -> Unit,
+    onQueueAll: (List<MediaEntry>) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier.testTag("album-detail-floating-actions"),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(AlbumDetailFloatingActionSpacing),
+    ) {
+        FilledTonalIconButton(
+            onClick = { onShufflePlay(tracks) },
+            enabled = enabled,
+            modifier = Modifier.size(AlbumDetailSecondaryActionSize)
+                .shadow(if (enabled) 6.dp else 0.dp, CircleShape).testTag("album-action-shuffle"),
+        ) {
+            Icon(Icons.Rounded.Shuffle, stringResource(R.string.shuffle_play))
+        }
+        FilledTonalIconButton(
+            onClick = { onQueueAll(tracks) },
+            enabled = enabled,
+            modifier = Modifier.size(AlbumDetailSecondaryActionSize)
+                .shadow(if (enabled) 6.dp else 0.dp, CircleShape).testTag("album-action-queue-all"),
+        ) {
+            Icon(Icons.Rounded.Add, stringResource(R.string.add_to_queue))
+        }
+        FilledIconButton(
+            onClick = { onPlayAll(tracks) },
+            enabled = enabled,
+            modifier = Modifier.size(AlbumDetailFloatingActionSize).shadow(if (enabled) 6.dp else 0.dp, CircleShape)
+                .testTag("album-action-play-all"),
+        ) {
+            Icon(Icons.Rounded.PlayArrow, stringResource(R.string.play_all), Modifier.size(28.dp))
         }
     }
 }
@@ -2782,12 +2929,12 @@ private fun HeroArtwork(track: MediaEntry, size: androidx.compose.ui.unit.Dp) {
 }
 
 @Composable
-private fun AppIcon(size: Dp) {
+internal fun AppIcon(size: Dp) {
     AndroidView(
         factory = { context ->
             ImageView(context).apply { setImageResource(R.mipmap.ic_launcher) }
         },
-        modifier = Modifier.size(size),
+        modifier = Modifier.size(size).clip(RoundedCornerShape(percent = 28)),
     )
 }
 
