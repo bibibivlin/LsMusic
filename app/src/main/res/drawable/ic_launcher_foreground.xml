@@ -4,24 +4,31 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- Every segment shares one center and radius, keeping the groove circular. -->
-    <path
-        android:fillColor="@android:color/transparent"
-        android:pathData="M78.62,47.62 A26,26 0,0 1,80 56 A26,26 0,0 1,54 82 A26,26 0,0 1,28 56 A26,26 0,0 1,45.97 31.28"
-        android:strokeColor="@color/launcher_icon_foreground"
-        android:strokeLineCap="round"
-        android:strokeLineJoin="round"
-        android:strokeWidth="7.2" />
-    <!-- The note head doubles as the record label. -->
-    <path
-        android:fillColor="@color/launcher_icon_foreground"
-        android:pathData="M63.5,56 A9.5,9.5 0,1 1,44.5 56 A9.5,9.5 0,1 1,63.5 56 Z" />
-    <!-- The flag is an arc sharing the groove's center, radius, and stroke width. -->
-    <path
-        android:fillColor="@android:color/transparent"
-        android:pathData="M59.9,56 L59.9,30.68 A26,26 0,0 1,70.71 36.08"
-        android:strokeColor="@color/launcher_icon_foreground"
-        android:strokeLineCap="round"
-        android:strokeLineJoin="round"
-        android:strokeWidth="7.2" />
+    <!-- Leave breathing room inside the adaptive icon's visible area. -->
+    <group
+        android:pivotX="54"
+        android:pivotY="54"
+        android:scaleX="0.8"
+        android:scaleY="0.8">
+        <!-- Every segment shares one center and radius, keeping the groove circular. -->
+        <path
+            android:fillColor="@android:color/transparent"
+            android:pathData="M78.62,47.62 A26,26 0,0 1,80 56 A26,26 0,0 1,54 82 A26,26 0,0 1,28 56 A26,26 0,0 1,45.97 31.28"
+            android:strokeColor="@color/launcher_icon_foreground"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round"
+            android:strokeWidth="7.2" />
+        <!-- The note head doubles as the record label. -->
+        <path
+            android:fillColor="@color/launcher_icon_foreground"
+            android:pathData="M63.5,56 A9.5,9.5 0,1 1,44.5 56 A9.5,9.5 0,1 1,63.5 56 Z" />
+        <!-- The flag is an arc sharing the groove's center, radius, and stroke width. -->
+        <path
+            android:fillColor="@android:color/transparent"
+            android:pathData="M59.9,56 L59.9,30.68 A26,26 0,0 1,70.71 36.08"
+            android:strokeColor="@color/launcher_icon_foreground"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round"
+            android:strokeWidth="7.2" />
+    </group>
 </vector>

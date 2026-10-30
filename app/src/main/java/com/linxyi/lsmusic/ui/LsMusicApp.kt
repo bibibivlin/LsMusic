@@ -3,6 +3,7 @@
 package com.linxyi.lsmusic.ui
 
 import android.os.SystemClock
+import android.widget.ImageView
 import androidx.activity.compose.PredictiveBackHandler
 import androidx.activity.BackEventCompat
 import androidx.compose.animation.AnimatedContent
@@ -189,6 +190,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.zIndex
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -799,7 +801,7 @@ private fun AppNavigationRail(selected: AppDestination, onDestination: (AppDesti
     val selectedNavigationDestination = selected.navigationDestination
     NavigationRail(Modifier.fillMaxHeight().width(132.dp)) {
         Spacer(Modifier.height(24.dp))
-        AlbumMark(54.dp)
+        AppIcon(54.dp)
         Spacer(Modifier.height(28.dp))
         destinations.forEach { item ->
             NavigationRailItem(
@@ -2780,16 +2782,13 @@ private fun HeroArtwork(track: MediaEntry, size: androidx.compose.ui.unit.Dp) {
 }
 
 @Composable
-private fun AlbumMark(size: androidx.compose.ui.unit.Dp) {
-    Surface(
+private fun AppIcon(size: Dp) {
+    AndroidView(
+        factory = { context ->
+            ImageView(context).apply { setImageResource(R.mipmap.ic_launcher) }
+        },
         modifier = Modifier.size(size),
-        shape = RoundedCornerShape(size * .34f),
-        color = MaterialTheme.colorScheme.primaryContainer,
-    ) {
-        Box(contentAlignment = Alignment.Center) {
-            Icon(Icons.Rounded.MusicNote, null, tint = MaterialTheme.colorScheme.onPrimaryContainer)
-        }
-    }
+    )
 }
 
 @Composable
