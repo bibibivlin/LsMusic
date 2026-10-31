@@ -31,6 +31,9 @@ import com.linxyi.lsmusic.backup.BackupSession
 import com.linxyi.lsmusic.backup.BackupTokenValidation
 import com.linxyi.lsmusic.backup.validateBackupToken
 import com.linxyi.lsmusic.backup.nonEmptyBackupSecrets
+import com.linxyi.lsmusic.backup.finishPlaybackForImport
+import com.linxyi.lsmusic.backup.tokenChangeNeedsPlaybackStopped as requiresStoppedPlaybackForTokenChange
+import com.linxyi.lsmusic.backup.persistAndIncludeCurrentListens
 import com.linxyi.lsmusic.backup.UnsupportedBackupVersion
 import com.linxyi.lsmusic.R
 import com.linxyi.lsmusic.dlna.DlnaController
@@ -309,6 +312,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     private var listenTrackingJob: Job? = null
     private var localControllerReleased = false
     private val unpersistedListens = linkedMapOf<String, PendingListen>()
+    private val pendingImportListenIds = linkedSetOf<String>()
     private var lastFinishedListen: PendingListen? = null
     private val exitRecordIds = linkedSetOf<String>()
     private var exitRendererId: String? = null
@@ -709,6 +713,10 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         _uiState.update { it.copy(dataBackup = it.dataBackup.copy(phase = DataBackupPhase.IMPORTING, message = null)) }
         viewModelScope.launch {
             val token = preferenceStore.tokenFromBackup(data.secrets).takeIf { includeSecrets }
+            if (tokenChangeNeedsPlaybackStopped(token)) {
+                showImportTokenPlaybackWarning()
+                return@launch
+            }
             val validation = validateBackupToken(token) { listenBrainzClient.validateToken(it).valid }
             if (validation != BackupTokenValidation.VALID) {
                 val message = when (validation) {
@@ -720,6 +728,10 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
                 )) }
                 return@launch
             }
+            if (tokenChangeNeedsPlaybackStopped(token)) {
+                showImportTokenPlaybackWarning()
+                return@launch
+            }
             val previousSession = _uiState.value.backupSession()
             restoringData = true
             pendingListenRepository.suspendUploadsForImport()
@@ -729,13 +741,18 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
                 listenBrainzTokenValidationJob?.cancelAndJoin()
                 pendingListenUploadJob?.cancelAndJoin()
                 listenTrackingJob?.cancelAndJoin()
+                // An interrupted persistence attempt can finish while the jobs are being cancelled.
+                if (tokenChangeNeedsPlaybackStopped(token)) {
+                    showImportTokenPlaybackWarning()
+                    return@launch
+                }
                 cancelNowPlayingRequest()
                 nowPlayingRequestJob?.join()
-                ListenBrainzUploadScheduler.cancel(getApplication())
                 playbackCommandGeneration++
                 pendingLocalPlayback = null
                 localPlaybackReadyQueueId = null
                 val before = _uiState.value
+                val stoppedAtElapsedMs = SystemClock.elapsedRealtime()
                 if (before.selectedRendererId != null && before.selectedRendererId != LOCAL_RENDERER_ID &&
                     before.playbackState != RemotePlaybackState.STOPPED
                 ) {
@@ -755,11 +772,22 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
                 cancelLyricsLoadAndReset()
                 cancelAlbumArtworkResolution()
                 libraryBrowseStore.clear()
-                listenBrainzPlaybackTracker.finish(SystemClock.elapsedRealtime(), reportingEnabled = false)
+                finishPlaybackForImport(
+                    tracker = listenBrainzPlaybackTracker,
+                    preferences = before.preferences,
+                    stoppedAtElapsedMs = stoppedAtElapsedMs,
+                    queuedAtEpochSeconds = System.currentTimeMillis() / 1_000L,
+                )?.let { record ->
+                    lastFinishedListen = record
+                    unpersistedListens[record.id] = record
+                }
                 _uiState.update { it.copy(playbackState = RemotePlaybackState.STOPPED) }
                 // Once disk commit begins, complete both persistence and the UI refresh across cancellation.
                 withContext(NonCancellable) {
-                    backupStorage.restore(data, includeSecrets, previousSession)
+                    val completeBackup = data.persistAndIncludeCurrentListens(
+                        pendingListenRepository, unpersistedListens, pendingImportListenIds,
+                    )
+                    backupStorage.restore(completeBackup, includeSecrets, previousSession)
                     applyBackupSession(data.session, R.string.backup_import_success)
                 }
             } catch (error: CancellationException) {
@@ -774,8 +802,29 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    private fun tokenChangeNeedsPlaybackStopped(importedToken: String?): Boolean {
+        val state = _uiState.value
+        return requiresStoppedPlaybackForTokenChange(
+            currentToken = state.preferences.listenBrainzToken,
+            importedToken = importedToken,
+            reportingEnabled = state.preferences.listenBrainzEnabled,
+            playbackOrSessionActive = state.playbackState != RemotePlaybackState.STOPPED ||
+                listenBrainzPlaybackTracker.hasActiveSession,
+            hasUnpersistedListens = unpersistedListens.isNotEmpty() ||
+                pendingListenRepository.records.value.any { it.id in pendingImportListenIds },
+        )
+    }
+
+    private fun showImportTokenPlaybackWarning() {
+        _uiState.update { it.copy(dataBackup = it.dataBackup.copy(
+            phase = DataBackupPhase.PREVIEW,
+            message = UiText.Resource(R.string.backup_import_stop_for_token),
+        )) }
+    }
+
     private fun applyBackupSession(session: BackupSession, message: Int) {
         unpersistedListens.clear()
+        pendingImportListenIds.clear()
         lastFinishedListen = null
         rememberedServer = preferenceStore.lastServer()
         rememberedRenderer = preferenceStore.lastRenderer()?.let { if (it.id == LOCAL_RENDERER_ID) LOCAL_RENDERER else it }
@@ -822,7 +871,11 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         if (preferences.lyricsEnabled) refreshLyricsCacheSize()
         if (preferences.listenBrainzEnabled && preferences.listenBrainzToken.isNotBlank() &&
             pendingListenRepository.records.value.isNotEmpty()
-        ) ListenBrainzUploadScheduler.schedule(getApplication())
+        ) {
+            ListenBrainzUploadScheduler.schedule(getApplication())
+        } else {
+            ListenBrainzUploadScheduler.cancel(getApplication())
+        }
     }
 
     fun retryDataRecovery() {

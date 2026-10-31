@@ -331,7 +331,7 @@
     <string name="backup_choose_location">Choose location</string>
     <string name="backup_import_confirm">Import and replace data?</string>
     <string name="backup_summary">This backup contains %1$d settings, %2$d queued tracks and %3$d pending listens.</string>
-    <string name="backup_replace_warning">Import replaces the current settings, remembered devices, queue and pending listens. Playback and the sleep timer will stop. Imported listens may upload automatically if reporting is enabled and a token is saved. Use this backup only once when transferring pending listens to avoid duplicate uploads from multiple devices.</string>
+    <string name="backup_replace_warning">Import replaces the current settings, remembered devices, queue and pending listens. Playback and the sleep timer will stop; an eligible current listen is preserved. Imported listens may upload automatically if reporting is enabled and a token is saved. Use this backup only once when transferring pending listens to avoid duplicate uploads from multiple devices.</string>
     <string name="backup_keep_token">Other ListenBrainz settings are always imported. If token import is not selected or the backup has no token, the token on this device is kept. A selected token must pass online validation before any data is replaced.</string>
     <string name="backup_replace">Import and replace</string>
     <string name="backup_ok">OK</string>
@@ -345,6 +345,7 @@
     <string name="backup_version_unsupported">This backup format is not supported by this app version. Update the app before importing. Existing data has not been replaced.</string>
     <string name="backup_import_token_invalid">The backup token is invalid. Nothing was replaced. You can uncheck token import and import the other data.</string>
     <string name="backup_import_token_connection">Could not validate the backup token with ListenBrainz. Nothing was replaced. Check your connection and retry, or uncheck token import.</string>
+    <string name="backup_import_stop_for_token">To import a different token, stop playback first and handle any pending listens in Network settings. You can also uncheck token import to keep the current account.</string>
     <string name="backup_import_failed">Import could not finish. Check storage space and confirm the current player is reachable before retrying. Playback may have stopped.</string>
     <string name="backup_picker_unavailable">No system file picker is available on this device.</string>
     <string name="backup_session_save_failed">Unable to save the playback queue. Check device storage space.</string>

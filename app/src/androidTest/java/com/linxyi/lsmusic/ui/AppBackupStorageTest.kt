@@ -10,6 +10,7 @@ import com.linxyi.lsmusic.backup.AppBackupData
 import com.linxyi.lsmusic.backup.AppBackupStorage
 import com.linxyi.lsmusic.backup.AppSessionStore
 import com.linxyi.lsmusic.backup.BackupSession
+import com.linxyi.lsmusic.backup.withPreservedListens
 import com.linxyi.lsmusic.dlna.DlnaDevice
 import com.linxyi.lsmusic.dlna.DlnaDeviceKind
 import com.linxyi.lsmusic.dlna.MediaEntry
@@ -119,6 +120,17 @@ class AppBackupStorageTest {
         preferences.save(AppPreferences(listenBrainzToken = generated))
         storage.restore(backup, true, BackupSession())
         assertTrue(preferences.load().listenBrainzToken == generated)
+    }
+
+    @Test fun import_keepsTheJustFinishedListenAlongsideImportedRecords() = runBlocking {
+        val imported = record.copy(id = "imported", startedAtEpochSeconds = 1_700_000_000)
+        val current = record.copy(id = "finished", startedAtEpochSeconds = 1_700_000_300)
+        val backup = AppBackupData(emptyMap(), null, BackupSession(), listOf(imported))
+        pending.enqueue(current)
+        storage.restore(backup.withPreservedListens(listOf(current)), false, BackupSession())
+        assertEquals(listOf(imported, current), pending.records.value)
+        assertEquals(listOf(imported, current), disk.load())
+        assertEquals(1_700_000_300L, disk.load().last().startedAtEpochSeconds)
     }
 
     @Test fun failedPendingWrite_rollsBackPreferencesAndDoesNotPublishImportedRecords() = runBlocking {
