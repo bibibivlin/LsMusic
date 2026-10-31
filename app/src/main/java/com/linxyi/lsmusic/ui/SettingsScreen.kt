@@ -124,6 +124,8 @@ internal fun SettingsScreen(
     onClearQueueOnPlay: (Boolean) -> Unit = {},
     onStartSleepTimer: (Int, Boolean) -> Unit = { _, _ -> },
     onCancelSleepTimer: () -> Unit = {},
+    onExportData: () -> Unit = {},
+    onImportData: () -> Unit = {},
 ) {
     var listenBrainzTokenDraft by rememberSaveable(preferences.listenBrainzToken) {
         mutableStateOf(preferences.listenBrainzToken)
@@ -475,7 +477,7 @@ internal fun SettingsScreen(
         }
         }
         if (state.destination == AppDestination.SETTINGS_ABOUT) {
-                aboutSettingsItems()
+                aboutSettingsItems(onExportData, onImportData, !state.dataBackup.isBusy)
         }
     }
 }
@@ -872,7 +874,7 @@ private fun SettingsLink(
     }
 }
 
-private fun LazyListScope.aboutSettingsItems() {
+private fun LazyListScope.aboutSettingsItems(onExport: () -> Unit, onImport: () -> Unit, enabled: Boolean) {
     item(key = "app", contentType = "about") {
         val context = LocalContext.current
         val packageInfo = remember(context) { context.packageManager.getPackageInfo(context.packageName, 0) }
@@ -889,6 +891,9 @@ private fun LazyListScope.aboutSettingsItems() {
             Spacer(Modifier.height(12.dp))
             Text(stringResource(R.string.mit_license), style = MaterialTheme.typography.bodySmall)
         }
+    }
+    item(key = "data-transfer", contentType = "data-transfer") {
+        DataBackupButtons(onExport, onImport, enabled)
     }
     val links = listOf(
         Triple(R.string.project_homepage, "project-homepage", ""),

@@ -37,6 +37,8 @@ class SettingsUiTest {
     private var state by mutableStateOf(LsMusicUiState(destination = AppDestination.SETTINGS, isSearching = false))
     private var exits = 0
     private var libraryPlayClicks = 0
+    private var exports = 0
+    private var imports = 0
     private var timerRequest: SleepTimerRequest? = null
     private var resourceContext = InstrumentationRegistry.getInstrumentation().targetContext
 
@@ -182,9 +184,42 @@ class SettingsUiTest {
         compose.onNodeWithText(text(R.string.mit_license)).assertIsDisplayed()
         compose.onNodeWithText(text(R.string.settings_devices_title)).assertDoesNotExist()
         compose.onNodeWithText(text(R.string.open_in_browser)).assertDoesNotExist()
+        compose.onNodeWithTag("export-data").assertIsDisplayed().performClick()
+        compose.onNodeWithTag("import-data").assertIsDisplayed().performClick()
+        compose.runOnIdle { assertEquals(1, exports); assertEquals(1, imports) }
         screenshot("settings-about")
         compose.onNodeWithTag("settings-list").performScrollToNode(hasTestTag("settings-link-third-party-notices"))
         compose.onNodeWithTag("settings-link-third-party-notices").assertIsDisplayed()
+    }
+
+    @Test
+    fun aboutDataActionsShareARowBetweenIntroductionAndHomepageWithLargeChineseText() {
+        render(fontScale = 1.5f, locale = Locale.SIMPLIFIED_CHINESE)
+        open("about")
+        assertEquals("关于与数据", text(R.string.settings_about))
+        compose.onNodeWithTag("settings-list").performScrollToNode(hasTestTag("export-data"))
+        val export = compose.onNodeWithTag("export-data").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        val import = compose.onNodeWithTag("import-data").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        assertEquals(export.top, import.top, 1f)
+        assertTrue(export.right <= import.left)
+        screenshot("settings-about-data-chinese-large-font")
+        compose.onNodeWithTag("settings-link-project-homepage").performScrollTo().assertIsDisplayed()
+        val homepage = compose.onNodeWithTag("settings-link-project-homepage").fetchSemanticsNode().boundsInRoot
+        assertEquals(homepage.height, export.height, 1f)
+        assertEquals(homepage.height, import.height, 1f)
+    }
+
+    @Test
+    fun aboutDataActionsMatchHomepageHeightInChinese() {
+        render(locale = Locale.SIMPLIFIED_CHINESE)
+        open("about")
+        compose.onNodeWithTag("settings-list").performScrollToNode(hasTestTag("export-data"))
+        val export = compose.onNodeWithTag("export-data").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        val import = compose.onNodeWithTag("import-data").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        val homepage = compose.onNodeWithTag("settings-link-project-homepage").performScrollTo().assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        assertEquals(homepage.height, export.height, 1f)
+        assertEquals(homepage.height, import.height, 1f)
+        screenshot("settings-about-data-chinese")
     }
 
     @Test
@@ -213,7 +248,7 @@ class SettingsUiTest {
         compose.onNodeWithText(text(R.string.scan_local_network)).assertExists()
         compose.mainClock.advanceTimeBy(240L)
         val settledLeft = compose.onNodeWithText(text(R.string.settings_gallery_size)).fetchSemanticsNode().boundsInRoot.left
-        assertTrue(enteringLeft > settledLeft)
+        assertTrue("Entering left: $enteringLeft, settled left: $settledLeft", enteringLeft > settledLeft)
         compose.onNodeWithText(text(R.string.scan_local_network)).assertDoesNotExist()
         compose.mainClock.autoAdvance = true
     }
@@ -311,6 +346,8 @@ class SettingsUiTest {
     private fun open(key: String) {
         compose.onNodeWithTag("settings-list").performScrollToNode(hasTestTag("settings-link-$key"))
         compose.onNodeWithTag("settings-link-$key").performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.OnClick) { it() }
+        compose.mainClock.advanceTimeByFrame()
+        compose.mainClock.advanceTimeBy(300L)
         compose.waitForIdle()
     }
 
@@ -355,6 +392,7 @@ class SettingsUiTest {
                     onListenBrainzToken = {}, onListenBrainzMinimumSeconds = {}, onListenBrainzMinimumPercent = {},
                     onRetryPendingListens = {}, onRemovePendingListen = {}, onClearPendingListens = {},
                     onExit = { exits++; state = state.copy(exitStatus = ExitStatus.STOPPING, queue = emptyList()) },
+                    onExportData = { exports++ }, onImportData = { imports++ },
                     onPlayQueueItem = { queueId -> state = state.copy(currentQueueIndex = state.queue.indexOfFirst { it.queueId == queueId }) },
                     onEnqueueWhilePlaying = { state = state.copy(preferences = state.preferences.copy(enqueueWhilePlaying = it)) },
                     onMiniPlayerEnabled = { state = state.copy(preferences = state.preferences.copy(miniPlayerEnabled = it)) },
