@@ -20,11 +20,12 @@ L's Music is an Android DLNA / UPnP music controller. Browse music libraries on 
 - Optional online lyrics with line-by-line, word-by-word, and bilingual display.
 - Optional ListenBrainz reporting, with offline listens retained and retried when the network returns.
 - Supports phones, tablets, and foldables, plus dynamic colors and preset themes.
+- Back up and transfer settings, the playback queue, and pending listens in one file, with optional inclusion of the ListenBrainz API token.
 
 ## Download and installation
 
 1. Open [GitHub Releases](https://github.com/bibibivlin/LsMusic/releases).
-2. Download an APK such as `LsMusic-v1.2.0.apk`.
+2. Download an APK such as `LsMusic-v1.3.0.apk`.
 3. Follow Android's prompt to allow installation from the current unknown-source app, then finish the installation.
 
 Android 12 or later is required. The `SHA256SUMS.txt` file in a release can be used to verify the download.
@@ -38,9 +39,11 @@ Android 12 or later is required. The `SHA256SUMS.txt` file in a release can be u
 
 If no remote player is available, choose this device as the player.
 
-The Settings home page keeps the complete media-library and player selection area. Appearance, Playback, Lyrics, and Network open as separate pages with slide and fade transitions. About includes the app version, project home page, privacy information, and open-source notices, with a distinct icon for each link. Predictive back gestures animate the current page as you swipe.
+The Settings home page keeps the complete media-library and player selection area. Appearance, Playback, Lyrics, and Network open as separate pages with slide and fade transitions. About & data provides backup and import, the app version, project home page, privacy information, and open-source notices. Predictive back gestures animate the current page as you swipe.
 
 Double-tap an album cover on its detail page to view it full-screen against a black background. The status and navigation bars are hidden; tap the image or use Back to close it.
+
+On sufficiently wide screens, album details show the cover and information beside the track list, with playback and queue buttons at the bottom right.
 
 ## Playback settings
 
@@ -78,7 +81,17 @@ ListenBrainz reporting is off by default. Before using it:
 2. Validate and save it in L's Music under Settings > Network.
 3. Enable reporting and, if needed, adjust the minimum playback duration or percentage.
 
-Only playback that meets the configured threshold becomes a permanent listen. Unuploaded listens are stored on the device when offline and can be retried or deleted under Settings > Network > Pending uploads. Tokens are never included in project code, logs, or backups.
+Only playback that meets the configured threshold becomes a permanent listen. Unuploaded listens are stored on the device when offline and can be retried or deleted under Settings > Network > Pending uploads. Tokens are never included in project code, logs, or Android system backups; you can explicitly choose whether to include them in a manual export.
+
+## Backup and transfer
+
+Under Settings > About & data, export a single `.lsmusic.json` file containing settings, remembered devices, per-server album sorting, the playback queue and repeat/shuffle modes, and pending ListenBrainz listens. Choose a local or available cloud location in the system file picker. Audio files and lyrics and artwork caches are not included.
+
+The ListenBrainz API token is excluded from exports and imports by default, while other ListenBrainz settings are retained. If you choose to include the token, anyone with the file can read and use it: the backup is not encrypted. Store and transfer it privately.
+
+To restore, choose Import data and review the file before confirming the replacement of current settings, device selections, the queue, and pending listens. Qualifying playback stopped by the import is retained as a pending listen. If you do not import a token, the destination's existing token is kept; an imported token must first pass online validation. Stop reported playback and resolve any unsaved or import-preserved listens before replacing the token with a different one, to avoid sending them to another account.
+
+Playback remains stopped after import. Restart any sleep timer and grant system permissions on the destination device; remembered DLNA devices must be available on its current network. Pending listens may upload automatically when reporting is enabled and a token is saved. Avoid uploading the same records from the source device or repeatedly restoring the same backup, which can create duplicates. Files that cannot be read, exceed 32 MiB, or use an unsupported format are not imported.
 
 ## Limitations
 
