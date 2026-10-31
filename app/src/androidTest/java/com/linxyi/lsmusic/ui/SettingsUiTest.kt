@@ -213,9 +213,10 @@ class SettingsUiTest {
     fun aboutDataActionsMatchHomepageHeightInChinese() {
         render(locale = Locale.SIMPLIFIED_CHINESE)
         open("about")
+        compose.onNodeWithTag("settings-list").performScrollToNode(hasTestTag("export-data"))
         val export = compose.onNodeWithTag("export-data").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
         val import = compose.onNodeWithTag("import-data").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
-        val homepage = compose.onNodeWithTag("settings-link-project-homepage").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        val homepage = compose.onNodeWithTag("settings-link-project-homepage").performScrollTo().assertIsDisplayed().fetchSemanticsNode().boundsInRoot
         assertEquals(homepage.height, export.height, 1f)
         assertEquals(homepage.height, import.height, 1f)
         screenshot("settings-about-data-chinese")
@@ -247,7 +248,7 @@ class SettingsUiTest {
         compose.onNodeWithText(text(R.string.scan_local_network)).assertExists()
         compose.mainClock.advanceTimeBy(240L)
         val settledLeft = compose.onNodeWithText(text(R.string.settings_gallery_size)).fetchSemanticsNode().boundsInRoot.left
-        assertTrue(enteringLeft > settledLeft)
+        assertTrue("Entering left: $enteringLeft, settled left: $settledLeft", enteringLeft > settledLeft)
         compose.onNodeWithText(text(R.string.scan_local_network)).assertDoesNotExist()
         compose.mainClock.autoAdvance = true
     }
@@ -345,6 +346,8 @@ class SettingsUiTest {
     private fun open(key: String) {
         compose.onNodeWithTag("settings-list").performScrollToNode(hasTestTag("settings-link-$key"))
         compose.onNodeWithTag("settings-link-$key").performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.OnClick) { it() }
+        compose.mainClock.advanceTimeByFrame()
+        compose.mainClock.advanceTimeBy(300L)
         compose.waitForIdle()
     }
 
