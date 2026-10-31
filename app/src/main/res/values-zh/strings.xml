@@ -10,11 +10,11 @@
     <string name="settings_appearance">界面</string>
     <string name="settings_lyrics">歌词</string>
     <string name="settings_network">网络</string>
-    <string name="settings_about">关于</string>
+    <string name="settings_about">关于与数据</string>
     <string name="settings_appearance_description">封面、布局与主题配色</string>
     <string name="settings_lyrics_description">在线来源、翻译与显示效果</string>
     <string name="settings_network_description">ListenBrainz 播放记录与上传规则</string>
-    <string name="settings_about_description">软件版本、开源项目与隐私说明</string>
+    <string name="settings_about_description">数据备份、软件版本、项目与隐私说明</string>
     <string name="back_to_parent">返回上一级</string>
     <string name="back_to_settings">返回设置</string>
     <string name="back_to_network_settings">返回网络设置</string>
@@ -153,7 +153,7 @@
     <plurals name="pending_listens_summary"><item quantity="other">%1$d 条播放记录尚未上传成功，已安全保存在本机。</item></plurals>
     <string name="view_and_manage">查看并管理</string>
     <string name="listenbrainz_api">ListenBrainz API</string>
-    <string name="listenbrainz_token_description">令牌仅保存在本机且不会进入系统备份。可在 ListenBrainz 账户设置中获取。</string>
+    <string name="listenbrainz_token_description">令牌保存在本机，不会进入系统备份；手动导出时仅在明确勾选后包含。可在 ListenBrainz 账户设置中获取。</string>
     <string name="listenbrainz_token_label">用户令牌（API Token）</string>
     <string name="token_will_be_cleared">保存后将清除当前令牌。</string>
     <string name="token_saved_revalidate">当前令牌已保存；可重新校验令牌和网络连接。</string>
@@ -313,4 +313,33 @@
     <string name="sleep_timer_failed">睡眠定时器无法确认播放已暂停：%1$s</string>
     <string name="open_full_screen_artwork">全屏查看专辑封面</string>
     <string name="close_full_screen_artwork">关闭封面</string>
+    <string name="backup_export">导出数据</string>
+    <string name="backup_import">导入数据</string>
+    <string name="backup_scope">将全部设置、记住的设备、专辑排序、播放队列和待上传的 ListenBrainz 记录备份为一个文件。不包含音乐文件、已下载的歌词及封面缓存。</string>
+    <string name="backup_include_token">包含 ListenBrainz API Token</string>
+    <string name="backup_import_token">导入 ListenBrainz API Token</string>
+    <string name="backup_secret_warning">备份文件未经加密。包含 Token 后，任何取得此文件的人都能读取令牌并使用你的 ListenBrainz 账户，存在隐私泄露风险。请妥善保管，仅向可信设备传输。</string>
+    <string name="backup_choose_location">选择保存位置</string>
+    <string name="backup_import_confirm">导入并覆盖数据？</string>
+    <string name="backup_summary">此备份包含 %1$d 项设置、%2$d 首队列曲目和 %3$d 条待上传记录。</string>
+    <string name="backup_replace_warning">导入将覆盖当前设置、记住的设备、播放队列和待上传记录，并停止播放与睡眠定时器。若启用了上报且已保存令牌，导入的记录可能自动上传。迁移待上传记录时请只恢复一次，避免多台设备重复上传。</string>
+    <string name="backup_keep_token">其他 ListenBrainz 设置始终导入。未勾选导入 Token 或备份未包含 Token 时，保留本机现有令牌；勾选后须先在线验证通过，才会覆盖任何数据。</string>
+    <string name="backup_replace">导入并覆盖</string>
+    <string name="backup_ok">确定</string>
+    <string name="backup_exporting">正在导出数据…</string>
+    <string name="backup_reading">正在检查备份…</string>
+    <string name="backup_importing">正在验证并导入数据…</string>
+    <string name="backup_export_success">数据已导出，请妥善保管备份文件。</string>
+    <string name="backup_export_failed">导出失败，请检查存储空间和文件访问权限后重试。可能已生成不完整文件，请删除后再分享。</string>
+    <string name="backup_import_success">数据已导入，当前保持停止播放，队列和设置已可使用。</string>
+    <string name="backup_import_invalid">无法读取此备份。请选择不超过 32 MiB 的有效 L\'s Music 备份，并检查文件访问权限。现有数据未被覆盖。</string>
+    <string name="backup_version_unsupported">当前应用版本不支持此备份格式，请更新应用后再导入。现有数据未被覆盖。</string>
+    <string name="backup_import_token_invalid">备份中的 Token 无效，未覆盖任何数据。可取消勾选导入 Token，再导入其他数据。</string>
+    <string name="backup_import_token_connection">无法连接 ListenBrainz 验证备份中的 Token，未覆盖任何数据。请检查网络后重试，或取消勾选导入 Token。</string>
+    <string name="backup_import_failed">导入未能完成，请检查存储空间，并确认当前播放设备可以连接后重试。音乐可能已停止播放。</string>
+    <string name="backup_picker_unavailable">此设备没有可用的系统文件选择器。</string>
+    <string name="backup_session_save_failed">无法保存播放队列，请检查设备存储空间。</string>
+    <string name="backup_recovery_required">导入和原数据恢复均未能完成。为保护现有数据，播放与上传已暂停。请释放设备存储空间后重试恢复；下次启动应用时也会自动尝试恢复。</string>
+    <string name="backup_retry_recovery">重试恢复</string>
+    <string name="backup_recovery_success">原有数据已恢复，当前保持停止播放。</string>
 </resources>

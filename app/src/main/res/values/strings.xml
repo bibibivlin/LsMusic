@@ -12,11 +12,11 @@
     <string name="settings_appearance">Appearance</string>
     <string name="settings_lyrics">Lyrics</string>
     <string name="settings_network">Network</string>
-    <string name="settings_about">About</string>
+    <string name="settings_about">About &amp; data</string>
     <string name="settings_appearance_description">Covers, layout, and theme colors</string>
     <string name="settings_lyrics_description">Online sources, translation, and display effects</string>
     <string name="settings_network_description">ListenBrainz reporting and upload rules</string>
-    <string name="settings_about_description">App version, open-source project, and privacy</string>
+    <string name="settings_about_description">Data backups, version, project and privacy</string>
 
     <string name="back_to_parent">Back</string>
     <string name="back_to_settings">Back to settings</string>
@@ -159,7 +159,7 @@
     <plurals name="pending_listens_summary"><item quantity="one">%1$d listen has not uploaded successfully and is safely stored on this device.</item><item quantity="other">%1$d listens have not uploaded successfully and are safely stored on this device.</item></plurals>
     <string name="view_and_manage">View and manage</string>
     <string name="listenbrainz_api">ListenBrainz API</string>
-    <string name="listenbrainz_token_description">The token is stored only on this device and is excluded from system backup. Get it from your ListenBrainz account settings.</string>
+    <string name="listenbrainz_token_description">The token is stored on this device and excluded from system backup. Manual export includes it only if you choose. Get it from your ListenBrainz account settings.</string>
     <string name="listenbrainz_token_label">User token (API token)</string>
     <string name="token_will_be_cleared">Saving will clear the current token.</string>
     <string name="token_saved_revalidate">The current token is saved; you can revalidate the token and network connection.</string>
@@ -322,4 +322,33 @@
     <string name="sleep_timer_failed">Sleep timer could not confirm playback was paused: %1$s</string>
     <string name="open_full_screen_artwork">View full-screen artwork</string>
     <string name="close_full_screen_artwork">Close artwork</string>
+    <string name="backup_export">Export data</string>
+    <string name="backup_import">Import data</string>
+    <string name="backup_scope">Back up all settings, remembered devices, album sorting, the playback queue and pending ListenBrainz listens in one file. Music files, downloaded lyrics and artwork caches are not included.</string>
+    <string name="backup_include_token">Include ListenBrainz API Token</string>
+    <string name="backup_import_token">Import ListenBrainz API Token</string>
+    <string name="backup_secret_warning">Backups are not encrypted. Including a token allows anyone with the file to read it and use your ListenBrainz account. Keep the file private and share it only with trusted devices.</string>
+    <string name="backup_choose_location">Choose location</string>
+    <string name="backup_import_confirm">Import and replace data?</string>
+    <string name="backup_summary">This backup contains %1$d settings, %2$d queued tracks and %3$d pending listens.</string>
+    <string name="backup_replace_warning">Import replaces the current settings, remembered devices, queue and pending listens. Playback and the sleep timer will stop. Imported listens may upload automatically if reporting is enabled and a token is saved. Use this backup only once when transferring pending listens to avoid duplicate uploads from multiple devices.</string>
+    <string name="backup_keep_token">Other ListenBrainz settings are always imported. If token import is not selected or the backup has no token, the token on this device is kept. A selected token must pass online validation before any data is replaced.</string>
+    <string name="backup_replace">Import and replace</string>
+    <string name="backup_ok">OK</string>
+    <string name="backup_exporting">Exporting data…</string>
+    <string name="backup_reading">Checking backup…</string>
+    <string name="backup_importing">Validating and importing data…</string>
+    <string name="backup_export_success">Data exported successfully. Store your backup in a safe place.</string>
+    <string name="backup_export_failed">Export failed. Check storage space and file access, then export again. A partial file may have been created; delete it before sharing.</string>
+    <string name="backup_import_success">Data imported. Playback is stopped. Your queue and settings are ready to use.</string>
+    <string name="backup_import_invalid">Cannot read this backup. Choose a valid L\'s Music backup of 32 MiB or less and check file access. Existing data has not been replaced.</string>
+    <string name="backup_version_unsupported">This backup format is not supported by this app version. Update the app before importing. Existing data has not been replaced.</string>
+    <string name="backup_import_token_invalid">The backup token is invalid. Nothing was replaced. You can uncheck token import and import the other data.</string>
+    <string name="backup_import_token_connection">Could not validate the backup token with ListenBrainz. Nothing was replaced. Check your connection and retry, or uncheck token import.</string>
+    <string name="backup_import_failed">Import could not finish. Check storage space and confirm the current player is reachable before retrying. Playback may have stopped.</string>
+    <string name="backup_picker_unavailable">No system file picker is available on this device.</string>
+    <string name="backup_session_save_failed">Unable to save the playback queue. Check device storage space.</string>
+    <string name="backup_recovery_required">Import and recovery could not finish. Playback and uploads are suspended to protect your existing data. Free some device storage, then retry recovery. The app will also retry recovery on its next start.</string>
+    <string name="backup_retry_recovery">Retry recovery</string>
+    <string name="backup_recovery_success">Your original data has been restored. Playback is stopped.</string>
 </resources>

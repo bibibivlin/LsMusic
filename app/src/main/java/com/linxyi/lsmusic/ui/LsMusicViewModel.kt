@@ -23,6 +23,15 @@ import androidx.media3.session.SessionToken
 import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionResult
 import com.linxyi.lsmusic.artwork.AlbumArtworkRepository
+import com.linxyi.lsmusic.backup.AppBackupCodec
+import com.linxyi.lsmusic.backup.AppBackupData
+import com.linxyi.lsmusic.backup.AppBackupStorage
+import com.linxyi.lsmusic.backup.AppSessionStore
+import com.linxyi.lsmusic.backup.BackupSession
+import com.linxyi.lsmusic.backup.BackupTokenValidation
+import com.linxyi.lsmusic.backup.validateBackupToken
+import com.linxyi.lsmusic.backup.nonEmptyBackupSecrets
+import com.linxyi.lsmusic.backup.UnsupportedBackupVersion
 import com.linxyi.lsmusic.R
 import com.linxyi.lsmusic.dlna.DlnaController
 import com.linxyi.lsmusic.dlna.DlnaDevice
@@ -58,6 +67,11 @@ import com.linxyi.lsmusic.lyrics.NetEaseLyricsProvider
 import com.linxyi.lsmusic.lyrics.QqLyricsProvider
 import com.linxyi.lsmusic.lyrics.normalizedProviderOrder
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
@@ -68,6 +82,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
@@ -206,6 +221,8 @@ data class LsMusicUiState(
     val exitStatus: ExitStatus = ExitStatus.IDLE,
     val exitError: UiText? = null,
     val exitWarning: UiText? = null,
+    val dataBackup: DataBackupUiState = DataBackupUiState(),
+    val dataImportGeneration: Long = 0L,
 ) {
     val currentTrack: MediaEntry?
         get() = currentQueueItem?.track
@@ -225,14 +242,20 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     private val albumArtworkRepository = AlbumArtworkRepository.create(application)
     private val listenBrainzPlaybackTracker = ListenBrainzPlaybackTracker()
     private val pendingListenRepository = PendingListenRepository.get(application)
+    private val sessionStore = AppSessionStore(application)
+    private val savedSession = sessionStore.load()
+    private val backupStorage = AppBackupStorage(application, preferenceStore, pendingListenRepository, sessionStore)
+    private var importCandidate: AppBackupData? = null
+    private var restoringData = false
+    private var sessionSaveJob: Job? = null
     private val lyricsRepository = LyricsRepository(
         providers = listOf(NetEaseLyricsProvider(), QqLyricsProvider()),
         cache = LyricsDiskCache(File(application.cacheDir, "online-lyrics-v1")),
     )
     private val listenBrainzSubmissions = Channel<ListenBrainzSubmission>(Channel.BUFFERED)
     private val libraryBrowseStore = LibraryBrowseStore()
-    private val rememberedServer = preferenceStore.lastServer()
-    private val rememberedRenderer = preferenceStore.lastRenderer()?.let {
+    private var rememberedServer = preferenceStore.lastServer()
+    private var rememberedRenderer = preferenceStore.lastRenderer()?.let {
         if (it.id == LOCAL_RENDERER_ID) LOCAL_RENDERER else it
     }
     private val _uiState = MutableStateFlow(
@@ -246,6 +269,10 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
             preferences = preferenceStore.load(),
             pendingListens = pendingListenRepository.records.value,
             isPendingListensUploading = pendingListenRepository.isUploading.value,
+            queue = savedSession.queue,
+            currentQueueIndex = savedSession.currentQueueIndex,
+            playbackOrder = savedSession.playbackOrder,
+            durationMs = parseTimeMs(savedSession.queue.getOrNull(savedSession.currentQueueIndex)?.track?.duration),
         ),
     )
     val uiState: StateFlow<LsMusicUiState> = _uiState.asStateFlow()
@@ -331,7 +358,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         override fun onPlaybackStateChanged(playbackState: Int) = updateLocalPlaybackState()
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-            if (exiting || _uiState.value.selectedRendererId != LOCAL_RENDERER_ID) return
+            if (exiting || restoringData || _uiState.value.selectedRendererId != LOCAL_RENDERER_ID) return
             if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT) {
                 val currentTrackId = _uiState.value.currentQueueItem?.queueId
                 if (
@@ -368,7 +395,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         }
 
         override fun onPlayerError(error: PlaybackException) {
-            if (!exiting && _uiState.value.selectedRendererId == LOCAL_RENDERER_ID) {
+            if (!exiting && !restoringData && _uiState.value.selectedRendererId == LOCAL_RENDERER_ID) {
                 cancelFinishingSleepTimer()
                 _uiState.update { it.copy(playbackState = RemotePlaybackState.STOPPED) }
                 showError(UiText.Resource(R.string.local_playback_failed, listOf(error.localizedMessage ?: getApplication<Application>().getString(R.string.unknown_playback_error))))
@@ -420,6 +447,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
 
         discoveryJob = viewModelScope.launch {
             dlna.snapshot.collect { snapshot ->
+                if (restoringData) return@collect
                 val old = _uiState.value
                 val renderers = listOf(LOCAL_RENDERER) + snapshot.renderers
                 val serverId = restoreDeviceSelection(
@@ -587,6 +615,11 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
             }
         }
 
+        startListenTracking()
+        startSessionSaving()
+    }
+
+    private fun startListenTracking() {
         listenTrackingJob = viewModelScope.launch {
             uiState.map { state ->
                 ListenBrainzStateSnapshot(
@@ -601,12 +634,222 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    private fun LsMusicUiState.backupSession() = BackupSession(queue, currentQueueIndex, playbackOrder)
+
+    @OptIn(kotlinx.coroutines.FlowPreview::class)
+    private fun startSessionSaving() {
+        sessionSaveJob = viewModelScope.launch {
+            uiState.map { it.backupSession() }.distinctUntilChanged().debounce(300L).collect { session ->
+                if (!restoringData) withContext(Dispatchers.IO) {
+                    try { sessionStore.save(session) } catch (_: Exception) {
+                        showError(UiText.Resource(R.string.backup_session_save_failed))
+                    }
+                }
+            }
+        }
+    }
+
+    fun exportData(uri: Uri, includeSecrets: Boolean) {
+        if (exiting || restoringData || _uiState.value.dataBackup.isBusy) return
+        _uiState.update { it.copy(dataBackup = DataBackupUiState(phase = DataBackupPhase.EXPORTING)) }
+        val session = _uiState.value.backupSession()
+        viewModelScope.launch {
+            try {
+                val snapshot = backupStorage.snapshot(session, includeSecrets)
+                withContext(Dispatchers.IO) {
+                    val resolver = getApplication<Application>().contentResolver
+                    requireNotNull(resolver.openOutputStream(uri, "wt")).use { AppBackupCodec.write(snapshot, it) }
+                }
+                _uiState.update { it.copy(dataBackup = DataBackupUiState(message = UiText.Resource(R.string.backup_export_success))) }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                _uiState.update { it.copy(dataBackup = DataBackupUiState(message = UiText.Resource(R.string.backup_export_failed))) }
+            }
+        }
+    }
+
+    fun inspectDataImport(uri: Uri) {
+        if (exiting || restoringData || _uiState.value.dataBackup.isBusy) return
+        importCandidate = null
+        _uiState.update { it.copy(dataBackup = DataBackupUiState(phase = DataBackupPhase.READING)) }
+        viewModelScope.launch {
+            try {
+                val data = withContext(Dispatchers.IO) {
+                    requireNotNull(getApplication<Application>().contentResolver.openInputStream(uri)).use(AppBackupCodec::read)
+                        .also { preferenceStore.validateBackup(it.preferences, it.secrets) }
+                }
+                importCandidate = data
+                _uiState.update { it.copy(dataBackup = DataBackupUiState(
+                    phase = DataBackupPhase.PREVIEW,
+                    preferenceCount = data.preferences.size,
+                    queueCount = data.session.queue.size,
+                    pendingListenCount = data.pendingListens.size,
+                    containsSecrets = nonEmptyBackupSecrets(data.secrets).isNotEmpty(),
+                )) }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                _uiState.update { it.copy(dataBackup = DataBackupUiState(message = UiText.Resource(
+                    if (error is UnsupportedBackupVersion) R.string.backup_version_unsupported else R.string.backup_import_invalid,
+                ))) }
+            }
+        }
+    }
+
+    fun dismissDataBackup() {
+        if (restoringData || _uiState.value.dataBackup.isBusy) return
+        importCandidate = null
+        _uiState.update { it.copy(dataBackup = DataBackupUiState()) }
+    }
+
+    fun importData(includeSecrets: Boolean) {
+        val data = importCandidate ?: return
+        if (exiting || _uiState.value.dataBackup.phase != DataBackupPhase.PREVIEW) return
+        _uiState.update { it.copy(dataBackup = it.dataBackup.copy(phase = DataBackupPhase.IMPORTING, message = null)) }
+        viewModelScope.launch {
+            val token = preferenceStore.tokenFromBackup(data.secrets).takeIf { includeSecrets }
+            val validation = validateBackupToken(token) { listenBrainzClient.validateToken(it).valid }
+            if (validation != BackupTokenValidation.VALID) {
+                val message = when (validation) {
+                    BackupTokenValidation.INVALID -> R.string.backup_import_token_invalid
+                    else -> R.string.backup_import_token_connection
+                }
+                _uiState.update { it.copy(dataBackup = it.dataBackup.copy(
+                    phase = DataBackupPhase.PREVIEW, message = UiText.Resource(message),
+                )) }
+                return@launch
+            }
+            val previousSession = _uiState.value.backupSession()
+            restoringData = true
+            pendingListenRepository.suspendUploadsForImport()
+            try {
+                // Stop producers before replacing their stores; never report an old playback with imported credentials.
+                sessionSaveJob?.cancelAndJoin()
+                listenBrainzTokenValidationJob?.cancelAndJoin()
+                pendingListenUploadJob?.cancelAndJoin()
+                listenTrackingJob?.cancelAndJoin()
+                cancelNowPlayingRequest()
+                nowPlayingRequestJob?.join()
+                ListenBrainzUploadScheduler.cancel(getApplication())
+                playbackCommandGeneration++
+                pendingLocalPlayback = null
+                localPlaybackReadyQueueId = null
+                val before = _uiState.value
+                if (before.selectedRendererId != null && before.selectedRendererId != LOCAL_RENDERER_ID &&
+                    before.playbackState != RemotePlaybackState.STOPPED
+                ) {
+                    val stopped = withTimeoutOrNull(5_000L) {
+                        suspendCancellableCoroutine { continuation ->
+                            dlna.stop(before.selectedRendererId,
+                                onComplete = { if (continuation.isActive) continuation.resume(true) },
+                                onError = { if (continuation.isActive) continuation.resume(false) },
+                            )
+                        }
+                    } == true
+                    check(stopped) { "Renderer could not be stopped" }
+                }
+                cancelSleepTimer()
+                localController?.stop()
+                localController?.clearMediaItems()
+                cancelLyricsLoadAndReset()
+                cancelAlbumArtworkResolution()
+                libraryBrowseStore.clear()
+                listenBrainzPlaybackTracker.finish(SystemClock.elapsedRealtime(), reportingEnabled = false)
+                _uiState.update { it.copy(playbackState = RemotePlaybackState.STOPPED) }
+                // Once disk commit begins, complete both persistence and the UI refresh across cancellation.
+                withContext(NonCancellable) {
+                    backupStorage.restore(data, includeSecrets, previousSession)
+                    applyBackupSession(data.session, R.string.backup_import_success)
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                _uiState.update { it.copy(dataBackup = it.dataBackup.copy(
+                    phase = DataBackupPhase.PREVIEW, message = UiText.Resource(R.string.backup_import_failed),
+                )) }
+            } finally {
+                finishDataImport()
+            }
+        }
+    }
+
+    private fun applyBackupSession(session: BackupSession, message: Int) {
+        unpersistedListens.clear()
+        lastFinishedListen = null
+        rememberedServer = preferenceStore.lastServer()
+        rememberedRenderer = preferenceStore.lastRenderer()?.let { if (it.id == LOCAL_RENDERER_ID) LOCAL_RENDERER else it }
+        initialServerSelectionResolved = false
+        initialRendererSelectionResolved = false
+        userSelectedServer = false
+        userSelectedRenderer = false
+        remotePlaybackObservedPlaying = false
+        remotePlaybackObservedProgress = false
+        remoteLastObservedPositionMs = null
+        val preferences = preferenceStore.load()
+        _uiState.update { old -> LsMusicUiState(
+            selectedServerId = rememberedServer?.id,
+            selectedRendererId = rememberedRenderer?.id ?: LOCAL_RENDERER_ID,
+            rememberedServer = rememberedServer,
+            rememberedRenderer = rememberedRenderer ?: LOCAL_RENDERER,
+            browsePageKey = rememberedServer?.id?.let { BrowsePageKey(it, ROOT_OBJECT_ID) },
+            albumSort = preferenceStore.albumSort(rememberedServer?.id),
+            preferences = preferences,
+            queue = session.queue,
+            currentQueueIndex = session.currentQueueIndex,
+            playbackOrder = session.playbackOrder,
+            playbackGeneration = old.playbackGeneration + 1L,
+            dataImportGeneration = old.dataImportGeneration + 1L,
+            durationMs = parseTimeMs(session.queue.getOrNull(session.currentQueueIndex)?.track?.duration),
+            pendingListens = pendingListenRepository.records.value,
+            destination = AppDestination.SETTINGS_ABOUT,
+            dataBackup = DataBackupUiState(message = UiText.Resource(message)),
+        ) }
+        importCandidate = null
+    }
+
+    private fun finishDataImport() {
+        if (backupStorage.needsRecovery()) {
+            _uiState.update { it.copy(dataBackup = it.dataBackup.copy(phase = DataBackupPhase.RECOVERY_REQUIRED)) }
+            return
+        }
+        restoringData = false
+        pendingListenRepository.resumeUploadsAfterImport()
+        startListenTracking()
+        startSessionSaving()
+        dlna.refresh()
+        val preferences = _uiState.value.preferences
+        if (preferences.lyricsEnabled) refreshLyricsCacheSize()
+        if (preferences.listenBrainzEnabled && preferences.listenBrainzToken.isNotBlank() &&
+            pendingListenRepository.records.value.isNotEmpty()
+        ) ListenBrainzUploadScheduler.schedule(getApplication())
+    }
+
+    fun retryDataRecovery() {
+        if (_uiState.value.dataBackup.phase != DataBackupPhase.RECOVERY_REQUIRED) return
+        _uiState.update { it.copy(dataBackup = it.dataBackup.copy(phase = DataBackupPhase.IMPORTING)) }
+        viewModelScope.launch {
+            try {
+                withContext(NonCancellable) {
+                    val previous = backupStorage.recoverInProcess()
+                    applyBackupSession(previous.session, R.string.backup_recovery_success)
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                _uiState.update { it.copy(dataBackup = it.dataBackup.copy(phase = DataBackupPhase.RECOVERY_REQUIRED)) }
+            } finally {
+                finishDataImport()
+            }
+        }
+    }
+
     fun refreshDevices() {
-        if (!exiting) dlna.refresh()
+        if (!exiting && !restoringData) dlna.refresh()
     }
 
     fun selectServer(id: String) {
-        if (exiting) return
+        if (exiting || restoringData) return
         val device = _uiState.value.servers.firstOrNull { it.id == id } ?: return
         userSelectedServer = true
         preferenceStore.saveLastServer(device)
@@ -628,7 +871,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun selectRenderer(id: String) {
-        if (exiting) return
+        if (exiting || restoringData) return
         val state = _uiState.value
         if (state.selectedRendererId == id) return
         val device = state.renderers.firstOrNull { it.id == id } ?: return
@@ -778,7 +1021,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     fun playNow(track: MediaEntry) = playAll(listOf(track))
 
     fun playAll(tracks: List<MediaEntry>) {
-        if (exiting) return
+        if (exiting || restoringData) return
         val state = _uiState.value
         val mode = playbackRequestMode(state.preferences, state.currentTrack != null, state.playbackState)
         val result = applyPlaybackRequest(state.queue, tracks, mode)
@@ -804,7 +1047,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     fun addToQueue(track: MediaEntry) = addAllToQueue(listOf(track))
 
     fun addAllToQueue(tracks: List<MediaEntry>) {
-        if (exiting) return
+        if (exiting || restoringData) return
         val result = applyPlaybackRequest(_uiState.value.queue, tracks, PlaybackRequestMode.APPEND_ONLY)
             ?: return showError(UiText.Resource(R.string.no_tracks_to_queue))
         appendQueueItems(result.addedItems)
@@ -819,7 +1062,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun playQueueItem(queueId: String) {
-        if (exiting) return
+        if (exiting || restoringData) return
         val index = _uiState.value.queue.indexOfFirst { it.queueId == queueId }
         if (index < 0) return
         cancelFinishingSleepTimer()
@@ -827,7 +1070,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun togglePlayback() {
-        if (exiting) return
+        if (exiting || restoringData) return
         val state = _uiState.value
         val rendererId = state.selectedRendererId ?: return showError(UiText.Resource(R.string.select_dlna_player_first))
         state.currentTrack ?: return showError(UiText.Resource(R.string.queue_is_empty))
@@ -874,7 +1117,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun advanceToNext(automatic: Boolean) {
-        if (exiting) return
+        if (exiting || restoringData) return
         val state = _uiState.value
         val selection = selectNextTrack(
             queue = state.queue,
@@ -933,7 +1176,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun playAt(index: Int, playbackOrder: PlaybackOrder? = null, queue: List<QueueItem>? = null) {
-        if (exiting) return
+        if (exiting || restoringData) return
         val state = _uiState.value
         val targetQueue = queue ?: state.queue
         val item = targetQueue.getOrNull(index) ?: return
@@ -955,7 +1198,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun removeFromQueue(index: Int) {
-        if (exiting) return
+        if (exiting || restoringData) return
         val state = _uiState.value
         val removal = removeQueueOccurrence(state.queue, state.currentQueueIndex, index) ?: return
         val removedId = state.queue[index].queueId
@@ -989,7 +1232,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun moveQueueItem(fromIndex: Int, toIndex: Int) {
-        if (exiting) return
+        if (exiting || restoringData) return
         _uiState.update { state ->
             if (fromIndex !in state.queue.indices || toIndex !in state.queue.indices || fromIndex == toIndex) {
                 return@update state
@@ -1009,7 +1252,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun clearQueue() {
-        if (exiting) return
+        if (exiting || restoringData) return
         cancelFinishingSleepTimer()
         stopRenderer(_uiState.value.selectedRendererId)
         _uiState.update {
@@ -1026,7 +1269,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun seekTo(positionMs: Long) {
-        if (exiting) return
+        if (exiting || restoringData) return
         val state = _uiState.value
         val target = positionMs.coerceIn(0L, state.durationMs.coerceAtLeast(0L))
         _uiState.update { it.copy(positionMs = target) }
@@ -1038,11 +1281,11 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun setDestination(destination: AppDestination) {
-        if (!exiting) _uiState.update { it.copy(destination = destination) }
+        if (!exiting && !restoringData) _uiState.update { it.copy(destination = destination) }
     }
 
     fun loadLyrics(forceRefresh: Boolean = false) {
-        if (exiting) return
+        if (exiting || restoringData) return
         val state = _uiState.value
         if (!state.preferences.lyricsEnabled) return
         val track = state.currentTrack ?: return
@@ -1339,7 +1582,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         playbackCommandGeneration++
         val command = playbackCommandGeneration
         val isCurrent = {
-            !exiting && playbackCommandGeneration == command && _uiState.value.sleepTimer.token == token &&
+            !exiting && !restoringData && playbackCommandGeneration == command && _uiState.value.sleepTimer.token == token &&
                 _uiState.value.selectedRendererId == rendererId &&
                 _uiState.value.currentQueueItem?.queueId == state.currentQueueItem?.queueId &&
                 _uiState.value.playbackGeneration == state.playbackGeneration
@@ -1409,7 +1652,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     fun setPresetPalette(palette: PresetPalette) = updatePreferences { it.copy(presetPalette = palette) }
 
     fun setListenBrainzEnabled(enabled: Boolean) {
-        if (exiting) return
+        if (exiting || restoringData) return
         if (!enabled) cancelNowPlayingRequest()
         updatePreferences { it.copy(listenBrainzEnabled = enabled) }
         if (enabled && pendingListenRepository.records.value.isNotEmpty()) {
@@ -1422,7 +1665,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun validateAndSaveListenBrainzToken(token: String) {
-        if (exiting) return
+        if (exiting || restoringData) return
         listenBrainzTokenValidationJob?.cancel()
         val normalized = token.trim()
         if (normalized.isEmpty()) {
@@ -1513,7 +1756,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     fun retryPendingListens(ids: Set<String>? = null) = startPendingListenUpload(ids, showFeedback = true)
 
     private fun startPendingListenUpload(ids: Set<String>? = null, showFeedback: Boolean) {
-        if (exiting) return
+        if (exiting || restoringData) return
         val preferences = _uiState.value.preferences
         if (!preferences.listenBrainzEnabled) {
             if (showFeedback) showError(UiText.Resource(R.string.pending_upload_requires_enabled))
@@ -1605,7 +1848,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     fun consumeError() = _uiState.update { it.copy(error = null) }
 
     private fun updatePreferences(transform: (AppPreferences) -> AppPreferences) {
-        if (exiting) return
+        if (exiting || restoringData) return
         val updated = transform(_uiState.value.preferences)
         preferenceStore.save(updated)
         _uiState.update { it.copy(preferences = updated) }
@@ -1712,7 +1955,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private suspend fun trackListenBrainzPlayback(snapshot: ListenBrainzStateSnapshot) {
-        if (exiting) return
+        if (exiting || restoringData) return
         val preferences = snapshot.preferences
         val configured = preferences.listenBrainzEnabled && preferences.listenBrainzToken.isNotBlank()
         listenBrainzPlaybackTracker.observe(
@@ -1771,11 +2014,11 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     private fun beginPlaybackCommand(): () -> Boolean {
         playbackCommandGeneration++
         val requested = playbackCommandIdentity()
-        return { !exiting && playbackCommandIdentity() == requested }
+        return { !exiting && !restoringData && playbackCommandIdentity() == requested }
     }
 
     private fun playOnRenderer(rendererId: String, track: MediaEntry) {
-        if (exiting) return
+        if (exiting || restoringData) return
         val isCurrent = beginPlaybackCommand()
         if (rendererId == LOCAL_RENDERER_ID) {
             val state = _uiState.value
@@ -1825,7 +2068,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun handleRemoteMediaCommand(command: String?, positionMs: Long) {
-        if (exiting) return
+        if (exiting || restoringData) return
         val state = _uiState.value
         val rendererId = state.selectedRendererId
             ?.takeUnless { it == LOCAL_RENDERER_ID }
@@ -1859,7 +2102,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun publishRemoteMediaSession(snapshot: RemoteMediaSessionSnapshot) {
-        if (exiting) return
+        if (exiting || restoringData) return
         val app = getApplication<Application>()
         if (!snapshot.isActive) {
             if (remoteSessionServiceStarted) {
@@ -1893,7 +2136,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun playLocally(controller: MediaController, queue: List<QueueItem>, index: Int) {
-        if (exiting) return
+        if (exiting || restoringData) return
         pendingLocalPlayback = null
         localPlaybackReadyQueueId = null
         if (index !in queue.indices) return
@@ -1926,7 +2169,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun updateLocalPlaybackState() {
-        if (exiting) return
+        if (exiting || restoringData) return
         val controller = localController ?: return
         if (_uiState.value.selectedRendererId != LOCAL_RENDERER_ID) return
         if (pendingLocalPlayback != null) return
@@ -1951,19 +2194,19 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun refreshPlaybackProgress() {
-        if (exiting) return
+        if (exiting || restoringData) return
         val state = _uiState.value
         val rendererId = state.selectedRendererId ?: return
         if (rendererId == LOCAL_RENDERER_ID) {
             localController?.let(::refreshLocalProgress)
         } else {
             val requestedIdentity = playbackCommandIdentity()
-            if (state.currentQueueItem == null) return
+            if (state.currentQueueItem == null || state.playbackState == RemotePlaybackState.STOPPED) return
             dlna.getPositionInfo(rendererId, onResult = { position, duration ->
                 viewModelScope.launch {
                     val positionMs = parseTimeMs(position)
                     _uiState.update {
-                        if (!exiting && playbackCommandIdentity() == requestedIdentity) {
+                        if (!exiting && !restoringData && playbackCommandIdentity() == requestedIdentity) {
                             remoteLastObservedPositionMs?.let { previousPositionMs ->
                                 if (positionMs > previousPositionMs) remotePlaybackObservedProgress = true
                             }
@@ -1982,7 +2225,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
                 viewModelScope.launch {
                     val current = _uiState.value
                     if (
-                        exiting || playbackCommandIdentity() != requestedIdentity
+                        exiting || restoringData || playbackCommandIdentity() != requestedIdentity
                     ) return@launch
                     when (transportState?.uppercase()) {
                         "PLAYING" -> remotePlaybackObservedPlaying = true
@@ -2002,7 +2245,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun refreshLocalProgress(controller: MediaController) {
-        if (exiting) return
+        if (exiting || restoringData) return
         if (_uiState.value.selectedRendererId != LOCAL_RENDERER_ID) return
         if (pendingLocalPlayback != null || controller.currentMediaItem?.mediaId != _uiState.value.currentQueueItem?.queueId) return
         _uiState.update {
@@ -2015,9 +2258,12 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun exitApp() = exitCoordinator.exit()
+    fun exitApp() {
+        if (!restoringData) exitCoordinator.exit()
+    }
 
     private fun beginExit() {
+        sessionSaveJob?.cancel()
         cancelSleepTimer()
         playbackCommandGeneration++
         val state = _uiState.value
@@ -2093,10 +2339,12 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private suspend fun persistExitRecords() {
+        sessionSaveJob?.join()
         unpersistedListens.values.toList().forEach { record ->
             pendingListenRepository.enqueue(record)
             unpersistedListens.remove(record.id)
         }
+        withContext(Dispatchers.IO) { sessionStore.save(_uiState.value.backupSession()) }
     }
 
     private suspend fun finishExitReporting(persisted: Boolean) {
@@ -2139,7 +2387,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
 
     private fun canSubmitNowPlaying(submission: ListenBrainzSubmission.NowPlaying): Boolean {
         val current = _uiState.value
-        return !exiting && current.preferences.listenBrainzEnabled &&
+        return !exiting && !restoringData && current.preferences.listenBrainzEnabled &&
             current.preferences.listenBrainzToken == submission.token &&
             current.playbackGeneration == submission.playbackGeneration &&
             current.currentTrack?.id == submission.track.id &&

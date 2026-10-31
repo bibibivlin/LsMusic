@@ -1,6 +1,7 @@
 package com.linxyi.lsmusic.ui
 
 import android.content.Context
+import android.content.SharedPreferences
 import com.linxyi.lsmusic.dlna.DlnaDevice
 import com.linxyi.lsmusic.dlna.DlnaDeviceKind
 import com.linxyi.lsmusic.lyrics.LyricsProviderId
@@ -103,7 +104,49 @@ class AppPreferencesStore(context: Context) {
         writeValue = { key, value -> preferences.edit().putString(key, value).apply() },
     )
 
-    fun load(): AppPreferences = AppPreferences(
+    fun load(): AppPreferences = readPreferences(preferences.all, secrets.all)
+
+    internal fun backupPreferences(): Map<String, Any> = preferences.all.mapValues { requireNotNull(it.value) }
+
+    internal fun backupSecrets(): Map<String, Any> = secrets.all.mapValues { requireNotNull(it.value) }
+
+    internal fun validateBackup(values: Map<String, Any>, secretValues: Map<String, Any>?) {
+        require(KEY_LISTENBRAINZ_TOKEN !in values)
+        readPreferences(values, secretValues.orEmpty())
+        listOf(
+            KEY_LAST_SERVER_ID, KEY_LAST_SERVER_NAME, KEY_LAST_SERVER_MANUFACTURER, KEY_LAST_SERVER_MODEL,
+            KEY_LAST_RENDERER_ID, KEY_LAST_RENDERER_NAME, KEY_LAST_RENDERER_MANUFACTURER, KEY_LAST_RENDERER_MODEL,
+        ).forEach { key -> require(key !in values || values[key] is String) }
+        values.filterKeys { it.startsWith("album_sort_by_server_") }.values.forEach { require(it is String) }
+    }
+
+    internal fun tokenFromBackup(secretValues: Map<String, Any>?): String =
+        secretValues?.get(KEY_LISTENBRAINZ_TOKEN) as? String ?: ""
+
+    /** All ordinary keys participate automatically, including per-server and future settings. */
+    internal fun replaceFromBackup(values: Map<String, Any>, secretValues: Map<String, Any>?) {
+        validateBackup(values, secretValues)
+        preferences.replaceValues(values)
+        if (secretValues != null) secrets.replaceValues(secretValues)
+    }
+
+    private fun SharedPreferences.replaceValues(values: Map<String, Any>) {
+        val editor = edit().clear()
+        values.forEach { (key, value) ->
+            when (value) {
+                is String -> editor.putString(key, value)
+                is Boolean -> editor.putBoolean(key, value)
+                is Int -> editor.putInt(key, value)
+                is Long -> editor.putLong(key, value)
+                is Float -> editor.putFloat(key, value)
+                is Set<*> -> editor.putStringSet(key, value.map { it as String }.toSet())
+                else -> error("Unsupported preference type")
+            }
+        }
+        check(editor.commit()) { "Unable to save preferences" }
+    }
+
+    private fun readPreferences(preferences: Map<String, *>, secrets: Map<String, *>): AppPreferences = AppPreferences(
         gallerySize = preferences.enumValue(KEY_GALLERY_SIZE, GallerySize.STANDARD),
         useGridByDefault = preferences.getBoolean(KEY_GRID_DEFAULT, true),
         themeMode = preferences.enumValue(KEY_THEME_MODE, ThemeMode.SYSTEM),
@@ -195,7 +238,16 @@ class AppPreferencesStore(context: Context) {
         secrets.edit().putString(KEY_LISTENBRAINZ_TOKEN, value.listenBrainzToken).apply()
     }
 
-    private inline fun <reified T : Enum<T>> android.content.SharedPreferences.enumValue(
+    private fun Map<String, *>.getString(key: String, default: String?): String? =
+        if (containsKey(key)) get(key) as String else default
+
+    private fun Map<String, *>.getBoolean(key: String, default: Boolean): Boolean =
+        if (containsKey(key)) get(key) as Boolean else default
+
+    private fun Map<String, *>.getInt(key: String, default: Int): Int =
+        if (containsKey(key)) get(key) as Int else default
+
+    private inline fun <reified T : Enum<T>> Map<String, *>.enumValue(
         key: String,
         default: T,
     ): T = getString(key, null)?.let { value -> enumValues<T>().firstOrNull { it.name == value } } ?: default

@@ -3,8 +3,13 @@ package com.linxyi.lsmusic.listenbrainz
 import android.content.Context
 import android.util.AtomicFile
 import com.linxyi.lsmusic.dlna.MediaEntry
+import com.linxyi.lsmusic.dlna.MediaEntryJsonCodec
+import com.linxyi.lsmusic.ui.AppPreferencesStore
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -107,15 +112,33 @@ class PendingListenRepository internal constructor(
     initialRecords: List<PendingListen>,
     private val saveRecords: (List<PendingListen>) -> Unit,
 ) {
-    private constructor(store: PendingListenDiskStore) : this(store.load(), store::save)
-    private constructor(context: Context) : this(PendingListenDiskStore(context.applicationContext))
+    private constructor(store: PendingListenDiskStore, canUpload: (String) -> Boolean) : this(store.load(), store::save) {
+        this.canUpload = canUpload
+    }
+    private constructor(context: Context) : this(PendingListenDiskStore(context.applicationContext), { token ->
+        AppPreferencesStore(context).load().let { it.listenBrainzEnabled && it.listenBrainzToken == token }
+    })
     private val mutationLock = Any()
+    private var canUpload: (String) -> Boolean = { true }
     private val uploadMutex = Mutex()
     private val _records = MutableStateFlow(initialRecords)
     private val _isUploading = MutableStateFlow(false)
+    @Volatile private var uploadsSuspended = false
+    @Volatile private var activeUpload: Job? = null
 
     val records: StateFlow<List<PendingListen>> = _records.asStateFlow()
     val isUploading: StateFlow<Boolean> = _isUploading.asStateFlow()
+
+    internal fun suspendUploadsForImport() {
+        uploadsSuspended = true
+        activeUpload?.cancel()
+    }
+
+    internal fun resumeUploadsAfterImport() { uploadsSuspended = false }
+
+    internal fun <T> snapshotForBackup(block: (List<PendingListen>) -> T): T = synchronized(mutationLock) {
+        block(_records.value.toList())
+    }
 
     suspend fun enqueue(record: PendingListen) = withContext(Dispatchers.IO) {
         mutate { current -> if (current.any { it.id == record.id }) current else current + record }
@@ -129,6 +152,17 @@ class PendingListenRepository internal constructor(
         uploadMutex.withLock { mutate { emptyList() } }
     }
 
+    /** Excludes uploads and mutations while taking or restoring a multi-store backup. */
+    internal suspend fun <T> withBackupLock(
+        block: (List<PendingListen>, (List<PendingListen>) -> Unit) -> T,
+    ): T = withContext(Dispatchers.IO) {
+        uploadMutex.withLock {
+            synchronized(mutationLock) {
+                block(_records.value) { replacement -> mutate { replacement } }
+            }
+        }
+    }
+
     suspend fun upload(
         token: String,
         ids: Set<String>? = null,
@@ -137,7 +171,7 @@ class PendingListenRepository internal constructor(
         nowEpochSeconds: () -> Long = { System.currentTimeMillis() / 1_000L },
     ): PendingListenUploadResult = withContext(Dispatchers.IO) {
         uploadMutex.withLock {
-            if (token.isBlank()) {
+            if (token.isBlank() || uploadsSuspended || !canUpload(token)) {
                 return@withLock PendingListenUploadResult(
                     attemptedCount = 0,
                     uploadedCount = 0,
@@ -151,12 +185,14 @@ class PendingListenRepository internal constructor(
             }
 
             _isUploading.value = true
+            activeUpload = currentCoroutineContext().job
             try {
                 val processed = processPendingListens(
                     pending = snapshot,
                     attemptedAtEpochSeconds = nowEpochSeconds,
                     enrich = metadataReader::enrich,
                     onAttempt = { id, attemptedAt ->
+                        if (uploadsSuspended || !canUpload(token)) throw CancellationException("Reporting configuration changed")
                         update(id) {
                             it.copy(
                                 attemptCount = it.attemptCount + 1,
@@ -167,6 +203,7 @@ class PendingListenRepository internal constructor(
                     },
                     onEnriched = { id, track -> update(id) { it.copy(track = track) } },
                     submit = { record, track ->
+                        if (uploadsSuspended || !canUpload(token)) throw CancellationException("Reporting configuration changed")
                         client.submitListen(
                             token = token,
                             track = track,
@@ -186,6 +223,7 @@ class PendingListenRepository internal constructor(
                     errorMessage = processed.errorMessage,
                 )
             } finally {
+                activeUpload = null
                 _isUploading.value = false
             }
         }
@@ -218,7 +256,7 @@ class PendingListenRepository internal constructor(
     }
 }
 
-private class PendingListenDiskStore(context: Context) {
+internal class PendingListenDiskStore(context: Context) {
     private val directory = File(context.filesDir, STORE_DIRECTORY)
     private val file = AtomicFile(File(directory, STORE_FILE_NAME))
 
@@ -271,7 +309,7 @@ internal object PendingListenJsonCodec {
 
     private fun PendingListen.toJson() = JSONObject()
         .put("id", id)
-        .put("track", track.toPendingJson())
+        .put("track", MediaEntryJsonCodec.encode(track))
         .put("startedAtEpochSeconds", startedAtEpochSeconds)
         .put("durationMs", durationMs)
         .put("listenedMs", listenedMs)
@@ -282,7 +320,7 @@ internal object PendingListenJsonCodec {
 
     private fun JSONObject.toPendingListen() = PendingListen(
         id = getString("id"),
-        track = getJSONObject("track").toPendingTrack(),
+        track = MediaEntryJsonCodec.decode(getJSONObject("track")),
         startedAtEpochSeconds = getLong("startedAtEpochSeconds"),
         durationMs = getLong("durationMs"),
         listenedMs = getLong("listenedMs"),
@@ -292,49 +330,8 @@ internal object PendingListenJsonCodec {
         lastError = nullableString("lastError"),
     )
 
-    private fun MediaEntry.toPendingJson() = JSONObject()
-        .put("id", id)
-        .put("parentId", parentId)
-        .put("title", title)
-        .put("creator", creator)
-        .put("album", album)
-        .put("genre", genre)
-        .put("trackNumber", trackNumber)
-        .put("resourceUri", resourceUri)
-        .put("duration", duration)
-        .put("mimeType", mimeType)
-        .put("recordingMbid", recordingMbid)
-        .put("releaseMbid", releaseMbid)
-        .put("releaseGroupMbid", releaseGroupMbid)
-        .put("trackMbid", trackMbid)
-        .put("artistMbids", JSONArray(artistMbids))
-
-    private fun JSONObject.toPendingTrack() = MediaEntry(
-        id = getString("id"),
-        parentId = getString("parentId"),
-        title = getString("title"),
-        creator = optString("creator"),
-        album = optString("album"),
-        genre = optString("genre"),
-        trackNumber = nullableInt("trackNumber"),
-        resourceUri = nullableString("resourceUri"),
-        duration = nullableString("duration"),
-        mimeType = nullableString("mimeType"),
-        recordingMbid = nullableString("recordingMbid"),
-        releaseMbid = nullableString("releaseMbid"),
-        releaseGroupMbid = nullableString("releaseGroupMbid"),
-        trackMbid = nullableString("trackMbid"),
-        artistMbids = getJSONArray("artistMbids").let { array ->
-            List(array.length()) { index -> array.getString(index) }
-        },
-        isContainer = false,
-    )
-
     private fun JSONObject.nullableString(name: String): String? =
         if (!has(name) || isNull(name)) null else getString(name)
-
-    private fun JSONObject.nullableInt(name: String): Int? =
-        if (!has(name) || isNull(name)) null else getInt(name)
 
     private fun JSONObject.nullableLong(name: String): Long? =
         if (!has(name) || isNull(name)) null else getLong(name)
