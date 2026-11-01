@@ -8,10 +8,14 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.layout.requiredSize
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.DpSize
+import androidx.compose.ui.test.DeviceConfigurationOverride
+import androidx.compose.ui.test.ForcedSize
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.test.platform.app.InstrumentationRegistry
 import com.linxyi.lsmusic.R
@@ -22,6 +26,7 @@ import com.linxyi.lsmusic.lyrics.LyricsLoadState
 import com.linxyi.lsmusic.lyrics.LyricsProviderId
 import com.linxyi.lsmusic.ui.theme.LsMusicTheme
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -31,12 +36,11 @@ class LyricsUiTest {
     val compose = createComposeRule()
 
     @Test
-    fun artworkOpensLyricsAndLyricsTapReturnsToArtwork() {
+    fun artworkAndLyricsRemainVisibleUntilTheirTransitionFinishes() {
         compose.setContent {
-            LsMusicTheme(dynamicColor = false) {
+            NowPlayingTestLayout(DpSize(412.dp, 700.dp)) {
                 NowPlayingScreen(
                     state = playingState(lyricsEnabled = true, lyricsLoadState = LyricsLoadState.NotFound),
-                    modifier = Modifier.requiredSize(width = 412.dp, height = 700.dp),
                     onTogglePlayback = {},
                     onPrevious = {},
                     onNext = {},
@@ -50,18 +54,30 @@ class LyricsUiTest {
         }
 
         compose.onNodeWithText(text(R.string.lyrics_not_found)).assertDoesNotExist()
+        compose.mainClock.autoAdvance = false
         compose.onNodeWithContentDescription(text(R.string.album_cover_open_lyrics, "Track")).performClick()
+        compose.mainClock.advanceTimeByFrame()
+        compose.mainClock.advanceTimeBy(80L)
+        compose.onNodeWithContentDescription(text(R.string.album_cover_close_lyrics, "Track")).assertIsDisplayed()
+        compose.onNodeWithText(text(R.string.lyrics_not_found)).assertIsDisplayed()
+        compose.mainClock.advanceTimeBy(400L)
+        compose.onNodeWithContentDescription(text(R.string.album_cover_close_lyrics, "Track")).assertDoesNotExist()
         compose.onNodeWithText(text(R.string.lyrics_not_found)).assertIsDisplayed().performClick()
+        compose.mainClock.advanceTimeByFrame()
+        compose.mainClock.advanceTimeBy(80L)
+        compose.onNodeWithContentDescription(text(R.string.album_cover_open_lyrics, "Track")).assertIsDisplayed()
+        compose.onNodeWithText(text(R.string.lyrics_not_found)).assertIsDisplayed()
+        compose.mainClock.advanceTimeBy(400L)
         compose.onNodeWithText(text(R.string.lyrics_not_found)).assertDoesNotExist()
+        compose.mainClock.autoAdvance = true
     }
 
     @Test
     fun squareFoldableLayoutReplacesArtworkWithLyrics() {
         compose.setContent {
-            LsMusicTheme(dynamicColor = false) {
+            NowPlayingTestLayout(DpSize(800.dp, 800.dp)) {
                 NowPlayingScreen(
                     state = playingState(lyricsEnabled = true, lyricsLoadState = LyricsLoadState.NotFound),
-                    modifier = Modifier.requiredSize(width = 800.dp, height = 800.dp),
                     onTogglePlayback = {},
                     onPrevious = {},
                     onNext = {},
@@ -76,16 +92,16 @@ class LyricsUiTest {
 
         compose.onNodeWithContentDescription(text(R.string.album_cover_open_lyrics, "Track")).performClick()
         compose.onNodeWithContentDescription(text(R.string.album_cover_open_lyrics, "Track")).assertDoesNotExist()
+        compose.onNodeWithContentDescription(text(R.string.album_cover_close_lyrics, "Track")).assertDoesNotExist()
         compose.onNodeWithText(text(R.string.lyrics_not_found)).assertIsDisplayed()
     }
 
     @Test
-    fun wideLandscapeLayoutKeepsArtworkBesideOpenedLyrics() {
+    fun wideLandscapeArtworkMovesSmoothlyAndCanReverseBeforeSettling() {
         compose.setContent {
-            LsMusicTheme(dynamicColor = false) {
+            NowPlayingTestLayout(DpSize(1000.dp, 700.dp)) {
                 NowPlayingScreen(
                     state = playingState(lyricsEnabled = true, lyricsLoadState = LyricsLoadState.NotFound),
-                    modifier = Modifier.requiredSize(width = 1000.dp, height = 700.dp),
                     onTogglePlayback = {},
                     onPrevious = {},
                     onNext = {},
@@ -98,9 +114,48 @@ class LyricsUiTest {
             }
         }
 
+        val centered = compose.onNodeWithContentDescription(text(R.string.album_cover_open_lyrics, "Track"))
+            .fetchSemanticsNode().boundsInRoot
+        val titleBounds = compose.onNodeWithText("Track").fetchSemanticsNode().boundsInRoot
+        compose.mainClock.autoAdvance = false
         compose.onNodeWithContentDescription(text(R.string.album_cover_open_lyrics, "Track")).performClick()
-        compose.onNodeWithContentDescription(text(R.string.album_cover_open_lyrics, "Track")).assertIsDisplayed()
+        compose.mainClock.advanceTimeByFrame()
+        compose.mainClock.advanceTimeBy(80L)
+        val opening = compose.onNodeWithContentDescription(text(R.string.album_cover_close_lyrics, "Track"))
+            .fetchSemanticsNode().boundsInRoot
+        compose.mainClock.advanceTimeBy(400L)
+        val beside = compose.onNodeWithContentDescription(text(R.string.album_cover_close_lyrics, "Track"))
+            .fetchSemanticsNode().boundsInRoot
+        assertTrue(opening.center.x < centered.center.x)
+        assertTrue(opening.center.x > beside.center.x)
+        assertEquals(titleBounds, compose.onNodeWithText("Track").fetchSemanticsNode().boundsInRoot)
         compose.onNodeWithText(text(R.string.lyrics_not_found)).assertIsDisplayed()
+        compose.onNodeWithContentDescription(text(R.string.album_cover_close_lyrics, "Track")).performClick()
+        compose.mainClock.advanceTimeByFrame()
+        compose.mainClock.advanceTimeBy(80L)
+        val closing = compose.onNodeWithContentDescription(text(R.string.album_cover_open_lyrics, "Track"))
+            .fetchSemanticsNode().boundsInRoot
+        assertTrue(closing.center.x > beside.center.x)
+        assertTrue(closing.center.x < centered.center.x)
+        // Reverse the closing animation while the artwork is still moving.
+        compose.onNodeWithContentDescription(text(R.string.album_cover_open_lyrics, "Track")).performClick()
+        compose.mainClock.advanceTimeByFrame()
+        compose.mainClock.advanceTimeBy(600L)
+        assertEquals(
+            beside,
+            compose.onNodeWithContentDescription(text(R.string.album_cover_close_lyrics, "Track"))
+                .fetchSemanticsNode().boundsInRoot,
+        )
+        compose.onNodeWithText(text(R.string.lyrics_not_found)).assertIsDisplayed().performClick()
+        compose.mainClock.advanceTimeByFrame()
+        compose.mainClock.advanceTimeBy(400L)
+        compose.onNodeWithText(text(R.string.lyrics_not_found)).assertDoesNotExist()
+        assertEquals(
+            centered,
+            compose.onNodeWithContentDescription(text(R.string.album_cover_open_lyrics, "Track"))
+                .fetchSemanticsNode().boundsInRoot,
+        )
+        compose.mainClock.autoAdvance = true
     }
 
     @Test
@@ -244,6 +299,13 @@ class LyricsUiTest {
         )
             .fetchSemanticsNode().boundsInRoot
         assertTrue(viewportWithoutSource.height > viewportWithSource.height)
+    }
+
+    @Composable
+    private fun NowPlayingTestLayout(size: DpSize, content: @Composable () -> Unit) {
+        DeviceConfigurationOverride(DeviceConfigurationOverride.ForcedSize(size)) {
+            LsMusicTheme(dynamicColor = false, content = content)
+        }
     }
 
     private fun playingState(

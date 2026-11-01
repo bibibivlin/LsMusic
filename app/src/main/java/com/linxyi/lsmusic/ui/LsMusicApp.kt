@@ -9,13 +9,19 @@ import androidx.activity.BackEventCompat
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateDp
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.updateTransition
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -2489,6 +2495,7 @@ internal fun shouldShowLyricsBesideArtwork(widthDp: Float, heightDp: Float): Boo
 private const val LYRICS_SIDE_BY_SIDE_MIN_WIDTH_DP = 720f
 private const val LYRICS_SIDE_BY_SIDE_MIN_HEIGHT_DP = 560f
 private const val LYRICS_SIDE_BY_SIDE_MIN_ASPECT_RATIO = 1.25f
+private const val LYRICS_PANEL_TRANSITION_DURATION_MS = 320
 
 @Composable
 internal fun NowPlayingScreen(
@@ -2554,53 +2561,80 @@ internal fun NowPlayingScreen(
                 modifier = Modifier.fillMaxWidth().weight(1f),
                 contentAlignment = Alignment.Center,
             ) {
-                if (showLyrics && canShowSideBySide) {
-                    Row(
-                        modifier = Modifier.fillMaxSize(),
-                        horizontalArrangement = Arrangement.spacedBy(24.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        BoxWithConstraints(
-                            modifier = Modifier.weight(7f).fillMaxHeight(),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            val artworkSize = minOf(maxWidth, maxHeight * .96f, 440.dp)
-                            val artworkContentDescription = if (state.preferences.lyricsEnabled) {
-                                stringResource(R.string.album_cover_open_lyrics, track.title)
-                            } else {
-                                stringResource(R.string.album_cover, track.title)
-                            }
-                            Box(
-                                modifier = Modifier
-                                    .semantics {
-                                        contentDescription = artworkContentDescription
-                                    }
-                                    .then(
-                                        if (state.preferences.lyricsEnabled) {
-                                            Modifier.clickable(
-                                                onClickLabel = stringResource(R.string.open_lyrics),
-                                            ) { showLyrics = true }
-                                        } else {
-                                            Modifier
-                                        },
-                                    ),
-                            ) { HeroArtwork(track, artworkSize) }
-                        }
-                        LyricsPanel(
-                            loadState = state.lyricsLoadState,
-                            positionMs = state.positionMs,
-                            durationMs = state.durationMs,
-                            isPlaying = state.playbackState == RemotePlaybackState.PLAYING,
-                            translationMode = state.preferences.lyricsTranslationMode,
-                            sourceVisible = state.preferences.lyricsSourceVisible,
-                            effectsEnabled = state.preferences.lyricsEffectsEnabled,
-                            fontSizeSp = state.preferences.lyricsFontSizeSp,
-                            onRetry = onRetryLyrics,
-                            onClose = { showLyrics = false },
-                            modifier = Modifier.weight(8f).fillMaxHeight(),
-                        )
+                val lyricsVisible = showLyrics && state.preferences.lyricsEnabled
+                val transition = updateTransition(lyricsVisible, label = "artwork-lyrics")
+                val artworkSize = minOf(
+                    maxWidth * if (wide) .68f else .84f,
+                    maxHeight * .96f,
+                    if (wide) 440.dp else 360.dp,
+                )
+                val splitArtworkWidth = (maxWidth - 24.dp).coerceAtLeast(0.dp) * (7f / 15f)
+                val splitArtworkSize = minOf(splitArtworkWidth, maxHeight * .96f, 440.dp)
+                val artworkOffset by transition.animateDp(
+                    transitionSpec = { tween(LYRICS_PANEL_TRANSITION_DURATION_MS, easing = FastOutSlowInEasing) },
+                    label = "artwork-offset",
+                ) { visible ->
+                    if (visible && canShowSideBySide) (splitArtworkWidth - maxWidth) / 2f else 0.dp
+                }
+                val artworkScale by transition.animateFloat(
+                    transitionSpec = { tween(LYRICS_PANEL_TRANSITION_DURATION_MS, easing = FastOutSlowInEasing) },
+                    label = "artwork-scale",
+                ) { visible ->
+                    if (visible && canShowSideBySide && artworkSize > 0.dp) splitArtworkSize / artworkSize else 1f
+                }
+                val fadeDuration = LYRICS_PANEL_TRANSITION_DURATION_MS
+                transition.AnimatedVisibility(
+                    visible = { visible -> !visible || canShowSideBySide },
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .offset { IntOffset(artworkOffset.roundToPx(), 0) }
+                        .zIndex(if (canShowSideBySide) 1f else 0f),
+                    enter = fadeIn(tween(fadeDuration)) + scaleIn(tween(fadeDuration), initialScale = .96f),
+                    exit = fadeOut(tween(fadeDuration)) + scaleOut(tween(fadeDuration), targetScale = .96f),
+                ) {
+                    val artworkContentDescription = when {
+                        !state.preferences.lyricsEnabled -> stringResource(R.string.album_cover, track.title)
+                        lyricsVisible -> stringResource(R.string.album_cover_close_lyrics, track.title)
+                        else -> stringResource(R.string.album_cover_open_lyrics, track.title)
                     }
-                } else if (showLyrics) {
+                    // Keep one artwork and a stable image size while its position and scale animate.
+                    Box(
+                        modifier = Modifier
+                            .graphicsLayer {
+                                scaleX = artworkScale
+                                scaleY = artworkScale
+                            }
+                            .semantics { contentDescription = artworkContentDescription }
+                            .then(
+                                if (state.preferences.lyricsEnabled) {
+                                    Modifier.clickable(
+                                        onClickLabel = stringResource(
+                                            if (lyricsVisible) R.string.close_lyrics else R.string.open_lyrics,
+                                        ),
+                                    ) { showLyrics = !showLyrics }
+                                } else {
+                                    Modifier
+                                },
+                            ),
+                    ) { HeroArtwork(track, artworkSize) }
+                }
+                transition.AnimatedVisibility(
+                    visible = { it },
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .fillMaxHeight()
+                        .width(if (canShowSideBySide) (maxWidth - 24.dp) * (8f / 15f) else maxWidth),
+                    enter = fadeIn(tween(fadeDuration)) + if (canShowSideBySide) {
+                        slideInHorizontally(tween(fadeDuration, easing = FastOutSlowInEasing)) { it / 12 }
+                    } else {
+                        scaleIn(tween(fadeDuration), initialScale = .96f)
+                    },
+                    exit = fadeOut(tween(fadeDuration)) + if (canShowSideBySide) {
+                        slideOutHorizontally(tween(fadeDuration, easing = FastOutSlowInEasing)) { it / 12 }
+                    } else {
+                        scaleOut(tween(fadeDuration), targetScale = .96f)
+                    },
+                ) {
                     LyricsPanel(
                         loadState = state.lyricsLoadState,
                         positionMs = state.positionMs,
@@ -2614,33 +2648,6 @@ internal fun NowPlayingScreen(
                         onClose = { showLyrics = false },
                         modifier = Modifier.fillMaxSize(),
                     )
-                } else {
-                    val maximumArtwork = if (wide) 440.dp else 360.dp
-                    val artworkSize = minOf(
-                        maxWidth * if (wide) .68f else .84f,
-                        maxHeight * .96f,
-                        maximumArtwork,
-                    )
-                    val artworkContentDescription = if (state.preferences.lyricsEnabled) {
-                        stringResource(R.string.album_cover_open_lyrics, track.title)
-                    } else {
-                        stringResource(R.string.album_cover, track.title)
-                    }
-                    Box(
-                        modifier = Modifier
-                            .semantics {
-                                contentDescription = artworkContentDescription
-                            }
-                            .then(
-                                if (state.preferences.lyricsEnabled) {
-                                    Modifier.clickable(
-                                        onClickLabel = stringResource(R.string.open_lyrics),
-                                    ) { showLyrics = true }
-                                } else {
-                                    Modifier
-                                },
-                            ),
-                    ) { HeroArtwork(track, artworkSize) }
                 }
             }
             Spacer(Modifier.height(if (compact) 8.dp else 16.dp))
