@@ -79,6 +79,7 @@
     <string name="unknown_track">Unknown track</string>
     <string name="album_cover"><xliff:g id="title" example="Album">%1$s</xliff:g> cover</string>
     <string name="album_cover_open_lyrics"><xliff:g id="title" example="Album">%1$s</xliff:g> cover, tap to open lyrics</string>
+    <string name="album_cover_close_lyrics"><xliff:g id="title" example="Album">%1$s</xliff:g> cover, tap to close lyrics</string>
     <string name="open_lyrics">Open lyrics</string>
 
     <string name="queue_up_next">Up next</string>

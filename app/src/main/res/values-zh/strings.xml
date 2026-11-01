@@ -76,6 +76,7 @@
     <string name="unknown_track">未知曲目</string>
     <string name="album_cover"><xliff:g id="title" example="专辑">%1$s</xliff:g> 封面</string>
     <string name="album_cover_open_lyrics"><xliff:g id="title" example="专辑">%1$s</xliff:g> 封面，点击打开歌词</string>
+    <string name="album_cover_close_lyrics"><xliff:g id="title" example="专辑">%1$s</xliff:g> 封面，点击关闭歌词</string>
     <string name="open_lyrics">打开歌词</string>
     <string name="queue_up_next">接下来播放</string>
     <plurals name="queue_summary"><item quantity="other">%1$d 首音乐 · 队列保存在这台手机上</item></plurals>
