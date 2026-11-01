@@ -43,6 +43,8 @@ The Settings home page keeps the complete media-library and player selection are
 
 Double-tap an album cover on its detail page to view it full-screen against a black background. The status and navigation bars are hidden; tap the image or use Back to close it.
 
+Opening an album smoothly expands its cover into the detail page, followed by the album information, playback buttons, and tracks. Returning brings the cover back to its card and restores your browsing position. Both grid and list layouts are supported, and animations follow the system animation duration setting.
+
 On sufficiently wide screens, album details show the cover and information beside the track list, with playback and queue buttons at the bottom right.
 
 ## Playback settings

@@ -66,6 +66,27 @@ class LibraryLayoutUiTest {
         compose.onNodeWithContentDescription(text(R.string.switch_to_grid)).assertIsDisplayed()
     }
 
+    @Test
+    fun gridFastScrollerKeepsFloatingSearchUsableWithHundredsOfAlbums() {
+        setLibraryContent()
+        compose.onNodeWithContentDescription(text(R.string.switch_to_grid)).performClick()
+
+        compose.onNodeWithContentDescription(text(R.string.fast_scroll_library))
+            .assertIsDisplayed()
+            .performTouchInput {
+                swipe(
+                    start = center,
+                    end = Offset(centerX, bottom),
+                    durationMillis = 300L,
+                )
+            }
+
+        compose.onNodeWithContentDescription(text(R.string.search_current_directory))
+            .assertIsDisplayed()
+            .performClick()
+        compose.onNodeWithContentDescription(text(R.string.switch_to_list)).assertIsDisplayed()
+    }
+
     private fun setLibraryContent() {
         val pageKey = BrowsePageKey("server", "albums")
         val viewState = BrowseViewState(useGrid = false)
@@ -77,7 +98,7 @@ class LibraryLayoutUiTest {
             kind = DlnaDeviceKind.MEDIA_SERVER,
         )
         val state = LibraryUiState(
-            entries = List(60) { index ->
+            entries = List(400) { index ->
                 MediaEntry(
                     id = "album-$index",
                     parentId = "albums",
