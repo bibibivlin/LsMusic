@@ -35,6 +35,7 @@ class RemotePlaybackService : Service() {
         createNotificationChannel()
         mediaSession = MediaSession(this, SESSION_TAG).apply {
             setFlags(MediaSession.FLAG_HANDLES_MEDIA_BUTTONS or MediaSession.FLAG_HANDLES_TRANSPORT_CONTROLS)
+            setSessionActivity(PlaybackNotificationIntent.create(this@RemotePlaybackService))
             setCallback(object : MediaSession.Callback() {
                 override fun onPlay() = dispatchCommand(COMMAND_PLAY)
                 override fun onPause() = dispatchCommand(COMMAND_PAUSE)
@@ -163,6 +164,7 @@ class RemotePlaybackService : Service() {
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentTitle(data.title)
             .setContentText(listOf(data.artist, data.album).filter { it.isNotBlank() }.joinToString(" · "))
+            .setContentIntent(PlaybackNotificationIntent.create(this))
             .setLargeIcon(artwork)
             .setVisibility(Notification.VISIBILITY_PUBLIC)
             .setOnlyAlertOnce(true)

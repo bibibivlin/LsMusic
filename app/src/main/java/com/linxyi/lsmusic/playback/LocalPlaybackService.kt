@@ -56,6 +56,7 @@ class LocalPlaybackService : MediaSessionService() {
             }
         })
         mediaSession = MediaSession.Builder(this, player)
+            .setSessionActivity(PlaybackNotificationIntent.create(this))
             .setCallback(object : MediaSession.Callback {
                 override fun onConnect(session: MediaSession, controller: MediaSession.ControllerInfo): MediaSession.ConnectionResult =
                     MediaSession.ConnectionResult.AcceptedResultBuilder(session)
