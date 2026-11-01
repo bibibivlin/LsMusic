@@ -16,7 +16,7 @@ L's Music is an Android DLNA / UPnP music controller. Browse music libraries on 
 - Restore the previous search, layout, and browse position when returning to the library.
 - Play music on a remote DLNA device or on this device.
 - Manage the playback queue with shuffle, repeat, track changes, and seeking.
-- Supports Android notifications, the lock screen, and Bluetooth media controls.
+- Supports Android notifications, the lock screen, and Bluetooth media controls; tap the playback notification to open Now playing.
 - Optional online lyrics with line-by-line, word-by-word, and bilingual display.
 - Optional ListenBrainz reporting, with offline listens retained and retried when the network returns.
 - Supports phones, tablets, and foldables, plus dynamic colors and preset themes.

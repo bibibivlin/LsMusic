@@ -2,8 +2,9 @@ package com.linxyi.lsmusic
 
 import android.Manifest
 import android.annotation.SuppressLint
-import android.content.res.Configuration
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
@@ -39,13 +40,15 @@ import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
-import com.linxyi.lsmusic.ui.ExitStatus
-import com.linxyi.lsmusic.ui.AppPreferencesStore
 import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.linxyi.lsmusic.playback.PlaybackNotificationIntent
+import com.linxyi.lsmusic.ui.AppDestination
+import com.linxyi.lsmusic.ui.AppPreferencesStore
+import com.linxyi.lsmusic.ui.ExitStatus
 import com.linxyi.lsmusic.ui.LsMusicApp
 import com.linxyi.lsmusic.ui.LsMusicViewModel
 import com.linxyi.lsmusic.ui.resolve
@@ -70,6 +73,7 @@ class MainActivity : ComponentActivity() {
             else R.style.LsMusicPlatformThemeLight,
         )
         super.onCreate(savedInstanceState)
+        if (savedInstanceState == null) openPlaybackFromIntent(intent)
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 viewModel.uiState.collect { state ->
@@ -138,6 +142,18 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        openPlaybackFromIntent(intent)
+    }
+
+    private fun openPlaybackFromIntent(intent: Intent?) {
+        if (intent?.action == PlaybackNotificationIntent.ACTION_OPEN_NOW_PLAYING) {
+            viewModel.setDestination(AppDestination.NOW_PLAYING)
         }
     }
 }
