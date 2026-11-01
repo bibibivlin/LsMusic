@@ -40,7 +40,9 @@ enum class PresetPalette(
 }
 
 data class AppPreferences(
+    // Retained as the default for screens without an override, including older backups.
     val gallerySize: GallerySize = GallerySize.STANDARD,
+    val gallerySizesByScreen: Map<String, GallerySize> = emptyMap(),
     val useGridByDefault: Boolean = true,
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val useDynamicColor: Boolean = true,
@@ -60,7 +62,33 @@ data class AppPreferences(
     val listenBrainzToken: String = "",
     val listenBrainzMinimumSeconds: Int = 240,
     val listenBrainzMinimumPercent: Int = 50,
-)
+) {
+    fun gallerySizeForScreen(screenKey: String?): GallerySize = gallerySizesByScreen[screenKey] ?: gallerySize
+
+    fun withGallerySizeForScreen(screenKey: String, size: GallerySize): AppPreferences =
+        copy(gallerySizesByScreen = gallerySizesByScreen + (screenKey to size))
+}
+
+/**
+ * Use the activity's maximum window bounds in pixels, before insets, rather than its
+ * current window size or density. Rotation and split-screen must share a preference;
+ * foldable panels can share a display ID while having different full-screen bounds.
+ */
+internal fun galleryScreenKey(widthPixels: Int, heightPixels: Int): String {
+    require(widthPixels > 0 && heightPixels > 0)
+    return "${minOf(widthPixels, heightPixels)}x${maxOf(widthPixels, heightPixels)}"
+}
+
+internal const val GALLERY_SIZE_BY_SCREEN_PREFIX = "gallery_size_by_screen_"
+
+internal fun readScreenGallerySizes(values: Map<String, *>): Map<String, GallerySize> =
+    values.entries.mapNotNull { (key, value) ->
+        if (!key.startsWith(GALLERY_SIZE_BY_SCREEN_PREFIX)) return@mapNotNull null
+        val screenKey = key.removePrefix(GALLERY_SIZE_BY_SCREEN_PREFIX).takeIf { it.isNotBlank() }
+            ?: return@mapNotNull null
+        val size = GallerySize.entries.firstOrNull { it.name == value } ?: return@mapNotNull null
+        screenKey to size
+    }.toMap()
 
 internal fun parseLyricsProviderOrder(value: String?): List<LyricsProviderId> = normalizedProviderOrder(
     value?.split(',')
@@ -118,6 +146,7 @@ class AppPreferencesStore(context: Context) {
             KEY_LAST_RENDERER_ID, KEY_LAST_RENDERER_NAME, KEY_LAST_RENDERER_MANUFACTURER, KEY_LAST_RENDERER_MODEL,
         ).forEach { key -> require(key !in values || values[key] is String) }
         values.filterKeys { it.startsWith("album_sort_by_server_") }.values.forEach { require(it is String) }
+        values.filterKeys { it.startsWith(GALLERY_SIZE_BY_SCREEN_PREFIX) }.values.forEach { require(it is String) }
     }
 
     internal fun tokenFromBackup(secretValues: Map<String, Any>?): String =
@@ -148,6 +177,7 @@ class AppPreferencesStore(context: Context) {
 
     private fun readPreferences(preferences: Map<String, *>, secrets: Map<String, *>): AppPreferences = AppPreferences(
         gallerySize = preferences.enumValue(KEY_GALLERY_SIZE, GallerySize.STANDARD),
+        gallerySizesByScreen = readScreenGallerySizes(preferences),
         useGridByDefault = preferences.getBoolean(KEY_GRID_DEFAULT, true),
         themeMode = preferences.enumValue(KEY_THEME_MODE, ThemeMode.SYSTEM),
         useDynamicColor = preferences.getBoolean(KEY_DYNAMIC_COLOR, true),
@@ -212,6 +242,12 @@ class AppPreferencesStore(context: Context) {
 
     fun save(value: AppPreferences) {
         preferences.edit()
+            .apply {
+                preferences.all.keys.filter { it.startsWith(GALLERY_SIZE_BY_SCREEN_PREFIX) }.forEach { remove(it) }
+                value.gallerySizesByScreen.forEach { (screenKey, size) ->
+                    putString("$GALLERY_SIZE_BY_SCREEN_PREFIX$screenKey", size.name)
+                }
+            }
             .putString(KEY_GALLERY_SIZE, value.gallerySize.name)
             .putBoolean(KEY_GRID_DEFAULT, value.useGridByDefault)
             .putString(KEY_THEME_MODE, value.themeMode.name)

@@ -19,6 +19,8 @@ import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.test.platform.app.InstrumentationRegistry
 import com.linxyi.lsmusic.R
+import com.linxyi.lsmusic.dlna.DlnaDevice
+import com.linxyi.lsmusic.dlna.DlnaDeviceKind
 import com.linxyi.lsmusic.dlna.MediaEntry
 import com.linxyi.lsmusic.dlna.RemotePlaybackState
 import com.linxyi.lsmusic.listenbrainz.PendingListen
@@ -34,7 +36,11 @@ import java.util.Locale
 /** Renders production routes with in-memory state. Never starts discovery or contacts an account. */
 class SettingsUiTest {
     @get:Rule val compose = createComposeRule()
-    private var state by mutableStateOf(LsMusicUiState(destination = AppDestination.SETTINGS, isSearching = false))
+    private val outerScreen = galleryScreenKey(1080, 2376)
+    private val innerScreen = galleryScreenKey(2076, 2152)
+    private var state by mutableStateOf(LsMusicUiState(
+        destination = AppDestination.SETTINGS, isSearching = false, galleryScreenKey = outerScreen,
+    ))
     private var exits = 0
     private var libraryPlayClicks = 0
     private var exports = 0
@@ -134,7 +140,7 @@ class SettingsUiTest {
         render()
         open("appearance")
         compose.onNodeWithText(text(R.string.gallery_large)).performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.OnClick) { it() }
-        compose.runOnIdle { assertEquals(GallerySize.LARGE, state.preferences.gallerySize) }
+        compose.runOnIdle { assertEquals(GallerySize.LARGE, state.gallerySize) }
         screenshot("settings-appearance")
         back()
         open("appearance")
@@ -341,6 +347,77 @@ class SettingsUiTest {
         compose.runOnIdle { assertEquals(AppDestination.SETTINGS, state.destination) }
     }
 
+    @Test
+    fun coverSize_followsCurrentScreenAndOnlyChangesThatScreen() {
+        state = state.copy(
+            hasMultipleGalleryScreens = true,
+            preferences = AppPreferences()
+                .withGallerySizeForScreen(outerScreen, GallerySize.COMPACT)
+                .withGallerySizeForScreen(innerScreen, GallerySize.LARGE),
+        )
+        render(fontScale = 1.5f, locale = Locale.SIMPLIFIED_CHINESE)
+        open("appearance")
+        compose.onNodeWithText("不同屏幕可以独立设置该选项", substring = true).assertIsDisplayed()
+        compose.onNodeWithText(text(R.string.gallery_compact)).assertIsSelected()
+        compose.onNodeWithText(text(R.string.gallery_standard)).performClick()
+        compose.runOnIdle { state = state.copy(galleryScreenKey = innerScreen) }
+        compose.onNodeWithText(text(R.string.gallery_large)).assertIsSelected()
+        compose.onNodeWithText(text(R.string.gallery_compact)).performClick()
+        compose.runOnIdle { state = state.copy(galleryScreenKey = outerScreen) }
+        compose.onNodeWithText(text(R.string.gallery_standard)).assertIsSelected()
+        compose.runOnIdle {
+            assertEquals(GallerySize.COMPACT, state.preferences.gallerySizeForScreen(innerScreen))
+            assertEquals(GallerySize.STANDARD, state.preferences.gallerySize)
+        }
+        screenshot("settings-cover-size-per-screen-chinese-large-font")
+    }
+
+    @Test
+    fun coverSize_hidesScreenHintOnSingleScreenEvenWithImportedScreenPreferences() {
+        state = state.copy(
+            hasMultipleGalleryScreens = false,
+            preferences = AppPreferences()
+                .withGallerySizeForScreen(outerScreen, GallerySize.COMPACT)
+                .withGallerySizeForScreen(innerScreen, GallerySize.LARGE),
+        )
+        render(locale = Locale.SIMPLIFIED_CHINESE)
+        open("appearance")
+        compose.onNodeWithText(text(R.string.settings_gallery_description)).assertIsDisplayed()
+        compose.onNodeWithText(text(R.string.settings_gallery_per_screen_description), substring = true).assertDoesNotExist()
+        compose.onNodeWithText(text(R.string.gallery_compact)).assertIsSelected()
+        screenshot("settings-cover-size-single-screen")
+
+        compose.runOnIdle { state = state.copy(hasMultipleGalleryScreens = true) }
+        compose.onNodeWithText(text(R.string.settings_gallery_per_screen_description), substring = true).assertIsDisplayed()
+        compose.runOnIdle { state = state.copy(hasMultipleGalleryScreens = false) }
+        compose.onNodeWithText(text(R.string.settings_gallery_per_screen_description), substring = true).assertDoesNotExist()
+    }
+
+    @Test
+    fun libraryCoverSize_updatesWhenTheCurrentScreenChanges() {
+        val server = DlnaDevice("offline", "Offline library", "Test", "Server", DlnaDeviceKind.MEDIA_SERVER)
+        state = state.copy(
+            destination = AppDestination.LIBRARY,
+            servers = listOf(server),
+            selectedServerId = server.id,
+            browsePageKey = BrowsePageKey(server.id, "0"),
+            browseLoadStatus = BrowseLoadStatus.LOADED,
+            browseViewState = BrowseViewState(useGrid = true),
+            entries = List(12) { MediaEntry("album-$it", "0", "Album $it", isContainer = true, isAlbum = true) },
+            preferences = AppPreferences()
+                .withGallerySizeForScreen(outerScreen, GallerySize.COMPACT)
+                .withGallerySizeForScreen(innerScreen, GallerySize.LARGE),
+        )
+        render()
+        val cover = compose.onNodeWithTag("library-cover:album-0", useUnmergedTree = true)
+        val outerWidth = cover.assertIsDisplayed().fetchSemanticsNode().boundsInRoot.width
+        compose.runOnIdle { state = state.copy(galleryScreenKey = innerScreen) }
+        val innerWidth = cover.assertIsDisplayed().fetchSemanticsNode().boundsInRoot.width
+        assertTrue("The inner screen must use its larger cover preference", innerWidth > outerWidth)
+        compose.runOnIdle { state = state.copy(galleryScreenKey = outerScreen) }
+        assertEquals(outerWidth, cover.assertIsDisplayed().fetchSemanticsNode().boundsInRoot.width, 1f)
+    }
+
     private fun switch(key: String) = compose.onNode(isToggleable() and hasAnyAncestor(hasTestTag("setting-$key")))
 
     private fun open(key: String) {
@@ -384,7 +461,9 @@ class SettingsUiTest {
                     onSaveBrowseViewState = { _, _ -> }, onResolveAlbumArtwork = { _, _ -> },
                     onTogglePlayback = {}, onPrevious = {}, onNext = {}, onCycleRepeat = {},
                     onToggleShuffle = {}, onSeek = {}, onRemoveQueue = {}, onMoveQueue = { _, _ -> }, onClearQueue = {},
-                    onGallerySize = { state = state.copy(preferences = state.preferences.copy(gallerySize = it)) },
+                    onGallerySize = { state = state.copy(preferences = state.preferences.withGallerySizeForScreen(
+                        requireNotNull(state.galleryScreenKey), it,
+                    )) },
                     onDefaultGridLayout = {}, onThemeMode = {}, onDynamicColor = {}, onPresetPalette = {},
                     onLoadLyrics = {}, onRetryLyrics = {}, onLyricsEnabled = {}, onLyricsProviderOrder = {},
                     onLyricsTranslationMode = {}, onLyricsSourceVisible = {}, onLyricsEffectsEnabled = {},

@@ -5,8 +5,10 @@ import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
+import android.hardware.display.DisplayManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -51,6 +53,8 @@ import com.linxyi.lsmusic.ui.AppPreferencesStore
 import com.linxyi.lsmusic.ui.ExitStatus
 import com.linxyi.lsmusic.ui.LsMusicApp
 import com.linxyi.lsmusic.ui.LsMusicViewModel
+import com.linxyi.lsmusic.ui.galleryScreenKey
+import com.linxyi.lsmusic.ui.hasMultipleGalleryScreens
 import com.linxyi.lsmusic.ui.resolve
 import com.linxyi.lsmusic.ui.resolvesToDarkTheme
 import com.linxyi.lsmusic.ui.theme.LsMusicTheme
@@ -58,6 +62,12 @@ import com.linxyi.lsmusic.ui.theme.LsMusicTheme
 class MainActivity : ComponentActivity() {
     private val viewModel: LsMusicViewModel by viewModels()
     private var appliedDarkTheme = false
+    private val displayManager by lazy { getSystemService(DisplayManager::class.java) }
+    private val galleryDisplayListener = object : DisplayManager.DisplayListener {
+        override fun onDisplayAdded(displayId: Int) = updateGalleryScreen()
+        override fun onDisplayRemoved(displayId: Int) = updateGalleryScreen()
+        override fun onDisplayChanged(displayId: Int) = Unit
+    }
 
     @SuppressLint("InlinedApi")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -73,6 +83,7 @@ class MainActivity : ComponentActivity() {
             else R.style.LsMusicPlatformThemeLight,
         )
         super.onCreate(savedInstanceState)
+        updateGalleryScreen()
         if (savedInstanceState == null) openPlaybackFromIntent(intent)
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
@@ -143,6 +154,30 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        displayManager.registerDisplayListener(galleryDisplayListener, Handler(mainLooper))
+        updateGalleryScreen()
+    }
+
+    override fun onStop() {
+        displayManager.unregisterDisplayListener(galleryDisplayListener)
+        super.onStop()
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        updateGalleryScreen()
+    }
+
+    private fun updateGalleryScreen() {
+        val bounds = windowManager.maximumWindowMetrics.bounds
+        viewModel.setGalleryScreen(
+            screenKey = galleryScreenKey(bounds.width(), bounds.height()),
+            hasMultipleScreens = hasMultipleGalleryScreens(),
+        )
     }
 
     override fun onNewIntent(intent: Intent) {

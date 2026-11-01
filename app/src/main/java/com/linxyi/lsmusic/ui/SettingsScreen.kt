@@ -193,7 +193,12 @@ internal fun SettingsScreen(
             item {
                 SettingCard(
                     title = stringResource(R.string.settings_gallery_size),
-                    description = stringResource(R.string.settings_gallery_description),
+                    description = stringResource(R.string.settings_gallery_description) +
+                        if (state.hasMultipleGalleryScreens) {
+                            "\n" + stringResource(R.string.settings_gallery_per_screen_description)
+                        } else {
+                            ""
+                        },
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
@@ -201,7 +206,7 @@ internal fun SettingsScreen(
                     ) {
                         GallerySize.entries.forEach { size ->
                             FilterChip(
-                                selected = preferences.gallerySize == size,
+                                selected = state.gallerySize == size,
                                 onClick = { onGallerySize(size) },
                                 label = { Text(size.displayName()) },
                             )

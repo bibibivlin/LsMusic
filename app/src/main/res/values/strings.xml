@@ -120,6 +120,7 @@
     <string name="exit">Exit</string>
     <string name="settings_gallery_size">Cover size</string>
     <string name="settings_gallery_description">The gallery automatically adds columns based on the available screen width.</string>
+    <string name="settings_gallery_per_screen_description">This option can be set independently for each screen.</string>
     <string name="gallery_compact">Compact</string>
     <string name="gallery_standard">Standard</string>
     <string name="gallery_large">Large covers</string>
