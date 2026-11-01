@@ -211,6 +211,8 @@ data class LsMusicUiState(
     val lyricsCacheBytes: Long = 0L,
     val isClearingLyricsCache: Boolean = false,
     val preferences: AppPreferences = AppPreferences(),
+    val galleryScreenKey: String? = null,
+    val hasMultipleGalleryScreens: Boolean = false,
     val sleepTimer: SleepTimerState = SleepTimerState(),
     val sleepTimerPermissionRequest: SleepTimerRequest? = null,
     val listenBrainzTokenValidation: ListenBrainzTokenValidationUiState = ListenBrainzTokenValidationUiState(),
@@ -227,6 +229,9 @@ data class LsMusicUiState(
     val dataBackup: DataBackupUiState = DataBackupUiState(),
     val dataImportGeneration: Long = 0L,
 ) {
+    val gallerySize: GallerySize
+        get() = preferences.gallerySizeForScreen(galleryScreenKey)
+
     val currentTrack: MediaEntry?
         get() = currentQueueItem?.track
 
@@ -844,6 +849,8 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
             browsePageKey = rememberedServer?.id?.let { BrowsePageKey(it, ROOT_OBJECT_ID) },
             albumSort = preferenceStore.albumSort(rememberedServer?.id),
             preferences = preferences,
+            galleryScreenKey = old.galleryScreenKey,
+            hasMultipleGalleryScreens = old.hasMultipleGalleryScreens,
             queue = session.queue,
             currentQueueIndex = session.currentQueueIndex,
             playbackOrder = session.playbackOrder,
@@ -1484,7 +1491,14 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun setGallerySize(size: GallerySize) = updatePreferences { it.copy(gallerySize = size) }
+    fun setGalleryScreen(screenKey: String, hasMultipleScreens: Boolean) {
+        _uiState.update { it.copy(galleryScreenKey = screenKey, hasMultipleGalleryScreens = hasMultipleScreens) }
+    }
+
+    fun setGallerySize(size: GallerySize) {
+        val screenKey = _uiState.value.galleryScreenKey ?: return
+        updatePreferences { it.withGallerySizeForScreen(screenKey, size) }
+    }
 
     fun setEnqueueWhilePlaying(enabled: Boolean) = updatePreferences { it.copy(enqueueWhilePlaying = enabled) }
 

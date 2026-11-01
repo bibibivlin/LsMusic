@@ -114,6 +114,7 @@
     <string name="exit">退出</string>
     <string name="settings_gallery_size">封面大小</string>
     <string name="settings_gallery_description">画廊会根据屏幕可用宽度自动增加列数。</string>
+    <string name="settings_gallery_per_screen_description">不同屏幕可以独立设置该选项</string>
     <string name="gallery_compact">紧凑</string>
     <string name="gallery_standard">标准</string>
     <string name="gallery_large">大封面</string>

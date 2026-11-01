@@ -56,6 +56,7 @@ class AppBackupStorageTest {
         val generated = UUID.randomUUID().toString()
         val original = AppPreferences(
             gallerySize = GallerySize.COMPACT, useGridByDefault = false, themeMode = ThemeMode.DARK,
+            gallerySizesByScreen = mapOf("1080x2376" to GallerySize.COMPACT, "2076x2152" to GallerySize.LARGE),
             useDynamicColor = false, presetPalette = PresetPalette.ROSE, enqueueWhilePlaying = true,
             miniPlayerEnabled = false, clearQueueOnPlay = false, sleepTimerMinutes = 75, sleepTimerFinishTrack = true,
             lyricsEnabled = true, lyricsProviderOrder = com.linxyi.lsmusic.lyrics.LyricsProviderId.entries.reversed(),
@@ -134,7 +135,7 @@ class AppBackupStorageTest {
     }
 
     @Test fun failedPendingWrite_rollsBackPreferencesAndDoesNotPublishImportedRecords() = runBlocking {
-        preferences.save(AppPreferences(themeMode = ThemeMode.DARK))
+        preferences.save(AppPreferences(themeMode = ThemeMode.DARK, gallerySizesByScreen = mapOf("1080x2376" to GallerySize.COMPACT)))
         val failing = PendingListenRepository(listOf(record), { error("Simulated storage failure") })
         val importer = AppBackupStorage(context, preferences, failing, sessions)
         val old = preferences.backupPreferences()
@@ -147,7 +148,7 @@ class AppBackupStorageTest {
     }
 
     @Test fun interruptedImport_recoversAllStoresBeforeAnyBackgroundUploadCanStart() = runBlocking {
-        preferences.save(AppPreferences(themeMode = ThemeMode.DARK))
+        preferences.save(AppPreferences(themeMode = ThemeMode.DARK, gallerySizesByScreen = mapOf("2076x2152" to GallerySize.LARGE)))
         pending.enqueue(record)
         val session = BackupSession(listOf(QueueItem("first", track)), 0)
         val previous = storage.snapshot(session, true)
