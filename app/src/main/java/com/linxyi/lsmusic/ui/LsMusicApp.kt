@@ -319,9 +319,11 @@ private fun albumArtworkRequest(
     context: android.content.Context,
     artworkUri: String,
     sizePx: Int,
+    placeholderMemoryCacheKey: String? = null,
 ): ImageRequest = ImageRequest.Builder(context)
     .data(artworkUri)
     .memoryCacheKey(albumArtworkThumbnailMemoryCacheKey(artworkUri))
+    .placeholderMemoryCacheKey(placeholderMemoryCacheKey)
     .size(sizePx.coerceAtLeast(1))
     .scale(Scale.FILL)
     .precision(Precision.INEXACT)
@@ -847,7 +849,7 @@ private fun AppNavigationRail(selected: AppDestination, onDestination: (AppDesti
 }
 
 @Composable
-private fun LibraryScreen(
+internal fun LibraryScreen(
     state: LibraryUiState,
     onOpen: (MediaEntry) -> Unit,
     onNavigateTo: (Int) -> Unit,
@@ -862,13 +864,13 @@ private fun LibraryScreen(
     bottomContentPadding: Dp,
     onOpenSettings: () -> Unit,
 ) {
-    val pageKey = state.browsePageKey ?: BrowsePageKey("", state.path.lastOrNull()?.id.orEmpty())
-    key(pageKey) {
-        when (state.path.lastOrNull()?.pageKind ?: LibraryPageKind.DIRECTORY) {
+    LibraryPageTransition(state) { page ->
+        val pageKey = page.pageKey
+        when (page.pageKind) {
             LibraryPageKind.ALBUM -> AlbumDetailScreen(
-                state = state,
+                state = page,
                 pageKey = pageKey,
-                initialViewState = state.browseViewState,
+                initialViewState = page.browseViewState,
                 onSaveBrowseViewState = onSaveBrowseViewState,
                 onResolveAlbumArtwork = onResolveAlbumArtwork,
                 onPlay = onPlay,
@@ -879,13 +881,13 @@ private fun LibraryScreen(
                 bottomContentPadding = bottomContentPadding,
             )
             LibraryPageKind.RESOLVING -> ResolvingLibraryPage(
-                path = state.path,
+                path = page.path,
                 onNavigateTo = onNavigateTo,
             )
             LibraryPageKind.DIRECTORY -> LibraryDirectoryScreen(
-                state = state,
+                state = page,
                 pageKey = pageKey,
-                initialViewState = state.browseViewState,
+                initialViewState = page.browseViewState,
                 onOpen = onOpen,
                 onNavigateTo = onNavigateTo,
                 onPlay = onPlay,
@@ -993,6 +995,7 @@ internal fun LibraryDirectoryScreen(
     }
     val currentQuery by rememberUpdatedState(query)
     val currentUseGrid by rememberUpdatedState(useGrid)
+    val isCurrentPage = LocalLibraryPageMotion.current?.isCurrentPage != false
     val contentStatus = resolveLibraryContentStatus(
         browseLoadStatus = state.browseLoadStatus,
         isSearching = state.isSearching,
@@ -1001,21 +1004,34 @@ internal fun LibraryDirectoryScreen(
         visibleEntriesEmpty = visibleEntries.isEmpty(),
     )
 
-    DisposableEffect(pageKey, gridState) {
+    fun saveViewState() {
+        val anchorKey = gridState.layoutInfo.visibleItemsInfo
+            .firstOrNull { it.index == gridState.firstVisibleItemIndex }
+            ?.key as? String
+        onSaveBrowseViewState(
+            pageKey,
+            BrowseViewState(
+                query = currentQuery,
+                useGrid = currentUseGrid,
+                anchorEntryKey = anchorKey?.takeIf { it.startsWith(MEDIA_ENTRY_KEY_PREFIX) },
+                fallbackItemIndex = gridState.firstVisibleItemIndex,
+                scrollOffset = gridState.firstVisibleItemScrollOffset,
+            ),
+        )
+    }
+    val openEntry: (MediaEntry) -> Unit = { entry ->
+        // Save before navigating: AnimatedContent keeps this page alive during the cover flight.
+        saveViewState()
+        onOpen(entry)
+    }
+    // Publish layout choices before the next tap so the destination starts with the source corners.
+    // Scroll frames remain local; the viewport is saved when navigation actually happens.
+    LaunchedEffect(query, useGrid) {
+        if (isCurrentPage) saveViewState()
+    }
+    DisposableEffect(pageKey, gridState, isCurrentPage) {
         onDispose {
-            val anchorKey = gridState.layoutInfo.visibleItemsInfo
-                .firstOrNull { it.index == gridState.firstVisibleItemIndex }
-                ?.key as? String
-            onSaveBrowseViewState(
-                pageKey,
-                BrowseViewState(
-                    query = currentQuery,
-                    useGrid = currentUseGrid,
-                    anchorEntryKey = anchorKey?.takeIf { it.startsWith(MEDIA_ENTRY_KEY_PREFIX) },
-                    fallbackItemIndex = gridState.firstVisibleItemIndex,
-                    scrollOffset = gridState.firstVisibleItemScrollOffset,
-                ),
-            )
+            if (isCurrentPage) saveViewState()
         }
     }
 
@@ -1065,13 +1081,13 @@ internal fun LibraryDirectoryScreen(
             gridState = gridState,
             requestSizePx = artworkRequestSizePx,
             enabled = useGrid && isAlbumCollection && !state.isBrowsing && visibleEntries.isNotEmpty(),
-            paused = isFastScrollerDragging,
+            paused = isFastScrollerDragging || !isCurrentPage,
         )
 
         LazyVerticalGrid(
             columns = if (useGrid) GridCells.Adaptive(minimumCellWidth) else GridCells.Fixed(1),
             state = gridState,
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.fillMaxSize().testTag("library-directory-entries"),
             contentPadding = PaddingValues(
                 start = 20.dp,
                 top = 24.dp,
@@ -1153,16 +1169,18 @@ internal fun LibraryDirectoryScreen(
                         entry = entry,
                         gallerySize = state.preferences.gallerySize,
                         artworkRequestSizePx = artworkRequestSizePx,
-                        onOpen = { onOpen(entry) },
+                        onOpen = { openEntry(entry) },
                         onQueue = { onQueue(entry) },
+                        albumTransitionKey = if (entry.isContainer) BrowsePageKey(pageKey.serverId, entry.id) else null,
                     )
                 } else {
                     MediaEntryRow(
                         entry = entry,
                         emphasized = index % 5 == 0,
-                        onOpen = { onOpen(entry) },
+                        onOpen = { openEntry(entry) },
                         onPlay = { onPlay(entry) },
                         onQueue = { onQueue(entry) },
+                        albumTransitionKey = if (entry.isContainer) BrowsePageKey(pageKey.serverId, entry.id) else null,
                     )
                 }
             }
@@ -1573,19 +1591,27 @@ internal fun AlbumDetailScreen(
         initialFirstVisibleItemScrollOffset = initialViewState.scrollOffset.coerceAtLeast(0),
     )
 
-    DisposableEffect(pageKey, listState) {
+    val isCurrentPage = LocalLibraryPageMotion.current?.isCurrentPage != false
+    val trackReveal = animateFloatAsState(
+        targetValue = if (state.browseLoadStatus == BrowseLoadStatus.LOADED) 1f else 0f,
+        animationSpec = tween(240),
+        label = "album-loaded-tracks",
+    )
+    DisposableEffect(pageKey, listState, isCurrentPage) {
         onDispose {
-            val anchorKey = listState.layoutInfo.visibleItemsInfo
-                .firstOrNull { it.index == listState.firstVisibleItemIndex }
-                ?.key as? String
-            onSaveBrowseViewState(
-                pageKey,
-                initialViewState.copy(
-                    anchorEntryKey = anchorKey?.takeIf { it.startsWith(MEDIA_ENTRY_KEY_PREFIX) },
-                    fallbackItemIndex = listState.firstVisibleItemIndex,
-                    scrollOffset = listState.firstVisibleItemScrollOffset,
-                ),
-            )
+            if (isCurrentPage) {
+                val anchorKey = listState.layoutInfo.visibleItemsInfo
+                    .firstOrNull { it.index == listState.firstVisibleItemIndex }
+                    ?.key as? String
+                onSaveBrowseViewState(
+                    pageKey,
+                    initialViewState.copy(
+                        anchorEntryKey = anchorKey?.takeIf { it.startsWith(MEDIA_ENTRY_KEY_PREFIX) },
+                        fallbackItemIndex = listState.firstVisibleItemIndex,
+                        scrollOffset = listState.firstVisibleItemScrollOffset,
+                    ),
+                )
+            }
         }
     }
 
@@ -1676,6 +1702,12 @@ internal fun AlbumDetailScreen(
                         isPlaying = state.currentTrackId == track.id && state.playbackState == RemotePlaybackState.PLAYING,
                         onPlay = { onPlay(track) },
                         onQueue = { onQueue(track) },
+                        modifier = Modifier
+                            .albumDetailEnter(delayMillis = 150 + index.coerceAtMost(4) * 20)
+                            .graphicsLayer {
+                                alpha = trackReveal.value
+                                translationY = (1f - trackReveal.value) * 10.dp.toPx()
+                            },
                     )
                 }
             }
@@ -1708,6 +1740,8 @@ private fun AlbumDetailSummary(
     onOpenArtwork: () -> Unit,
 ) {
     val openArtworkLabel = stringResource(R.string.open_full_screen_artwork)
+    val motion = LocalLibraryPageMotion.current
+    val artworkCanResolve = motion == null || (motion.isCurrentPage && motion.isSettled)
     Column(
         modifier = Modifier.fillMaxWidth().testTag("album-detail-summary"),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -1719,14 +1753,15 @@ private fun AlbumDetailSummary(
             ) {
                 val artworkSize = minOf(maxWidth, maxHeight, LargeSquareContentMaxSize)
                 val artworkSizePx = with(LocalDensity.current) { artworkSize.roundToPx() }
-                LaunchedEffect(pageKey, artworkSizePx, entries, browseLoadStatus) {
-                    if (browseLoadStatus == BrowseLoadStatus.LOADED) {
+                LaunchedEffect(pageKey, artworkSizePx, entries, browseLoadStatus, artworkCanResolve) {
+                    // Keep the original thumbnail through the flight, then resolve the large cover.
+                    if (artworkCanResolve && browseLoadStatus == BrowseLoadStatus.LOADED) {
                         onResolveAlbumArtwork(pageKey, artworkSizePx)
                     }
                 }
                 ArtworkTile(
                     entry = entry,
-                    modifier = Modifier.pointerInput(entry.artworkUri) {
+                    modifier = Modifier.testTag("album-detail-cover").pointerInput(entry.artworkUri) {
                         detectTapGestures(onDoubleTap = {
                             if (!entry.artworkUri.isNullOrBlank()) onOpenArtwork()
                         })
@@ -1747,22 +1782,28 @@ private fun AlbumDetailSummary(
                     preferThumbnailSource = false,
                     placeholderArtworkUri = placeholderArtworkUri,
                     filterQuality = FilterQuality.High,
+                    albumTransitionKey = pageKey,
                 )
             }
         }
         Spacer(Modifier.height(16.dp))
-        Text(title, style = MaterialTheme.typography.headlineSmall, textAlign = TextAlign.Center)
-        if (artists.isNotBlank()) {
-            Spacer(Modifier.height(6.dp))
-            Text(artists, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
+        Column(
+            modifier = Modifier.fillMaxWidth().albumDetailEnter(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(title, style = MaterialTheme.typography.headlineSmall, textAlign = TextAlign.Center)
+            if (artists.isNotBlank()) {
+                Spacer(Modifier.height(6.dp))
+                Text(artists, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                if (browseLoadStatus == BrowseLoadStatus.LOADING) stringResource(R.string.loading_music_content)
+                else pluralStringResource(R.plurals.track_count, trackCount, trackCount),
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
-        Spacer(Modifier.height(8.dp))
-        Text(
-            if (browseLoadStatus == BrowseLoadStatus.LOADING) stringResource(R.string.loading_music_content)
-            else pluralStringResource(R.plurals.track_count, trackCount, trackCount),
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
     }
 }
 
@@ -1775,7 +1816,7 @@ private fun AlbumPlaybackActions(
     onQueueAll: (List<MediaEntry>) -> Unit,
 ) {
     Row(
-        modifier = Modifier.fillMaxWidth().testTag("album-detail-actions"),
+        modifier = Modifier.fillMaxWidth().testTag("album-detail-actions").albumDetailEnter(130),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         FilledTonalButton(
@@ -1821,7 +1862,7 @@ private fun AlbumFloatingPlaybackActions(
     modifier: Modifier = Modifier,
 ) {
     Column(
-        modifier = modifier.testTag("album-detail-floating-actions"),
+        modifier = modifier.testTag("album-detail-floating-actions").albumDetailEnter(130),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(AlbumDetailFloatingActionSpacing),
     ) {
@@ -1859,6 +1900,7 @@ private fun TrackCollectionRow(
     isPlaying: Boolean,
     onPlay: () -> Unit,
     onQueue: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val supportingContentColor = if (isPlaying) {
         MaterialTheme.colorScheme.onPrimaryContainer
@@ -1866,7 +1908,7 @@ private fun TrackCollectionRow(
         MaterialTheme.colorScheme.onSurfaceVariant
     }
     Surface(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onPlay),
+        modifier = modifier.fillMaxWidth().clickable(onClick = onPlay),
         color = if (isPlaying) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
         shape = RoundedCornerShape(18.dp),
     ) {
@@ -2053,16 +2095,17 @@ private fun MediaGridCard(
     artworkRequestSizePx: Int,
     onOpen: () -> Unit,
     onQueue: () -> Unit,
+    albumTransitionKey: BrowsePageKey? = null,
 ) {
     val cardCornerRadius = when (gallerySize) {
         GallerySize.COMPACT -> 16.dp
         GallerySize.STANDARD -> 21.dp
         GallerySize.LARGE -> 26.dp
     }
-    val artworkCornerRadius = when (gallerySize) {
-        GallerySize.COMPACT -> if (entry.isContainer) 10.dp else 9.dp
-        GallerySize.STANDARD -> if (entry.isContainer) 14.dp else 12.dp
-        GallerySize.LARGE -> if (entry.isContainer) 18.dp else 16.dp
+    val artworkCornerRadius = if (entry.isContainer) AlbumArtworkCornerRadius else when (gallerySize) {
+        GallerySize.COMPACT -> 9.dp
+        GallerySize.STANDARD -> 12.dp
+        GallerySize.LARGE -> 16.dp
     }
     val titleStyle = when (gallerySize) {
         GallerySize.COMPACT -> MaterialTheme.typography.bodySmall
@@ -2093,7 +2136,13 @@ private fun MediaGridCard(
     }
     Card(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onOpen),
-        shape = RoundedCornerShape(cardCornerRadius),
+        // The card must not clip the cover to a different radius at the start or end of a flight.
+        shape = if (entry.isContainer) RoundedCornerShape(
+            topStart = AlbumArtworkCornerRadius,
+            topEnd = AlbumArtworkCornerRadius,
+            bottomStart = cardCornerRadius,
+            bottomEnd = cardCornerRadius,
+        ) else RoundedCornerShape(cardCornerRadius),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
     ) {
         ArtworkTile(
@@ -2102,7 +2151,8 @@ private fun MediaGridCard(
             requestSizePx = artworkRequestSizePx,
             retryTransientFailures = true,
             cornerRadius = artworkCornerRadius,
-            modifier = Modifier.fillMaxWidth().aspectRatio(1f),
+            modifier = Modifier.fillMaxWidth().aspectRatio(1f).testTag("library-cover:${entry.id}"),
+            albumTransitionKey = albumTransitionKey,
         )
         Row(
             modifier = Modifier.fillMaxWidth().padding(
@@ -2153,6 +2203,7 @@ private fun MediaEntryRow(
     onOpen: () -> Unit,
     onPlay: () -> Unit,
     onQueue: () -> Unit,
+    albumTransitionKey: BrowsePageKey? = null,
 ) {
     val background = if (emphasized) MaterialTheme.colorScheme.tertiaryContainer
     else MaterialTheme.colorScheme.surfaceContainer
@@ -2162,7 +2213,14 @@ private fun MediaEntryRow(
         shape = RoundedCornerShape(if (emphasized) 28.dp else 20.dp),
     ) {
         Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            ArtworkTile(entry, if (emphasized) 62.dp else 54.dp)
+            val artworkSize = if (emphasized) 62.dp else 54.dp
+            ArtworkTile(
+                entry = entry,
+                size = artworkSize,
+                requestSizePx = with(LocalDensity.current) { artworkSize.roundToPx() },
+                modifier = Modifier.testTag("library-cover:${entry.id}"),
+                albumTransitionKey = albumTransitionKey,
+            )
             Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f)) {
                 Text(entry.title, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -2809,8 +2867,12 @@ private fun ArtworkTile(
     retryTransientFailures: Boolean = false,
     filterQuality: FilterQuality = FilterQuality.Low,
     cornerRadius: Dp? = null,
+    albumTransitionKey: BrowsePageKey? = null,
 ) {
     val context = LocalContext.current
+    val motion = LocalLibraryPageMotion.current
+    val returningPlaceholderKey = motion?.returningArtworkUri
+        ?.takeIf { motion.navigation?.albumKey == albumTransitionKey }
     val colors = remember(entry.title) {
         artworkPalettes[(entry.title.hashCode() and Int.MAX_VALUE) % artworkPalettes.size]
     }
@@ -2844,6 +2906,7 @@ private fun ArtworkTile(
         requestSizePx,
         useCachedAlbumThumbnailAsPlaceholder,
         placeholderArtworkUri,
+        returningPlaceholderKey,
     ) {
         selectedArtworkUri?.takeIf(String::isNotBlank)?.let { uri ->
             when {
@@ -2855,19 +2918,24 @@ private fun ArtworkTile(
                     .apply { if (requestSizePx != null) size(requestSizePx) }
                     .scale(Scale.FILL)
                     .precision(Precision.INEXACT)
-                    .crossfade(180)
+                    // The cached thumbnail is already visible; dissolving it breaks the shared cover.
+                    .crossfade(false)
                     .build()
-                requestSizePx != null -> albumArtworkRequest(context, uri, requestSizePx)
+                requestSizePx != null -> albumArtworkRequest(
+                    context, uri, requestSizePx,
+                    // Reuse this album's large cover if its small thumbnail was evicted while browsing tracks.
+                    placeholderMemoryCacheKey = returningPlaceholderKey,
+                )
                 else -> uri
             }
         }
     }
-    val tileModifier = if (size == null) modifier else modifier.size(size)
-    val iconSize = (size ?: 72.dp) * .48f
-    val resolvedCornerRadius = cornerRadius ?: if (entry.isContainer) 18.dp else 16.dp
+    val resolvedCornerRadius = cornerRadius ?: if (entry.isContainer) AlbumArtworkCornerRadius else 16.dp
+    // Size modifiers must follow the shared element so the animated bounds reach the artwork.
+    val sharedModifier = Modifier.sharedAlbumArtwork(albumTransitionKey, resolvedCornerRadius).then(modifier)
+    val tileModifier = if (size == null) sharedModifier else sharedModifier.size(size)
     Box(
-        modifier = tileModifier.clip(RoundedCornerShape(resolvedCornerRadius))
-            .background(placeholderBrush),
+        modifier = tileModifier.background(placeholderBrush),
         contentAlignment = Alignment.Center,
     ) {
         Icon(
@@ -2878,7 +2946,7 @@ private fun ArtworkTile(
             },
             null,
             tint = Color.White,
-            modifier = Modifier.size(iconSize),
+            modifier = Modifier.fillMaxSize(.48f),
         )
         if (artworkModel != null) {
             key(
