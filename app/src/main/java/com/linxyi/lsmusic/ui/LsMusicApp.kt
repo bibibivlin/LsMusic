@@ -9,6 +9,8 @@ import androidx.activity.BackEventCompat
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.AnimationVector1D
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateDp
 import androidx.compose.animation.core.animateDpAsState
@@ -428,6 +430,42 @@ private val destinations = listOf(
 )
 
 @Composable
+internal fun AppBackHandler(
+    state: LsMusicUiState,
+    onDestination: (AppDestination) -> Unit,
+    onNavigateTo: (Int) -> Unit,
+    backProgress: Animatable<Float, AnimationVector1D>,
+    onBackEdge: (Int) -> Unit,
+) {
+    val playerReturnDestination = state.miniPlayerReturnDestination
+        .takeIf { state.destination == AppDestination.NOW_PLAYING }
+    PredictiveBackHandler(
+        enabled = state.exitStatus != ExitStatus.IDLE || playerReturnDestination != null ||
+            state.destination.settingsParent != null ||
+            (state.destination == AppDestination.LIBRARY && state.path.size > 1),
+    ) { events ->
+        try {
+            events.collect { event ->
+                onBackEdge(event.swipeEdge)
+                if (state.exitStatus == ExitStatus.IDLE) backProgress.snapTo(event.progress)
+            }
+            if (state.exitStatus == ExitStatus.IDLE) {
+                when {
+                    playerReturnDestination != null -> onDestination(playerReturnDestination)
+                    state.destination.settingsParent != null -> onDestination(requireNotNull(state.destination.settingsParent))
+                    else -> onNavigateTo(state.path.lastIndex - 1)
+                }
+            }
+        } finally {
+            // A cancelled gesture must restore the page without changing navigation.
+            kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+                backProgress.animateTo(0f, tween(180))
+            }
+        }
+    }
+}
+
+@Composable
 fun LsMusicApp(viewModel: LsMusicViewModel) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val darkTheme = resolvesToDarkTheme(
@@ -452,31 +490,15 @@ fun LsMusicApp(viewModel: LsMusicViewModel) {
             }
         }
 
-        val backProgress = remember { androidx.compose.animation.core.Animatable(0f) }
+        val backProgress = remember { Animatable(0f) }
         var backEdge by remember { mutableIntStateOf(BackEventCompat.EDGE_LEFT) }
-        PredictiveBackHandler(
-            enabled = state.exitStatus != ExitStatus.IDLE || state.destination.settingsParent != null ||
-                (state.destination == AppDestination.LIBRARY && state.path.size > 1),
-        ) { events ->
-            try {
-                events.collect { event ->
-                    backEdge = event.swipeEdge
-                    if (state.exitStatus == ExitStatus.IDLE) backProgress.snapTo(event.progress)
-                }
-                if (state.exitStatus == ExitStatus.IDLE) {
-                    if (state.destination.settingsParent != null) {
-                        viewModel.setDestination(requireNotNull(state.destination.settingsParent))
-                    } else {
-                        viewModel.navigateTo(state.path.lastIndex - 1)
-                    }
-                }
-            } finally {
-                // A cancelled gesture must restore the page without changing navigation.
-                kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
-                    backProgress.animateTo(0f, tween(180))
-                }
-            }
-        }
+        AppBackHandler(
+            state = state,
+            onDestination = viewModel::setDestination,
+            onNavigateTo = viewModel::navigateTo,
+            backProgress = backProgress,
+            onBackEdge = { backEdge = it },
+        )
 
         SleepTimerPermissionEffect(
             state.sleepTimerPermissionRequest,
@@ -496,6 +518,7 @@ fun LsMusicApp(viewModel: LsMusicViewModel) {
                 backProgress = { backProgress.value },
                 backEdge = { backEdge },
                 onDestination = viewModel::setDestination,
+                onOpenNowPlayingFromMiniPlayer = viewModel::openNowPlayingFromMiniPlayer,
                 onRefresh = viewModel::refreshDevices,
                 onSelectServer = viewModel::selectServer,
                 onSelectRenderer = viewModel::selectRenderer,
@@ -558,6 +581,7 @@ internal fun LsMusicContent(
     state: LsMusicUiState,
     snackbar: SnackbarHostState,
     onDestination: (AppDestination) -> Unit,
+    onOpenNowPlayingFromMiniPlayer: () -> Unit,
     onRefresh: () -> Unit,
     onSelectServer: (String) -> Unit,
     onSelectRenderer: (String) -> Unit,
@@ -782,7 +806,7 @@ internal fun LsMusicContent(
                             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
                                 MiniPlayer(
                                     state = state,
-                                    onOpen = { onDestination(AppDestination.NOW_PLAYING) },
+                                    onOpen = onOpenNowPlayingFromMiniPlayer,
                                     onTogglePlayback = onTogglePlayback,
                                     onNext = onNext,
                                     modifier = Modifier
@@ -3180,6 +3204,7 @@ private fun LibraryPreview() {
             ),
             snackbar = remember { SnackbarHostState() },
             onDestination = {},
+            onOpenNowPlayingFromMiniPlayer = {},
             onRefresh = {},
             onSelectServer = {},
             onSelectRenderer = {},

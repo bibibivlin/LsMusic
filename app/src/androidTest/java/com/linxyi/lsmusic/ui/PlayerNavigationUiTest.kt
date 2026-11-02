@@ -1,6 +1,9 @@
 package com.linxyi.lsmusic.ui
 
 import android.graphics.Bitmap
+import androidx.activity.BackEventCompat
+import androidx.activity.OnBackPressedCallback
+import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
@@ -118,6 +121,92 @@ class PlayerNavigationUiTest {
     fun bottomNavigationUsesTheSameFlightFromNestedSettings() {
         render(destination = AppDestination.SETTINGS_PLAYBACK)
         assertOpeningFlight("navigation-NOW_PLAYING")
+    }
+
+    @Test
+    fun miniPlayerBackReturnsToNestedSettingsAfterCancelledGesture() {
+        render(destination = AppDestination.SETTINGS_PLAYBACK, withArtwork = false)
+        compose.onNodeWithTag("mini-player").performTouchInput { click() }
+        compose.waitForIdle()
+        compose.runOnIdle {
+            assertEquals(AppDestination.NOW_PLAYING, state.destination)
+            val dispatcher = compose.activity.onBackPressedDispatcher
+            dispatcher.dispatchOnBackStarted(BackEventCompat(0f, 200f, 0f, BackEventCompat.EDGE_LEFT))
+            dispatcher.dispatchOnBackProgressed(BackEventCompat(100f, 200f, .6f, BackEventCompat.EDGE_LEFT))
+        }
+        compose.waitForIdle()
+        compose.runOnIdle { compose.activity.onBackPressedDispatcher.dispatchOnBackCancelled() }
+        compose.waitForIdle()
+        compose.runOnIdle {
+            assertEquals(AppDestination.NOW_PLAYING, state.destination)
+            compose.activity.onBackPressedDispatcher.onBackPressed()
+        }
+        compose.waitForIdle()
+        compose.runOnIdle {
+            assertEquals(AppDestination.SETTINGS_PLAYBACK, state.destination)
+            compose.activity.onBackPressedDispatcher.onBackPressed()
+        }
+        compose.waitForIdle()
+        compose.runOnIdle { assertEquals(AppDestination.SETTINGS, state.destination) }
+    }
+
+    @Test
+    fun miniPlayerBackKeepsLibraryLocationBeforeNavigatingUp() {
+        render(destination = AppDestination.LIBRARY, withArtwork = false)
+        val originalPath = listOf(BrowseLocation("0"), BrowseLocation("album", "Album"))
+        compose.runOnIdle {
+            state = state.copy(path = originalPath, browseLoadStatus = BrowseLoadStatus.LOADED)
+        }
+        compose.onNodeWithTag("mini-player").performTouchInput { click() }
+        compose.waitForIdle()
+        compose.runOnIdle { compose.activity.onBackPressedDispatcher.onBackPressed() }
+        compose.waitForIdle()
+        compose.runOnIdle {
+            assertEquals(AppDestination.LIBRARY, state.destination)
+            assertEquals(originalPath, state.path)
+            compose.activity.onBackPressedDispatcher.onBackPressed()
+        }
+        compose.waitForIdle()
+        compose.runOnIdle { assertEquals(originalPath.take(1), state.path) }
+    }
+
+    @Test
+    fun navigationBarSwitchesDoNotRetainMiniPlayerBackDestination() {
+        var fallbackBacks = 0
+        compose.activityRule.scenario.onActivity { activity ->
+            activity.onBackPressedDispatcher.addCallback(activity, object : OnBackPressedCallback(true) {
+                override fun handleOnBackPressed() { fallbackBacks++ }
+            })
+        }
+        render(withArtwork = false)
+        compose.onNodeWithTag("mini-player").performTouchInput { click() }
+        compose.waitForIdle()
+        // Reselecting the current tab does not change how the player was opened.
+        compose.onNodeWithTag("navigation-NOW_PLAYING").performClick()
+        compose.runOnIdle { compose.activity.onBackPressedDispatcher.onBackPressed() }
+        compose.waitForIdle()
+        compose.runOnIdle {
+            assertEquals(0, fallbackBacks)
+            assertEquals(AppDestination.SETTINGS, state.destination)
+        }
+
+        compose.onNodeWithTag("navigation-QUEUE").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithTag("mini-player").performTouchInput { click() }
+        compose.waitForIdle()
+        compose.runOnIdle { compose.activity.onBackPressedDispatcher.onBackPressed() }
+        compose.waitForIdle()
+        compose.runOnIdle { assertEquals(AppDestination.QUEUE, state.destination) }
+        compose.onNodeWithTag("mini-player").performTouchInput { click() }
+        compose.waitForIdle()
+        compose.onNodeWithTag("navigation-LIBRARY").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithTag("navigation-NOW_PLAYING").performClick()
+        compose.runOnIdle { compose.activity.onBackPressedDispatcher.onBackPressed() }
+        compose.runOnIdle {
+            assertEquals(1, fallbackBacks)
+            assertEquals(AppDestination.NOW_PLAYING, state.destination)
+        }
     }
 
     @Test
@@ -314,11 +403,24 @@ class PlayerNavigationUiTest {
         compose.setContent {
             LsMusicTheme(dynamicColor = false) {
                 TestViewport(viewport) {
+                    val backProgress = remember { Animatable(0f) }
+                    val navigate: (AppDestination) -> Unit = { state = state.withDestination(it) }
+                    val navigateTo: (Int) -> Unit = { index ->
+                        state = state.copy(path = state.path.take(index + 1))
+                    }
+                    AppBackHandler(
+                        state = state,
+                        onDestination = navigate,
+                        onNavigateTo = navigateTo,
+                        backProgress = backProgress,
+                        onBackEdge = {},
+                    )
                     LsMusicContent(
                         state = state, snackbar = remember { SnackbarHostState() },
-                        onDestination = { state = state.copy(destination = it) },
+                        onDestination = navigate,
+                        onOpenNowPlayingFromMiniPlayer = { state = state.openNowPlayingFromMiniPlayer() },
                         onRefresh = {}, onSelectServer = {}, onSelectRenderer = {},
-                        onOpen = {}, onNavigateTo = {}, onPlay = {}, onQueue = {}, onPlayAll = {},
+                        onOpen = {}, onNavigateTo = navigateTo, onPlay = {}, onQueue = {}, onPlayAll = {},
                         onShufflePlay = {}, onQueueAll = {}, onAlbumSort = {},
                         onSaveBrowseViewState = { _, _ -> }, onResolveAlbumArtwork = { _, _ -> },
                         onTogglePlayback = {}, onPrevious = {}, onNext = {}, onCycleRepeat = {},

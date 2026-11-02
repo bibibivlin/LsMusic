@@ -179,6 +179,7 @@ class ThemeRenderingUiTest {
                 state = state,
                 snackbar = remember { SnackbarHostState() },
                 onDestination = {},
+                onOpenNowPlayingFromMiniPlayer = {},
                 onRefresh = {},
                 onSelectServer = {},
                 onSelectRenderer = {},
