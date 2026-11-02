@@ -219,6 +219,7 @@ data class LsMusicUiState(
     val pendingListens: List<PendingListen> = emptyList(),
     val isPendingListensUploading: Boolean = false,
     val destination: AppDestination = AppDestination.LIBRARY,
+    val miniPlayerReturnDestination: AppDestination? = null,
     val isSearching: Boolean = true,
     val browseLoadStatus: BrowseLoadStatus = BrowseLoadStatus.WAITING_FOR_DEVICE,
     val albumArtwork: AlbumArtworkUiState? = null,
@@ -241,6 +242,18 @@ data class LsMusicUiState(
     val isBrowsing: Boolean
         get() = browseLoadStatus == BrowseLoadStatus.LOADING
 }
+
+internal fun LsMusicUiState.withDestination(destination: AppDestination): LsMusicUiState =
+    if (destination == this.destination) this else copy(
+        destination = destination,
+        miniPlayerReturnDestination = null,
+    )
+
+internal fun LsMusicUiState.openNowPlayingFromMiniPlayer(): LsMusicUiState =
+    if (destination == AppDestination.NOW_PLAYING) this else copy(
+        destination = AppDestination.NOW_PLAYING,
+        miniPlayerReturnDestination = destination,
+    )
 
 class LsMusicViewModel(application: Application) : AndroidViewModel(application) {
     private val dlna = DlnaController(application)
@@ -1343,7 +1356,11 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun setDestination(destination: AppDestination) {
-        if (!exiting && !restoringData) _uiState.update { it.copy(destination = destination) }
+        if (!exiting && !restoringData) _uiState.update { it.withDestination(destination) }
+    }
+
+    fun openNowPlayingFromMiniPlayer() {
+        if (!exiting && !restoringData) _uiState.update { it.openNowPlayingFromMiniPlayer() }
     }
 
     fun loadLyrics(forceRefresh: Boolean = false) {

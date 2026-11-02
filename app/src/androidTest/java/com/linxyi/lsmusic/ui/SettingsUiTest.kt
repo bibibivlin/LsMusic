@@ -455,6 +455,7 @@ class SettingsUiTest {
                     state = state,
                     snackbar = remember { SnackbarHostState() },
                     onDestination = { state = state.copy(destination = it) },
+                    onOpenNowPlayingFromMiniPlayer = { state = state.copy(destination = AppDestination.NOW_PLAYING) },
                     onRefresh = {}, onSelectServer = {}, onSelectRenderer = {},
                     onOpen = {}, onNavigateTo = {}, onPlay = { libraryPlayClicks++ }, onQueue = {}, onPlayAll = {},
                     onShufflePlay = {}, onQueueAll = {}, onAlbumSort = {},
