@@ -120,6 +120,178 @@ class AlbumDetailLayoutUiTest {
     }
 
     @Test
+    fun wideLayoutCentersShortTrackListAndKeepsQueueButtonsClear() {
+        val actions = mutableListOf<String>()
+        setAlbumContent(width = 900.dp, state = albumState(trackCount = 3), actions = actions)
+
+        val list = bounds("album-detail-tracks")
+        val firstTrack = compose.onNodeWithText("Track 1").fetchSemanticsNode().boundsInRoot
+        val lastTrack = compose.onNodeWithText("Track 3").fetchSemanticsNode().boundsInRoot
+        val floatingActions = bounds("album-detail-floating-actions")
+        val expectedCenter = (list.top + list.height * (24f / 650f) +
+            list.bottom - list.height * (112f / 650f)) / 2f
+        assertTrue(
+            "The track list should be centered in the space above the mini player",
+            abs((firstTrack.top + lastTrack.bottom) / 2f - expectedCenter) < list.height * .02f,
+        )
+
+        val queueButtons = compose.onAllNodesWithContentDescription(text(R.string.add_to_queue))
+        val lastQueueIndex = queueButtons.fetchSemanticsNodes().indices.minBy { index ->
+            abs(queueButtons[index].fetchSemanticsNode().boundsInRoot.center.y - lastTrack.center.y)
+        }
+        val lastQueue = queueButtons[lastQueueIndex].fetchSemanticsNode().boundsInRoot
+        assertTrue("The queue button should clear the floating actions", lastQueue.right < floatingActions.left)
+        queueButtons[lastQueueIndex].performClick()
+        compose.runOnIdle { assertEquals("queue:track-3", actions.last()) }
+    }
+
+    @Test
+    fun wideLayoutCentersTracksThatFitBehindFloatingActions() {
+        setAlbumContent(width = 900.dp, state = albumState(trackCount = 6))
+
+        val list = bounds("album-detail-tracks")
+        val firstTrack = compose.onNodeWithText("Track 1").fetchSemanticsNode().boundsInRoot
+        val lastTrack = compose.onNodeWithText("Track 6").fetchSemanticsNode().boundsInRoot
+        val expectedCenter = (list.top + list.height * (24f / 650f) +
+            list.bottom - list.height * (112f / 650f)) / 2f
+        assertTrue(
+            "All six tracks should remain centered even when they extend alongside the floating actions",
+            abs((firstTrack.top + lastTrack.bottom) / 2f - expectedCenter) < list.height * .02f,
+        )
+    }
+
+    @Test
+    fun wideLayoutCentersShortListAfterRestoringScrolledPosition() {
+        setAlbumContent(
+            width = 900.dp,
+            state = albumState(trackCount = 6),
+            initialViewState = BrowseViewState(fallbackItemIndex = 6),
+        )
+
+        val list = bounds("album-detail-tracks")
+        val firstTrack = compose.onNodeWithText("Track 1").fetchSemanticsNode().boundsInRoot
+        val lastTrack = compose.onNodeWithText("Track 6").fetchSemanticsNode().boundsInRoot
+        val expectedCenter = (list.top + list.height * (24f / 650f) +
+            list.bottom - list.height * (112f / 650f)) / 2f
+        assertTrue(abs((firstTrack.top + lastTrack.bottom) / 2f - expectedCenter) < list.height * .02f)
+    }
+
+    @Test
+    fun phoneLandscapeShowsBothPanesAndKeepsControlsReachable() {
+        val actions = mutableListOf<String>()
+        setAlbumContent(width = 620.dp, height = 320.dp, state = albumState(), actions = actions)
+
+        val list = bounds("album-detail-tracks")
+        val summary = bounds("album-detail-summary")
+        val cover = coverBounds()
+        val title = bounds("album-detail-title")
+        val count = bounds("album-detail-count")
+        val floatingActions = bounds("album-detail-floating-actions")
+        val bottomLimit = list.bottom - list.height * (112f / 320f)
+        assertTrue("The album should be beside the tracks", summary.right <= list.left)
+        assertTrue("The cover must have a visible size", cover.width > 0f && cover.height == cover.width)
+        assertTrue("The cover and all album information should fit", cover.top >= list.top && count.bottom <= bottomLimit + 1f)
+        assertTrue("The title should follow the cover", cover.bottom <= title.top)
+        assertTrue("The compact controls should fit above the mini player", floatingActions.top >= list.top && floatingActions.bottom <= bottomLimit + 1f)
+        assertTrue("Short screens should use a horizontal action row", floatingActions.width > floatingActions.height)
+
+        compose.onNodeWithTag("album-action-play-all").performClick()
+        compose.onNodeWithTag("album-detail-tracks").performScrollToIndex(30)
+        compose.onNodeWithTag("album-detail-tracks").performTouchInput { swipeUp() }
+        val lastTrack = compose.onNodeWithText("Track 30").fetchSemanticsNode().boundsInRoot
+        assertTrue("The last track should scroll above the actions", lastTrack.bottom <= floatingActions.top + 1f)
+        compose.runOnIdle { assertEquals("play-all:30", actions.first()) }
+    }
+
+    @Test
+    fun foldableOuterScreenLandscapeFitsAlbumSummary() {
+        setAlbumContent(width = 520.dp, height = 300.dp, state = albumState(trackCount = 3))
+
+        val list = bounds("album-detail-tracks")
+        val summary = bounds("album-detail-summary")
+        val cover = coverBounds()
+        val title = bounds("album-detail-title")
+        val count = bounds("album-detail-count")
+        val bottomLimit = list.bottom - list.height * (112f / 300f)
+        assertTrue("The album should be beside the tracks", summary.right <= list.left)
+        assertTrue("The cover should remain visible", cover.width > 0f)
+        assertTrue("The full title and album information should clear the mini player", title.top >= list.top && count.bottom <= bottomLimit + 1f)
+    }
+
+    @Test
+    fun lowSquareLayoutShowsCoverAndTitleAboveMiniPlayer() {
+        setAlbumContent(width = 500.dp, height = 500.dp, state = albumState())
+
+        val list = bounds("album-detail-tracks")
+        val cover = coverBounds()
+        val title = bounds("album-detail-title")
+        val bottomLimit = list.bottom - list.height * (112f / 500f)
+        assertTrue("The cover should be square and fully visible", cover.width > 0f && cover.width == cover.height && cover.top >= list.top)
+        assertTrue("The entire title should be above the mini player", cover.bottom <= title.top && title.bottom <= bottomLimit + 1f)
+        assertTrue("Square layouts should keep the action row below the summary", bounds("album-detail-actions").top >= title.bottom)
+    }
+
+    @Test
+    fun landscapeFitsWrappedAlbumInformationWithLargeFonts() {
+        setAlbumContent(
+            width = 700.dp,
+            height = 400.dp,
+            state = albumState(title = "A longer album title", artist = "A longer album artist"),
+            fontScale = 1.4f,
+        )
+
+        val list = bounds("album-detail-tracks")
+        val cover = coverBounds()
+        val title = bounds("album-detail-title")
+        val artist = bounds("album-detail-artist")
+        val count = bounds("album-detail-count")
+        val bottomLimit = list.bottom - list.height * (112f / 400f)
+        assertTrue("The cover should remain visible", cover.width > 0f)
+        assertTrue("All album information should be visible", cover.bottom <= title.top && title.bottom <= artist.top && count.bottom <= bottomLimit + 1f)
+    }
+
+    @Test
+    fun compactLandscapeKeepsLongAlbumInformationAndCoverVisible() {
+        setAlbumContent(
+            width = 520.dp,
+            height = 300.dp,
+            state = albumState(
+                title = "A Very Long Album Title With Several Words",
+                artist = "A Rather Long Artist Name",
+            ),
+            fontScale = 1.2f,
+        )
+
+        val list = bounds("album-detail-tracks")
+        val cover = coverBounds()
+        val title = bounds("album-detail-title")
+        val count = bounds("album-detail-count")
+        val bottomLimit = list.bottom - list.height * (112f / 300f)
+        assertTrue("The cover should not disappear when the title wraps", cover.width > list.height * .08f)
+        assertTrue("The full album information should fit above the mini player", cover.top >= list.top && title.top >= cover.bottom && count.bottom <= bottomLimit + 1f)
+    }
+
+    @Test
+    fun veryShortLandscapeFitsLongAlbumInformation() {
+        setAlbumContent(
+            width = 520.dp,
+            height = 270.dp,
+            state = albumState(
+                title = "A Very Long Album Title With Several Words",
+                artist = "A Rather Long Artist Name",
+            ),
+            fontScale = 1.2f,
+        )
+
+        val list = bounds("album-detail-tracks")
+        val cover = coverBounds()
+        val count = bounds("album-detail-count")
+        val bottomLimit = list.bottom - list.height * (112f / 270f)
+        assertTrue("The cover should remain visible", cover.width > 0f)
+        assertTrue("The complete album information should fit", count.bottom <= bottomLimit + 1f)
+    }
+
+    @Test
     fun mediumLayoutKeepsSummaryAboveActions() {
         setAlbumContent(width = 800.dp, height = 650.dp, state = albumState())
 
@@ -128,6 +300,16 @@ class AlbumDetailLayoutUiTest {
         val summary = bounds("album-detail-summary")
         val actionRow = bounds("album-detail-actions")
         assertTrue("Summary should remain above the actions", summary.bottom <= actionRow.top)
+    }
+
+    @Test
+    fun largeModeratelyWideLayoutKeepsBothPanes() {
+        setAlbumContent(width = 900.dp, height = 720.dp, state = albumState())
+
+        val summary = bounds("album-detail-summary")
+        val list = bounds("album-detail-tracks")
+        assertTrue("Large screens should retain their side-by-side layout", summary.right <= list.left)
+        compose.onNodeWithText("Track 1").assertIsDisplayed()
     }
 
     @Test
@@ -214,15 +396,17 @@ class AlbumDetailLayoutUiTest {
         height: Dp = 650.dp,
         state: LibraryUiState,
         actions: MutableList<String> = mutableListOf(),
+        initialViewState: BrowseViewState = BrowseViewState(),
+        fontScale: Float? = null,
     ) {
         compose.setContent {
             LsMusicTheme(dynamicColor = false) {
-                TestViewport {
+                TestViewport(fontScale = fontScale) {
                     AlbumDetailScreen(
                         state = state,
                         modifier = Modifier.requiredSize(width, height),
                         pageKey = pageKey,
-                        initialViewState = BrowseViewState(),
+                        initialViewState = initialViewState,
                         onSaveBrowseViewState = { _, _ -> },
                         onResolveAlbumArtwork = { _, _ -> },
                         onPlay = { actions.add("play:${it.id}") },
@@ -235,23 +419,27 @@ class AlbumDetailLayoutUiTest {
                 }
             }
         }
-        compose.waitUntil(10_000) { compose.onNodeWithText("Test album").isDisplayed() }
+        compose.waitUntil(10_000) { compose.onNodeWithTag("album-detail-summary").isDisplayed() }
     }
 
     @Composable
-    private fun TestViewport(content: @Composable () -> Unit) {
+    private fun TestViewport(fontScale: Float? = null, content: @Composable () -> Unit) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val deviceDensity = LocalDensity.current
             // Fit the same virtual viewport on both phones and unfolded screens.
             val scale = minOf(1f, maxWidth.value / 900f, maxHeight.value / 780f)
-            val testDensity = remember(deviceDensity, scale) {
-                Density(deviceDensity.density * scale, deviceDensity.fontScale)
+            val testDensity = remember(deviceDensity, scale, fontScale) {
+                Density(deviceDensity.density * scale, fontScale ?: deviceDensity.fontScale)
             }
             CompositionLocalProvider(LocalDensity provides testDensity, content = content)
         }
     }
 
-    private fun albumState(trackCount: Int = 30): LibraryUiState = LibraryUiState(
+    private fun albumState(
+        trackCount: Int = 30,
+        title: String = "Test album",
+        artist: String = "Album artist",
+    ): LibraryUiState = LibraryUiState(
         entries = List(trackCount) { index ->
             MediaEntry(
                 id = "track-${index + 1}",
@@ -264,7 +452,7 @@ class AlbumDetailLayoutUiTest {
         albumSort = AlbumSort.SERVER_DEFAULT,
         path = listOf(
             BrowseLocation("root", "Library"),
-            BrowseLocation("album", "Test album", albumArtist = "Album artist", pageKind = LibraryPageKind.ALBUM),
+            BrowseLocation("album", title, albumArtist = artist, pageKind = LibraryPageKind.ALBUM),
         ),
         browsePageKey = pageKey,
         browseViewState = BrowseViewState(),
@@ -279,6 +467,9 @@ class AlbumDetailLayoutUiTest {
     )
 
     private fun bounds(tag: String): Rect = compose.onNodeWithTag(tag).fetchSemanticsNode().boundsInRoot
+
+    private fun coverBounds(): Rect = compose.onNodeWithTag("album-detail-cover", useUnmergedTree = true)
+        .fetchSemanticsNode().boundsInRoot
 
     private fun text(id: Int): String = InstrumentationRegistry.getInstrumentation().targetContext.getString(id)
 
