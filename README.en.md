@@ -43,7 +43,7 @@ The Settings home page keeps the complete media-library and player selection are
 
 Double-tap an album cover on its detail page to view it full-screen against a black background. The status and navigation bars are hidden; tap the image or use Back to close it.
 
-Opening an album smoothly expands its cover into the detail page, followed by the album information, playback buttons, and tracks. Returning brings the cover back to its card and restores your browsing position. Both grid and list layouts are supported, and animations follow the system animation duration setting.
+Pressing an album gently shrinks the whole card, including its cover and information. Releasing it expands the cover into the detail page with a slight bounce as it settles, while album information, playback buttons, and tracks appear. Returning brings the cover back to its card and restores your browsing position. Both grid and list layouts are supported; dragging to scroll cancels the tap, and animations follow the system animation duration setting.
 
 On sufficiently wide screens, album details show the cover and information beside the track list, with playback and queue buttons at the bottom right.
 
@@ -52,7 +52,7 @@ On sufficiently wide screens, album details show the cover and information besid
 Settings > Playback provides the same controls for local and DLNA playback:
 
 - **Add to queue instead of interrupting playback** is off by default. When enabled, tapping a library song, Play all, or Shuffle play adds the selected tracks to the end of the queue without interrupting the current song. It does not apply while paused or stopped.
-- **Mini player** is on by default. Turn it off to hide the mini player on other pages; playback controls remain available on the Now playing page through bottom navigation.
+- **Mini player** is on by default. Pressing it gently shrinks the whole player; releasing it opens Now playing with a continuous cover transition, smoothly changing corners and a slight settling bounce. Bottom navigation uses the same cover transition when the mini player is visible. Turn it off to hide the mini player on other pages; playback controls remain available through bottom navigation.
 - **Clear the current queue when starting playback** is on by default. Turn it off to append library selections and immediately play the first newly added track. The enqueue-only option above takes priority when it applies.
 
 The queue allows duplicate songs as separate entries. Tapping an entry in the queue always plays that occurrence. Pause/resume, previous/next, and system media controls are unaffected by the library playback preferences.

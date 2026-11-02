@@ -1042,12 +1042,14 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         }
         albumArtworkJob = viewModelScope.launch {
             val resolved = try {
-                albumArtworkRepository.resolve(
-                    serverId = pageKey.serverId,
-                    artworkCandidates = candidates,
-                    tracks = tracks,
-                    targetSizePx = target,
-                )
+                withContext(Dispatchers.IO) {
+                    albumArtworkRepository.resolve(
+                        serverId = pageKey.serverId,
+                        artworkCandidates = candidates,
+                        tracks = tracks,
+                        targetSizePx = target,
+                    )
+                }
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Exception) {
