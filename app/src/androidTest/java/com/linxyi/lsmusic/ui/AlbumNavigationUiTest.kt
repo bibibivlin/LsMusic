@@ -1,10 +1,12 @@
 package com.linxyi.lsmusic.ui
 
 import android.graphics.Bitmap
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.requiredSize
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
@@ -17,7 +19,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.click
-import androidx.compose.ui.test.junit4.v2.createComposeRule
+import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -27,6 +29,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.test.platform.app.InstrumentationRegistry
+import coil3.EventListener
+import coil3.ImageLoader
+import coil3.SingletonImageLoader
+import coil3.annotation.DelicateCoilApi
+import coil3.request.ImageRequest
+import coil3.request.SuccessResult
 import com.linxyi.lsmusic.dlna.DlnaDevice
 import com.linxyi.lsmusic.dlna.DlnaDeviceKind
 import com.linxyi.lsmusic.dlna.MediaEntry
@@ -38,13 +46,14 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import java.io.File
+import java.util.Collections
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /** Offline fixtures exercise real library layouts; no discovery, playback or HTTP is started. */
 class AlbumNavigationUiTest {
     @get:Rule
-    val compose = createComposeRule()
+    val compose = createAndroidComposeRule<ThemeTestActivity>()
 
     private val savedPages = mutableMapOf<BrowsePageKey, BrowseViewState>()
     private lateinit var directory: LibraryUiState
@@ -65,15 +74,24 @@ class AlbumNavigationUiTest {
         waitForPaintedCover()
         val original = albumRowBounds("Album 12")
         val originalPaint = requireNotNull(paintedCoverBounds())
+        saveFrame("grid-source")
         openAlbum("album-12")
         compose.mainClock.advanceTimeBy(160)
         // Shared elements draw in an overlay; semantics report the stationary layout placeholder.
         // Inspect the rendered cover itself, so an ordinary crossfade cannot satisfy this test.
         val moving = requireNotNull(paintedCoverBounds())
+        saveFrame("grid-flight")
         compose.mainClock.advanceTimeBy(160)
         val later = requireNotNull(paintedCoverBounds())
+        compose.mainClock.advanceTimeBy(160)
+        val overshoot = requireNotNull(paintedCoverBounds())
+        saveFrame("grid-overshoot")
         compose.mainClock.advanceTimeBy(650)
         val expanded = requireNotNull(paintedCoverBounds())
+        saveFrame("grid-expanded")
+        assertTrue("The cover should gently overshoot before settling", overshoot.width > expanded.width)
+        assertTrue("The overshoot must remain subtle", overshoot.width <= expanded.width +
+            (expanded.width - originalPaint.width) * .01f + 2f)
         assertTrue("Cover should have an intermediate width: $originalPaint -> $moving -> $expanded", moving.width > originalPaint.width + 1f)
         assertTrue("Cover should continue growing: $moving -> $later -> $expanded", moving.width < later.width - 1f)
         assertTrue("Cover must not jump directly to its final width: $later -> $expanded", later.width < expanded.width - 1f)
@@ -111,13 +129,82 @@ class AlbumNavigationUiTest {
         assertCoverCornersRemainStable(useGrid = false, gallerySize = GallerySize.STANDARD)
     }
 
+    @Test
+    fun pressingAlbumScalesTheWholeCardAndWaitsForRelease() {
+        setLibrary(useGrid = true)
+        waitForPaintedCover()
+        val cover = requireNotNull(paintedCoverBounds())
+        val title = compose.onNodeWithText("Album 0", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        compose.mainClock.autoAdvance = false
+        compose.onNodeWithTag("library-cover:album-0", useUnmergedTree = true).performTouchInput { down(center) }
+        compose.mainClock.advanceTimeBy(300)
+        assertEquals(directory.pageKey, currentPage.value!!.pageKey)
+        val pressed = requireNotNull(paintedCoverBounds())
+        val pressedTitle = compose.onNodeWithText("Album 0", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        assertEquals(.96f, pressed.width / cover.width, .02f)
+        assertEquals(.96f, pressedTitle.width / title.width, .01f)
+        saveFrame("grid-pressed")
+        compose.onNodeWithTag("library-cover:album-0", useUnmergedTree = true).performTouchInput { up() }
+        assertEquals("Release should start navigation immediately", "album-0", currentPage.value!!.pageKey.objectId)
+        compose.mainClock.advanceTimeUntil(500) { currentPage.value!!.pageKey != directory.pageKey }
+        compose.mainClock.advanceTimeByFrame()
+        assertSameBounds(pressed, requireNotNull(paintedCoverBounds()))
+        var previousWidth = pressed.width
+        repeat(8) {
+            compose.mainClock.advanceTimeByFrame()
+            val width = requireNotNull(paintedCoverBounds()).width
+            assertTrue("The released cover must keep growing: $previousWidth -> $width", width >= previousWidth - 1f)
+            previousWidth = width
+        }
+        assertTrue("The cover should already be flying", previousWidth > cover.width + 5f)
+        compose.mainClock.advanceTimeBy(800)
+        compose.onNodeWithTag("album-detail-cover", useUnmergedTree = true).assertIsDisplayed()
+    }
+
+    @Test
+    fun scrollingCancelsAlbumPressWithoutOpeningIt() {
+        setLibrary(useGrid = true)
+        compose.mainClock.autoAdvance = false
+        compose.onNodeWithTag("library-cover:album-0", useUnmergedTree = true).performTouchInput { down(center) }
+        compose.mainClock.advanceTimeBy(300)
+        compose.onNodeWithTag("library-cover:album-0", useUnmergedTree = true).performTouchInput {
+            moveBy(androidx.compose.ui.geometry.Offset(0f, -200f))
+            up()
+        }
+        compose.mainClock.advanceTimeBy(800)
+        assertEquals(directory.pageKey, currentPage.value!!.pageKey)
+        compose.onNodeWithTag("album-detail-cover", useUnmergedTree = true).assertDoesNotExist()
+    }
+
+    @Test
+    fun listAlbumFliesFromItsPressedSize() {
+        setLibrary(useGrid = false)
+        waitForPaintedCover()
+        val original = requireNotNull(paintedCoverBounds())
+        compose.mainClock.autoAdvance = false
+        compose.onNodeWithTag("library-cover:album-0", useUnmergedTree = true).performTouchInput { down(center) }
+        compose.mainClock.advanceTimeBy(250)
+        val pressed = requireNotNull(paintedCoverBounds())
+        assertTrue("The whole row should shrink its cover", pressed.width < original.width - 1f)
+        compose.onNodeWithTag("library-cover:album-0", useUnmergedTree = true).performTouchInput { up() }
+        compose.mainClock.advanceTimeByFrame()
+        assertSameBounds(pressed, requireNotNull(paintedCoverBounds()))
+        compose.mainClock.advanceTimeBy(160)
+        assertTrue("The cover should grow directly from the pressed row", requireNotNull(paintedCoverBounds()).width > original.width + 5f)
+    }
+
     private fun assertCoverCornersRemainStable(useGrid: Boolean, gallerySize: GallerySize) {
         setLibrary(useGrid = useGrid, gallerySize = gallerySize)
-        compose.onNodeWithTag("library-directory-entries").performScrollToIndex(15)
+        // The floating search button occludes the upper-right corner of a full-width scrolled card.
+        // Inspect that layout below the original search field; scrolled return is covered separately.
+        val albumId = if (gallerySize == GallerySize.LARGE) "album-0" else "album-12"
+        if (gallerySize != GallerySize.LARGE) {
+            compose.onNodeWithTag("library-directory-entries").performScrollToIndex(15)
+        }
         waitForPaintedCover()
         val initial = requireNotNull(paintedCoverGeometry())
 
-        openAlbum("album-12")
+        openAlbum(albumId)
         val openingStart = requireNotNull(paintedCoverGeometry())
         compose.mainClock.advanceTimeBy(160)
         val opening = requireNotNull(paintedCoverGeometry())
@@ -154,6 +241,54 @@ class AlbumNavigationUiTest {
         compose.mainClock.advanceTimeBy(650)
         compose.onNodeWithText("Track 1").assertIsDisplayed()
         compose.runOnIdle { assertTrue(artworkResolutions.contains(BrowsePageKey("server", "album-0"))) }
+    }
+
+    @OptIn(DelicateCoilApi::class)
+    @Test
+    fun coldAlbumUsesCachedThumbnailDuringFlightAndLoadsLargeArtworkAfterLanding() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val originalLoader = SingletonImageLoader.get(context)
+        val detailRequests = Collections.synchronizedList(mutableListOf<String>())
+        val loadedDetails = Collections.synchronizedList(mutableListOf<String>())
+        val loader = ImageLoader.Builder(context)
+            .eventListener(object : EventListener() {
+                override fun onStart(request: ImageRequest) {
+                    if (request.memoryCacheKey == null) detailRequests.add(request.data.toString())
+                }
+                override fun onSuccess(request: ImageRequest, result: SuccessResult) {
+                    if (request.memoryCacheKey == null) loadedDetails.add(request.data.toString())
+                }
+            })
+            .diskCache(null)
+            .build()
+        SingletonImageLoader.setUnsafe(loader)
+        try {
+            setLibrary(useGrid = true, artworkSize = 2048)
+            waitForPaintedCover()
+            val uri = requireNotNull(artworkFile).toURI().toString()
+            detailRequests.clear()
+            openAlbum("album-0")
+            compose.mainClock.advanceTimeBy(160)
+            compose.waitForIdle()
+            assertTrue("A cold full-size request must not start during the cover flight", uri !in detailRequests)
+            assertTrue("The flying cover should retain the album thumbnail", paintedCoverBounds() != null)
+            compose.mainClock.advanceTimeBy(1_000)
+            compose.waitUntil(5_000) { uri in loadedDetails }
+
+            returnToDirectory()
+            compose.mainClock.advanceTimeBy(1_000)
+            waitForPaintedCover()
+            detailRequests.clear()
+            openAlbum("album-0")
+            compose.mainClock.advanceTimeBy(160)
+            compose.waitForIdle()
+            assertTrue("Reopening should retain the thumbnail throughout the flight", uri !in detailRequests)
+            compose.mainClock.advanceTimeBy(1_000)
+            compose.waitUntil(5_000) { uri in detailRequests }
+        } finally {
+            SingletonImageLoader.setUnsafe(originalLoader)
+            loader.shutdown()
+        }
     }
 
     @Test
@@ -219,11 +354,18 @@ class AlbumNavigationUiTest {
         gallerySize: GallerySize = GallerySize.STANDARD,
         viewportWidth: Dp? = null,
         viewportHeight: Dp = 650.dp,
+        artworkSize: Int = 64,
     ) {
+        compose.activityRule.scenario.onActivity { activity ->
+            activity.setShowWhenLocked(true)
+            activity.setTurnScreenOn(true)
+            activity.window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+        compose.waitUntil(5_000) { compose.activity.hasWindowFocus() }
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val file = File.createTempFile("album-navigation-", ".png", context.cacheDir)
         artworkFile = file
-        val bitmap = Bitmap.createBitmap(64, 64, Bitmap.Config.ARGB_8888)
+        val bitmap = Bitmap.createBitmap(artworkSize, artworkSize, Bitmap.Config.ARGB_8888)
         bitmap.eraseColor(artworkColor)
         file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
         bitmap.recycle()
@@ -285,7 +427,7 @@ class AlbumNavigationUiTest {
             }
             CompositionLocalProvider(LocalDensity provides testDensity) {
                 val size = if (width == null) Modifier.fillMaxSize() else Modifier.requiredSize(width, height)
-                Box(size.testTag("album-navigation-root")) { content() }
+                Box(size.background(MaterialTheme.colorScheme.background).testTag("album-navigation-root")) { content() }
             }
         }
     }
@@ -294,6 +436,7 @@ class AlbumNavigationUiTest {
         waitForPaintedCover()
         compose.mainClock.autoAdvance = false
         compose.onNodeWithTag("library-cover:$id", useUnmergedTree = true).performTouchInput { click() }
+        compose.mainClock.advanceTimeUntil(500) { currentPage.value!!.pageKey.objectId == id }
         compose.mainClock.advanceTimeByFrame()
     }
 
@@ -324,6 +467,15 @@ class AlbumNavigationUiTest {
 
     private fun paintedCoverBounds(): Rect? = paintedCoverGeometry()?.bounds
 
+    private fun saveFrame(name: String) {
+        val directory = File(InstrumentationRegistry.getInstrumentation().targetContext.getExternalFilesDir(null), "album-transition-review")
+        directory.mkdirs()
+        File(directory, "$name.png").outputStream().use {
+            compose.onNodeWithTag("album-navigation-root").captureToImage().asAndroidBitmap()
+                .compress(Bitmap.CompressFormat.PNG, 100, it)
+        }
+    }
+
     private fun paintedCoverGeometry(): CoverGeometry? {
         val bitmap = compose.onNodeWithTag("album-navigation-root")
             .captureToImage().asAndroidBitmap()
@@ -344,8 +496,10 @@ class AlbumNavigationUiTest {
             }
         }
         if (right < left) return null
-        val sampleInset = InstrumentationRegistry.getInstrumentation().targetContext.resources
-            .displayMetrics.density.roundToInt().coerceAtLeast(1)
+        // Sample inside the arc, away from its nearly horizontal tangent where a subpixel
+        // translation changes the measured edge by several pixels after rasterization.
+        val sampleInset = (InstrumentationRegistry.getInstrumentation().targetContext.resources
+            .displayMetrics.density * 4f).roundToInt().coerceAtLeast(2)
         fun cornerInsets(y: Int): Pair<Int, Int> {
             val row = y.coerceIn(top, bottom) * bitmap.width
             val first = (left..right).firstOrNull { x -> isArtworkColor(pixels[row + x]) }

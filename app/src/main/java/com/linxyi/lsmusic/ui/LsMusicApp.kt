@@ -23,6 +23,7 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -35,6 +36,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -213,6 +215,8 @@ import com.linxyi.lsmusic.lyrics.LyricsTranslationMode
 import com.linxyi.lsmusic.ui.theme.LsMusicTheme
 import com.linxyi.lsmusic.ui.theme.presetColorScheme
 import coil3.compose.AsyncImage
+import coil3.compose.asPainter
+import coil3.memory.MemoryCache
 import coil3.SingletonImageLoader
 import coil3.request.ImageRequest
 import coil3.request.crossfade
@@ -489,8 +493,8 @@ fun LsMusicApp(viewModel: LsMusicViewModel) {
             LsMusicContent(
                 state = state,
                 snackbar = snackbar,
-                backProgress = backProgress.value,
-                backEdge = backEdge,
+                backProgress = { backProgress.value },
+                backEdge = { backEdge },
                 onDestination = viewModel::setDestination,
                 onRefresh = viewModel::refreshDevices,
                 onSelectServer = viewModel::selectServer,
@@ -606,8 +610,8 @@ internal fun LsMusicContent(
     onCancelSleepTimer: () -> Unit = {},
     onExportData: () -> Unit = {},
     onImportData: () -> Unit = {},
-    backProgress: Float = 0f,
-    backEdge: Int = BackEventCompat.EDGE_LEFT,
+    backProgress: () -> Float = { 0f },
+    backEdge: () -> Int = { BackEventCompat.EDGE_LEFT },
 ) {
     val destinationStateHolder = rememberSaveableStateHolder()
     val libraryState = remember(
@@ -645,8 +649,6 @@ internal fun LsMusicContent(
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val expanded = maxWidth >= 720.dp
         val showMiniPlayer = state.preferences.miniPlayerEnabled && state.currentTrack != null && state.destination != AppDestination.NOW_PLAYING
-        val bottomContentPadding = DefaultScreenBottomPadding +
-            if (showMiniPlayer) MiniPlayerContentInset else 0.dp
         Row(Modifier.fillMaxSize()) {
             if (expanded) {
                 AppNavigationRail(state.destination, onDestination)
@@ -665,125 +667,136 @@ internal fun LsMusicContent(
                     if (!expanded) AppNavigationBar(state.destination, onDestination)
                 },
             ) { padding ->
-                // The now-playing page measures its artwork from the final available height.
-                // Avoid AnimatedContent's intermediate size constraints, which make it visibly resize
-                // once while navigating from another destination on large and foldable screens.
                 Box(Modifier.fillMaxSize().padding(padding).graphicsLayer {
-                    scaleX = 1f - 0.08f * backProgress
+                    // Read gesture frames in the layer, without recomposing the app or its pages.
+                    val progress = backProgress()
+                    scaleX = 1f - 0.08f * progress
                     scaleY = scaleX
-                    translationX = (if (backEdge == BackEventCompat.EDGE_LEFT) 1 else -1) *
-                        24.dp.toPx() * backProgress
-                    shape = RoundedCornerShape((28 * backProgress).dp)
-                    clip = backProgress > 0f
+                    translationX = (if (backEdge() == BackEventCompat.EDGE_LEFT) 1 else -1) *
+                        24.dp.toPx() * progress
+                    shape = RoundedCornerShape((28 * progress).dp)
+                    clip = progress > 0f
                 }) {
-                    destinationStateHolder.SaveableStateProvider(state.destination.navigationDestination.name) {
-                        when (state.destination) {
-                            AppDestination.LIBRARY -> LibraryScreen(
-                                libraryState,
-                                onOpen,
-                                onNavigateTo,
-                                onPlay,
-                                onQueue,
-                                onPlayAll,
-                                onShufflePlay,
-                                onQueueAll,
-                                onAlbumSort,
-                                onSaveBrowseViewState,
-                                onResolveAlbumArtwork,
-                                bottomContentPadding,
-                                onOpenSettings = { onDestination(AppDestination.SETTINGS) },
-                            )
-                            AppDestination.QUEUE -> QueueScreen(
-                                state,
-                                onPlayQueueItem,
-                                onRemoveQueue,
-                                onMoveQueue,
-                                onClearQueue,
-                                bottomContentPadding,
-                            )
-                            AppDestination.NOW_PLAYING -> NowPlayingScreen(
-                                state = state,
-                                onTogglePlayback = onTogglePlayback,
-                                onPrevious = onPrevious,
-                                onNext = onNext,
-                                onCycleRepeat = onCycleRepeat,
-                                onToggleShuffle = onToggleShuffle,
-                                onSeek = onSeek,
-                                onLoadLyrics = onLoadLyrics,
-                                onRetryLyrics = onRetryLyrics,
-                            )
-                            AppDestination.SETTINGS,
-                            AppDestination.SETTINGS_APPEARANCE,
-                            AppDestination.SETTINGS_PLAYBACK,
-                            AppDestination.SETTINGS_LYRICS,
-                            AppDestination.SETTINGS_NETWORK,
-                            AppDestination.SETTINGS_ABOUT,
-                            AppDestination.PENDING_LISTENS -> SettingsPageTransition(state.destination) { page ->
-                                if (page == AppDestination.PENDING_LISTENS) {
-                                    PendingListensScreen(
-                                        state = state,
-                                        onBack = { onDestination(AppDestination.SETTINGS_NETWORK) },
-                                        onRetry = onRetryPendingListens,
-                                        onRemove = onRemovePendingListen,
-                                        onClear = onClearPendingListens,
-                                        bottomContentPadding = bottomContentPadding,
-                                    )
-                                } else {
-                                    SettingsScreen(
-                                        state = state.copy(destination = page),
-                                        preferences = state.preferences,
-                                        onRefresh = onRefresh,
-                                        onSelectServer = onSelectServer,
-                                        onSelectRenderer = onSelectRenderer,
-                                        onGallerySize = onGallerySize,
-                                        onDefaultGridLayout = onDefaultGridLayout,
-                                        onThemeMode = onThemeMode,
-                                        onDynamicColor = onDynamicColor,
-                                        onPresetPalette = onPresetPalette,
-                                        onEnqueueWhilePlaying = onEnqueueWhilePlaying,
-                                        onMiniPlayerEnabled = onMiniPlayerEnabled,
-                                        onClearQueueOnPlay = onClearQueueOnPlay,
-                                        onStartSleepTimer = onStartSleepTimer,
-                                        onCancelSleepTimer = onCancelSleepTimer,
-                                        onExportData = onExportData,
-                                        onImportData = onImportData,
-                                        onLyricsEnabled = onLyricsEnabled,
-                                        onLyricsProviderOrder = onLyricsProviderOrder,
-                                        onLyricsTranslationMode = onLyricsTranslationMode,
-                                        onLyricsSourceVisible = onLyricsSourceVisible,
-                                        onLyricsEffectsEnabled = onLyricsEffectsEnabled,
-                                        onLyricsFontSizeSp = onLyricsFontSizeSp,
-                                        onClearLyricsCache = onClearLyricsCache,
-                                        onListenBrainzEnabled = onListenBrainzEnabled,
-                                        onListenBrainzToken = onListenBrainzToken,
-                                        onListenBrainzMinimumSeconds = onListenBrainzMinimumSeconds,
-                                        onListenBrainzMinimumPercent = onListenBrainzMinimumPercent,
-                                        onOpenPendingListens = { onDestination(AppDestination.PENDING_LISTENS) },
-                                        onNavigate = onDestination,
-                                        onExit = onExit,
-                                        bottomContentPadding = bottomContentPadding,
-                                    )
+                    PlayerPageTransition(
+                        destination = state.destination,
+                        track = state.currentTrack,
+                        miniPlayerEnabled = state.preferences.miniPlayerEnabled,
+                    ) { destination ->
+                        // The outgoing page keeps its own inset and mini player until the flight ends.
+                        val pageShowsMiniPlayer = state.preferences.miniPlayerEnabled && state.currentTrack != null &&
+                            destination != AppDestination.NOW_PLAYING
+                        val bottomContentPadding = DefaultScreenBottomPadding +
+                            if (pageShowsMiniPlayer) MiniPlayerContentInset else 0.dp
+                        destinationStateHolder.SaveableStateProvider(destination.navigationDestination.name) {
+                            when (destination) {
+                                AppDestination.LIBRARY -> LibraryScreen(
+                                    libraryState,
+                                    onOpen,
+                                    onNavigateTo,
+                                    onPlay,
+                                    onQueue,
+                                    onPlayAll,
+                                    onShufflePlay,
+                                    onQueueAll,
+                                    onAlbumSort,
+                                    onSaveBrowseViewState,
+                                    onResolveAlbumArtwork,
+                                    bottomContentPadding,
+                                    onOpenSettings = { onDestination(AppDestination.SETTINGS) },
+                                )
+                                AppDestination.QUEUE -> QueueScreen(
+                                    state,
+                                    onPlayQueueItem,
+                                    onRemoveQueue,
+                                    onMoveQueue,
+                                    onClearQueue,
+                                    bottomContentPadding,
+                                )
+                                AppDestination.NOW_PLAYING -> NowPlayingScreen(
+                                    state = state,
+                                    onTogglePlayback = onTogglePlayback,
+                                    onPrevious = onPrevious,
+                                    onNext = onNext,
+                                    onCycleRepeat = onCycleRepeat,
+                                    onToggleShuffle = onToggleShuffle,
+                                    onSeek = onSeek,
+                                    onLoadLyrics = onLoadLyrics,
+                                    onRetryLyrics = onRetryLyrics,
+                                )
+                                AppDestination.SETTINGS,
+                                AppDestination.SETTINGS_APPEARANCE,
+                                AppDestination.SETTINGS_PLAYBACK,
+                                AppDestination.SETTINGS_LYRICS,
+                                AppDestination.SETTINGS_NETWORK,
+                                AppDestination.SETTINGS_ABOUT,
+                                AppDestination.PENDING_LISTENS -> SettingsPageTransition(destination) { page ->
+                                    if (page == AppDestination.PENDING_LISTENS) {
+                                        PendingListensScreen(
+                                            state = state,
+                                            onBack = { onDestination(AppDestination.SETTINGS_NETWORK) },
+                                            onRetry = onRetryPendingListens,
+                                            onRemove = onRemovePendingListen,
+                                            onClear = onClearPendingListens,
+                                            bottomContentPadding = bottomContentPadding,
+                                        )
+                                    } else {
+                                        SettingsScreen(
+                                            state = state.copy(destination = page),
+                                            preferences = state.preferences,
+                                            onRefresh = onRefresh,
+                                            onSelectServer = onSelectServer,
+                                            onSelectRenderer = onSelectRenderer,
+                                            onGallerySize = onGallerySize,
+                                            onDefaultGridLayout = onDefaultGridLayout,
+                                            onThemeMode = onThemeMode,
+                                            onDynamicColor = onDynamicColor,
+                                            onPresetPalette = onPresetPalette,
+                                            onEnqueueWhilePlaying = onEnqueueWhilePlaying,
+                                            onMiniPlayerEnabled = onMiniPlayerEnabled,
+                                            onClearQueueOnPlay = onClearQueueOnPlay,
+                                            onStartSleepTimer = onStartSleepTimer,
+                                            onCancelSleepTimer = onCancelSleepTimer,
+                                            onExportData = onExportData,
+                                            onImportData = onImportData,
+                                            onLyricsEnabled = onLyricsEnabled,
+                                            onLyricsProviderOrder = onLyricsProviderOrder,
+                                            onLyricsTranslationMode = onLyricsTranslationMode,
+                                            onLyricsSourceVisible = onLyricsSourceVisible,
+                                            onLyricsEffectsEnabled = onLyricsEffectsEnabled,
+                                            onLyricsFontSizeSp = onLyricsFontSizeSp,
+                                            onClearLyricsCache = onClearLyricsCache,
+                                            onListenBrainzEnabled = onListenBrainzEnabled,
+                                            onListenBrainzToken = onListenBrainzToken,
+                                            onListenBrainzMinimumSeconds = onListenBrainzMinimumSeconds,
+                                            onListenBrainzMinimumPercent = onListenBrainzMinimumPercent,
+                                            onOpenPendingListens = { onDestination(AppDestination.PENDING_LISTENS) },
+                                            onNavigate = onDestination,
+                                            onExit = onExit,
+                                            bottomContentPadding = bottomContentPadding,
+                                        )
+                                    }
                                 }
                             }
                         }
-                    }
-                    if (showMiniPlayer) {
-                        MiniPlayer(
-                            state = state,
-                            onOpen = { onDestination(AppDestination.NOW_PLAYING) },
-                            onTogglePlayback = onTogglePlayback,
-                            onNext = onNext,
-                            modifier = Modifier
-                                .align(Alignment.BottomCenter)
-                                .padding(
-                                    PaddingValues(
-                                        start = 12.dp,
-                                        end = 12.dp,
-                                        bottom = MiniPlayerBottomSpacing,
-                                    ),
+                        if (pageShowsMiniPlayer) {
+                            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
+                                MiniPlayer(
+                                    state = state,
+                                    onOpen = { onDestination(AppDestination.NOW_PLAYING) },
+                                    onTogglePlayback = onTogglePlayback,
+                                    onNext = onNext,
+                                    modifier = Modifier
+                                        .padding(
+                                            PaddingValues(
+                                                start = 12.dp,
+                                                end = 12.dp,
+                                                bottom = MiniPlayerBottomSpacing,
+                                            ),
+                                        )
+                                        .widthIn(max = MiniPlayerMaxWidth),
                                 )
-                                .widthIn(max = MiniPlayerMaxWidth),
-                        )
+                            }
+                        }
                     }
                 }
             }
@@ -806,6 +819,7 @@ private fun AppNavigationBar(selected: AppDestination, onDestination: (AppDestin
         ) {
             destinations.forEach { item ->
                 NavigationBarItem(
+                    modifier = Modifier.testTag("navigation-${item.destination.name}"),
                     selected = selectedNavigationDestination == item.destination,
                     onClick = { onDestination(item.destination) },
                     icon = { Icon(item.icon, null) },
@@ -838,7 +852,7 @@ private fun AppNavigationRail(selected: AppDestination, onDestination: (AppDesti
         Spacer(Modifier.height(28.dp))
         destinations.forEach { item ->
             NavigationRailItem(
-                modifier = Modifier.width(116.dp),
+                modifier = Modifier.width(116.dp).testTag("navigation-${item.destination.name}"),
                 selected = selectedNavigationDestination == item.destination,
                 onClick = { onDestination(item.destination) },
                 icon = { Icon(item.icon, null) },
@@ -993,13 +1007,6 @@ internal fun LibraryDirectoryScreen(
             gridState.firstVisibleItemIndex > LIBRARY_SEARCH_ITEM_INDEX
         }
     }
-    val showFastScroller by remember {
-        derivedStateOf {
-            val layoutInfo = gridState.layoutInfo
-            layoutInfo.totalItemsCount > layoutInfo.visibleItemsInfo.size &&
-                (gridState.canScrollBackward || gridState.canScrollForward)
-        }
-    }
     val currentQuery by rememberUpdatedState(query)
     val currentUseGrid by rememberUpdatedState(useGrid)
     val isCurrentPage = LocalLibraryPageMotion.current?.isCurrentPage != false
@@ -1054,33 +1061,6 @@ internal fun LibraryDirectoryScreen(
         }
         val artworkWidth = (availableWidth - gridSpacing * (columnCount - 1)) / columnCount
         val artworkRequestSizePx = with(density) { artworkWidth.roundToPx() }
-        val minimumFastScrollerTopInsetPx = with(density) { LibraryFastScrollerTopInset.roundToPx() }
-        val gridSpacingPx = with(density) { gridSpacing.roundToPx() }
-        val fastScrollerTopInsetPx by remember(
-            gridState,
-            minimumFastScrollerTopInsetPx,
-            gridSpacingPx,
-        ) {
-            derivedStateOf {
-                val layoutInfo = gridState.layoutInfo
-                val lastHeader = layoutInfo.visibleItemsInfo
-                    .firstOrNull { it.index == LIBRARY_GRID_HEADER_COUNT - 1 }
-                when {
-                    lastHeader != null -> maxOf(
-                        minimumFastScrollerTopInsetPx,
-                        lastHeader.offset.y + lastHeader.size.height + gridSpacingPx,
-                    )
-                    gridState.firstVisibleItemIndex >= LIBRARY_GRID_HEADER_COUNT ->
-                        minimumFastScrollerTopInsetPx
-                    else -> null
-                }
-            }
-        }
-        val fastScrollerTopInset = fastScrollerTopInsetPx
-            ?.let { insetPx -> with(density) { insetPx.toDp() } }
-            ?.takeIf { topInset ->
-                maxHeight - topInset - bottomContentPadding >= LibraryFastScrollerMinimumThumbHeight
-            }
 
         AlbumArtworkPrefetchEffect(
             pageKey = pageKey,
@@ -1241,27 +1221,13 @@ internal fun LibraryDirectoryScreen(
             }
         }
 
-        fastScrollerTopInset?.let { topInset ->
-            AnimatedVisibility(
-                visible = showFastScroller,
-                modifier = Modifier
-                    .align(Alignment.CenterEnd)
-                    .fillMaxHeight()
-                    .padding(
-                        top = topInset,
-                        bottom = bottomContentPadding,
-                    )
-                    .width(LibraryFastScrollerTouchWidth),
-                enter = fadeIn(),
-                exit = fadeOut(),
-            ) {
-                LibraryFastScroller(
-                    gridState = gridState,
-                    onDragStateChanged = { isFastScrollerDragging = it },
-                    modifier = Modifier.fillMaxSize(),
-                )
-            }
-        }
+        LibraryFastScrollerOverlay(
+            gridState = gridState,
+            viewportHeight = maxHeight,
+            gridSpacing = gridSpacing,
+            bottomContentPadding = bottomContentPadding,
+            onDragStateChanged = { isFastScrollerDragging = it },
+        )
 
         AnimatedVisibility(
             visible = showFloatingSearchButton,
@@ -1286,6 +1252,60 @@ internal fun LibraryDirectoryScreen(
                 Icon(Icons.Rounded.Search, stringResource(R.string.search_current_directory))
             }
         }
+    }
+}
+
+/** Header offsets change on every scroll pixel; observe them outside the directory's composition. */
+@Composable
+private fun BoxScope.LibraryFastScrollerOverlay(
+    gridState: LazyGridState,
+    viewportHeight: Dp,
+    gridSpacing: Dp,
+    bottomContentPadding: Dp,
+    onDragStateChanged: (Boolean) -> Unit,
+) {
+    val density = LocalDensity.current
+    val minimumTopInsetPx = with(density) { LibraryFastScrollerTopInset.roundToPx() }
+    val gridSpacingPx = with(density) { gridSpacing.roundToPx() }
+    val showFastScroller by remember(gridState) {
+        derivedStateOf {
+            val layoutInfo = gridState.layoutInfo
+            layoutInfo.totalItemsCount > layoutInfo.visibleItemsInfo.size &&
+                (gridState.canScrollBackward || gridState.canScrollForward)
+        }
+    }
+    val topInsetPx by remember(gridState, minimumTopInsetPx, gridSpacingPx) {
+        derivedStateOf {
+            val lastHeader = gridState.layoutInfo.visibleItemsInfo
+                .firstOrNull { it.index == LIBRARY_GRID_HEADER_COUNT - 1 }
+            when {
+                lastHeader != null -> maxOf(
+                    minimumTopInsetPx,
+                    lastHeader.offset.y + lastHeader.size.height + gridSpacingPx,
+                )
+                gridState.firstVisibleItemIndex >= LIBRARY_GRID_HEADER_COUNT -> minimumTopInsetPx
+                else -> null
+            }
+        }
+    }
+    val topInset = topInsetPx?.let { with(density) { it.toDp() } } ?: return
+    if (viewportHeight - topInset - bottomContentPadding < LibraryFastScrollerMinimumThumbHeight) return
+
+    AnimatedVisibility(
+        visible = showFastScroller,
+        modifier = Modifier
+            .align(Alignment.CenterEnd)
+            .fillMaxHeight()
+            .padding(top = topInset, bottom = bottomContentPadding)
+            .width(LibraryFastScrollerTouchWidth),
+        enter = fadeIn(),
+        exit = fadeOut(),
+    ) {
+        LibraryFastScroller(
+            gridState = gridState,
+            onDragStateChanged = onDragStateChanged,
+            modifier = Modifier.fillMaxSize(),
+        )
     }
 }
 
@@ -1790,6 +1810,7 @@ private fun AlbumDetailSummary(
                     placeholderArtworkUri = placeholderArtworkUri,
                     filterQuality = FilterQuality.High,
                     albumTransitionKey = pageKey,
+                    useCachedThumbnailDuringFlight = motion?.navigation?.opening == true && motion.isCurrentPage,
                 )
             }
         }
@@ -2104,6 +2125,7 @@ private fun MediaGridCard(
     onQueue: () -> Unit,
     albumTransitionKey: BrowsePageKey? = null,
 ) {
+    val pageMotion = LocalLibraryPageMotion.current
     val cardCornerRadius = when (gallerySize) {
         GallerySize.COMPACT -> 16.dp
         GallerySize.STANDARD -> 21.dp
@@ -2142,7 +2164,14 @@ private fun MediaGridCard(
         GallerySize.LARGE -> 12.dp
     }
     Card(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onOpen),
+        modifier = Modifier.fillMaxWidth().testTag("library-card:${entry.id}").then(
+            if (entry.isContainer) Modifier.pressableNavigationClick(
+                enabled = pageMotion?.isCurrentPage != false,
+                onRelease = { scale -> albumTransitionKey?.let { pageMotion?.handoff?.capture(it, scale) } },
+                onAbandon = { pageMotion?.handoff?.clear() },
+                onClick = onOpen,
+            ) else Modifier.clickable(onClick = onOpen),
+        ),
         // The card must not clip the cover to a different radius at the start or end of a flight.
         shape = if (entry.isContainer) RoundedCornerShape(
             topStart = AlbumArtworkCornerRadius,
@@ -2212,10 +2241,18 @@ private fun MediaEntryRow(
     onQueue: () -> Unit,
     albumTransitionKey: BrowsePageKey? = null,
 ) {
+    val pageMotion = LocalLibraryPageMotion.current
     val background = if (emphasized) MaterialTheme.colorScheme.tertiaryContainer
     else MaterialTheme.colorScheme.surfaceContainer
     Surface(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onOpen),
+        modifier = Modifier.fillMaxWidth().testTag("library-card:${entry.id}").then(
+            if (entry.isContainer) Modifier.pressableNavigationClick(
+                enabled = pageMotion?.isCurrentPage != false,
+                onRelease = { scale -> albumTransitionKey?.let { pageMotion?.handoff?.capture(it, scale) } },
+                onAbandon = { pageMotion?.handoff?.clear() },
+                onClick = onOpen,
+            ) else Modifier.clickable(onClick = onOpen),
+        ),
         color = background,
         shape = RoundedCornerShape(if (emphasized) 28.dp else 20.dp),
     ) {
@@ -2554,7 +2591,7 @@ internal fun NowPlayingScreen(
         ) {
             Text(
                 stringResource(R.string.nav_now_playing),
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().playerControlsEnter(40),
                 style = MaterialTheme.typography.headlineLarge,
             )
             Spacer(Modifier.height(if (compact) 8.dp else 16.dp))
@@ -2562,7 +2599,10 @@ internal fun NowPlayingScreen(
                 modifier = Modifier.fillMaxWidth().weight(1f),
                 contentAlignment = Alignment.Center,
             ) {
-                val lyricsVisible = showLyrics && state.preferences.lyricsEnabled
+                // A restored portrait lyrics panel must not remove the incoming shared cover.
+                // Reveal it with the existing lyrics transition once the cover has landed.
+                val lyricsVisible = showLyrics && state.preferences.lyricsEnabled &&
+                    LocalPlayerPageMotion.current?.enteringFromMiniPlayer != true
                 val transition = updateTransition(lyricsVisible, label = "artwork-lyrics")
                 val artworkSize = minOf(
                     maxWidth * if (wide) .68f else .84f,
@@ -2617,7 +2657,7 @@ internal fun NowPlayingScreen(
                                     Modifier
                                 },
                             ),
-                    ) { HeroArtwork(track, artworkSize) }
+                    ) { PlaybackArtwork(track, artworkSize, expanded = true) }
                 }
                 transition.AnimatedVisibility(
                     visible = { it },
@@ -2654,7 +2694,7 @@ internal fun NowPlayingScreen(
             Spacer(Modifier.height(if (compact) 8.dp else 16.dp))
             Text(
                 track.title,
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().playerControlsEnter(),
                 style = trackTitleStyle,
                 fontWeight = FontWeight.SemiBold,
                 textAlign = TextAlign.Center,
@@ -2664,7 +2704,7 @@ internal fun NowPlayingScreen(
             Spacer(Modifier.height(4.dp))
             Text(
                 track.creator.ifBlank { stringResource(R.string.unknown_artist) },
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().playerControlsEnter(120),
                 style = artistStyle,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
@@ -2674,7 +2714,7 @@ internal fun NowPlayingScreen(
             Spacer(Modifier.height(2.dp))
             Text(
                 track.album.ifBlank { stringResource(R.string.unknown_album) },
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().playerControlsEnter(140),
                 style = albumStyle,
                 color = MaterialTheme.colorScheme.outline,
                 textAlign = TextAlign.Center,
@@ -2687,8 +2727,9 @@ internal fun NowPlayingScreen(
                 durationMs = state.durationMs,
                 isPlaying = state.playbackState == RemotePlaybackState.PLAYING,
                 onSeek = onSeek,
+                modifier = Modifier.playerControlsEnter(160),
             )
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Row(Modifier.fillMaxWidth().playerControlsEnter(160), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text(formatPlaybackTime(state.positionMs), style = MaterialTheme.typography.labelMedium)
                 Text(
                     if (state.durationMs > 0L) formatPlaybackTime(state.durationMs) else track.duration ?: "--:--",
@@ -2697,6 +2738,7 @@ internal fun NowPlayingScreen(
             }
             Spacer(Modifier.height(if (compact) 6.dp else 12.dp))
             Row(
+                modifier = Modifier.playerControlsEnter(180),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 14.dp),
             ) {
@@ -2770,6 +2812,7 @@ private fun PlaybackSlider(
     durationMs: Long,
     isPlaying: Boolean,
     onSeek: (Long) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     var draggedFraction by remember { mutableStateOf<Float?>(null) }
     val liveFraction = if (durationMs > 0L) {
@@ -2785,7 +2828,7 @@ private fun PlaybackSlider(
             draggedFraction = null
         },
         enabled = durationMs > 0L,
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth(),
         thumb = {
             Surface(
                 modifier = Modifier.size(width = 4.dp, height = 28.dp),
@@ -2830,14 +2873,20 @@ private fun MiniPlayer(
     modifier: Modifier = Modifier,
 ) {
     val track = state.currentTrack ?: return
+    val pageMotion = LocalPlayerPageMotion.current
     Surface(
-        modifier = modifier.fillMaxWidth().clickable(onClick = onOpen),
+        modifier = modifier.fillMaxWidth().testTag("mini-player").pressableNavigationClick(
+            enabled = pageMotion?.isCurrentPage != false,
+            onRelease = { scale -> pageMotion?.captureArtworkPress(track, scale) },
+            onAbandon = { pageMotion?.handoff?.clear() },
+            onClick = onOpen,
+        ),
         shape = RoundedCornerShape(26.dp),
         color = MaterialTheme.colorScheme.primaryContainer,
         shadowElevation = 8.dp,
     ) {
         Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
-            ArtworkTile(track, 48.dp)
+            PlaybackArtwork(track, 48.dp, expanded = false)
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(track.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
@@ -2876,6 +2925,7 @@ private fun ArtworkTile(
     filterQuality: FilterQuality = FilterQuality.Low,
     cornerRadius: Dp? = null,
     albumTransitionKey: BrowsePageKey? = null,
+    useCachedThumbnailDuringFlight: Boolean = false,
 ) {
     val context = LocalContext.current
     val motion = LocalLibraryPageMotion.current
@@ -2886,6 +2936,15 @@ private fun ArtworkTile(
     }
     val placeholderBrush = remember(colors) { Brush.linearGradient(colors) }
     val selectedArtworkUri = if (preferThumbnailSource) entry.thumbnailArtworkUri else entry.artworkUri
+    val flightThumbnail = remember(context, imageIdentity, selectedArtworkUri, placeholderArtworkUri, useCachedThumbnailDuringFlight) {
+        if (useCachedThumbnailDuringFlight) {
+            (placeholderArtworkUri ?: selectedArtworkUri)?.takeIf(String::isNotBlank)?.let { uri ->
+                SingletonImageLoader.get(context).memoryCache
+                    ?.get(MemoryCache.Key(albumArtworkThumbnailMemoryCacheKey(uri)))
+                    ?.image?.asPainter(context, FilterQuality.Low)
+            }
+        } else null
+    }
     var artworkRequestGeneration by remember(
         imageIdentity,
         selectedArtworkUri,
@@ -2913,10 +2972,11 @@ private fun ArtworkTile(
         selectedArtworkUri,
         requestSizePx,
         useCachedAlbumThumbnailAsPlaceholder,
+        useCachedThumbnailDuringFlight,
         placeholderArtworkUri,
         returningPlaceholderKey,
     ) {
-        selectedArtworkUri?.takeIf(String::isNotBlank)?.let { uri ->
+        selectedArtworkUri?.takeIf { !useCachedThumbnailDuringFlight && it.isNotBlank() }?.let { uri ->
             when {
                 useCachedAlbumThumbnailAsPlaceholder -> ImageRequest.Builder(context)
                     .data(uri)
@@ -2956,7 +3016,16 @@ private fun ArtworkTile(
             tint = Color.White,
             modifier = Modifier.fillMaxSize(.48f),
         )
-        if (artworkModel != null) {
+        if (useCachedThumbnailDuringFlight) {
+            flightThumbnail?.let { painter ->
+                Image(
+                    painter = painter,
+                    contentDescription = stringResource(R.string.album_cover, entry.title),
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop,
+                )
+            }
+        } else if (artworkModel != null) {
             key(
                 imageIdentity,
                 selectedArtworkUri,
@@ -2984,34 +3053,6 @@ private fun ArtworkTile(
                         }
                     },
                 )
-            }
-        }
-    }
-}
-
-@Composable
-private fun HeroArtwork(track: MediaEntry, size: androidx.compose.ui.unit.Dp) {
-    val colors = if (track.title.hashCode() % 2 == 0) listOf(Color(0xFF6147D7), Color(0xFFFF78A9), Color(0xFFFFC857))
-    else listOf(Color(0xFF167D8D), Color(0xFF6957DE), Color(0xFFEC6B9D))
-    Box(
-        modifier = Modifier.size(size)
-            .clip(RoundedCornerShape(28.dp)).background(Brush.radialGradient(colors)),
-        contentAlignment = Alignment.Center,
-    ) {
-        if (!track.artworkUri.isNullOrBlank()) {
-            key(track.id, track.artworkUri) {
-                AsyncImage(
-                    model = track.artworkUri,
-                    contentDescription = stringResource(R.string.album_cover, track.title),
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop,
-                )
-            }
-        } else {
-            Surface(shape = CircleShape, color = Color.Black.copy(alpha = .76f), modifier = Modifier.fillMaxSize(.58f)) {
-                Box(contentAlignment = Alignment.Center) {
-                    Surface(shape = CircleShape, color = Color.White.copy(alpha = .85f), modifier = Modifier.size(34.dp)) {}
-                }
             }
         }
     }

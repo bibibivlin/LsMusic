@@ -4,7 +4,6 @@ package com.linxyi.lsmusic.ui
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibilityScope
-import androidx.compose.animation.BoundsTransform
 import androidx.compose.animation.EnterExitState
 import androidx.compose.animation.SharedTransitionLayout
 import androidx.compose.animation.SharedTransitionScope
@@ -21,8 +20,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.key
-import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.PointerEventPass
@@ -35,8 +37,8 @@ import com.linxyi.lsmusic.dlna.selectThumbnailArtworkUri
 
 private val AlbumMotionEasing = CubicBezierEasing(0.2f, 0f, 0f, 1f)
 internal val AlbumArtworkCornerRadius = 18.dp
-internal const val ALBUM_OPEN_DURATION_MILLIS = 520
-internal const val ALBUM_CLOSE_DURATION_MILLIS = 420
+internal const val ALBUM_OPEN_DURATION_MILLIS = COVER_OPEN_DURATION_MILLIS
+internal const val ALBUM_CLOSE_DURATION_MILLIS = COVER_CLOSE_DURATION_MILLIS
 
 internal data class AlbumNavigationMotion(
     val albumKey: BrowsePageKey,
@@ -79,6 +81,7 @@ internal class LibraryPageMotionScope(
     val isNavigating: Boolean,
     val navigation: AlbumNavigationMotion?,
     val returningArtworkUri: String?,
+    val handoff: CoverPressHandoff,
 ) {
     val isSettled: Boolean
         get() = visibilityScope.transition.currentState == EnterExitState.Visible &&
@@ -86,7 +89,8 @@ internal class LibraryPageMotionScope(
             !sharedScope.isTransitionActive
 }
 
-internal val LocalLibraryPageMotion = staticCompositionLocalOf<LibraryPageMotionScope?> { null }
+// Motion changes at navigation boundaries; only its readers should be invalidated.
+internal val LocalLibraryPageMotion = compositionLocalOf<LibraryPageMotionScope?> { null }
 
 /** Retain the outgoing page only for the transition; browse caching remains in the ViewModel. */
 @Composable
@@ -96,6 +100,8 @@ internal fun LibraryPageTransition(
 ) {
     // Device changes are a fresh library, even when both servers use the same object IDs.
     key(state.pageKey.serverId) {
+        val coroutineScope = rememberCoroutineScope()
+        val handoff = remember { CoverPressHandoff(coroutineScope) }
         SharedTransitionLayout(Modifier.fillMaxSize()) {
             val sharedScope = this
             val transition = updateTransition(state, label = "library-navigation")
@@ -105,6 +111,11 @@ internal fun LibraryPageTransition(
                 transition.targetState.pageKey,
                 transition.targetState.path,
             )
+            LaunchedEffect(transition.currentState.pageKey, transition.targetState.pageKey, sharedScope.isTransitionActive) {
+                if (transition.currentState.pageKey == transition.targetState.pageKey && !sharedScope.isTransitionActive) {
+                    handoff.clear()
+                }
+            }
             val returningArtworkUri = if (navigation?.opening == false) {
                 val album = transition.currentState
                 album.albumArtwork?.takeIf { it.pageKey == navigation.albumKey }?.displayUri
@@ -122,6 +133,20 @@ internal fun LibraryPageTransition(
                 },
             ) { page ->
                 val isCurrentPage = page.pageKey == state.pageKey
+                val isNavigating = transition.currentState.pageKey != transition.targetState.pageKey
+                val motion = remember(
+                    sharedScope, this, isCurrentPage, isNavigating, navigation, returningArtworkUri, handoff,
+                ) {
+                    LibraryPageMotionScope(
+                        sharedScope = sharedScope,
+                        visibilityScope = this,
+                        isCurrentPage = isCurrentPage,
+                        isNavigating = isNavigating,
+                        navigation = navigation,
+                        returningArtworkUri = returningArtworkUri,
+                        handoff = handoff,
+                    )
+                }
                 val interactionModifier = if (isCurrentPage) Modifier else Modifier
                     .clearAndSetSemantics { }
                     .pointerInput(Unit) {
@@ -132,14 +157,7 @@ internal fun LibraryPageTransition(
                         }
                     }
                 CompositionLocalProvider(
-                    LocalLibraryPageMotion provides LibraryPageMotionScope(
-                        sharedScope = sharedScope,
-                        visibilityScope = this,
-                        isCurrentPage = isCurrentPage,
-                        isNavigating = transition.currentState.pageKey != transition.targetState.pageKey,
-                        navigation = navigation,
-                        returningArtworkUri = returningArtworkUri,
-                    ),
+                    LocalLibraryPageMotion provides motion,
                 ) {
                     Box(Modifier.fillMaxSize().then(interactionModifier)) { content(page) }
                 }
@@ -159,16 +177,14 @@ internal fun Modifier.sharedAlbumArtwork(
         (motion.isNavigating && motion.navigation?.albumKey != albumKey)
     ) return clip(RoundedCornerShape(cornerRadius))
     val duration = motion.navigation?.durationMillis ?: ALBUM_OPEN_DURATION_MILLIS
-    val shape = RoundedCornerShape(cornerRadius)
-    return with(motion.sharedScope) {
-        // Clip the content inside the shared element; an overlay clip also constrains the flight
-        // to its original card bounds and cuts off the cover as it grows.
-        this@sharedAlbumArtwork.sharedElement(
-            sharedContentState = rememberSharedContentState(albumKey),
-            animatedVisibilityScope = motion.visibilityScope,
-            boundsTransform = BoundsTransform { _, _ -> tween(duration, easing = AlbumMotionEasing) },
-        ).clip(shape)
-    }
+    return sharedCoverArtwork(
+        sharedScope = motion.sharedScope,
+        visibilityScope = motion.visibilityScope,
+        contentKey = albumKey,
+        durationMillis = duration,
+        cornerRadius = { cornerRadius },
+        handoff = motion.handoff,
+    )
 }
 
 /** Bounded staggering: only visible rows participate, and scrolling later never replays it. */
