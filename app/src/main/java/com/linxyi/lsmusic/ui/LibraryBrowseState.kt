@@ -72,7 +72,54 @@ data class BrowseViewState(
     val anchorEntryKey: String? = null,
     val fallbackItemIndex: Int = 0,
     val scrollOffset: Int = 0,
+    val unfilteredPosition: BrowseScrollPosition? = null,
 )
+
+data class BrowseScrollPosition(
+    val anchorEntryKey: String? = null,
+    val fallbackItemIndex: Int = 0,
+    val scrollOffset: Int = 0,
+)
+
+internal const val MEDIA_ENTRY_KEY_PREFIX = "media:"
+
+internal fun mediaEntryKey(entry: MediaEntry): String =
+    "$MEDIA_ENTRY_KEY_PREFIX${entry.parentId}:${entry.id}"
+
+internal fun browseItemIndex(
+    entries: List<MediaEntry>,
+    position: BrowseScrollPosition,
+    headerCount: Int,
+): Int {
+    val anchorIndex = position.anchorEntryKey?.let { anchorKey ->
+        entries.indexOfFirst { mediaEntryKey(it) == anchorKey }
+            .takeIf { it >= 0 }
+            ?.plus(headerCount)
+    }
+    val maximumIndex = (headerCount + entries.lastIndex).coerceAtLeast(0)
+    return (anchorIndex ?: position.fallbackItemIndex).coerceIn(0, maximumIndex)
+}
+
+internal fun initialBrowseItemIndex(
+    entries: List<MediaEntry>,
+    viewState: BrowseViewState,
+    headerCount: Int,
+): Int = browseItemIndex(
+    entries = entries,
+    position = BrowseScrollPosition(viewState.anchorEntryKey, viewState.fallbackItemIndex, viewState.scrollOffset),
+    headerCount = headerCount,
+)
+
+/** A short trip is no farther than approximately one currently visible viewport. */
+internal fun isLibrarySearchNearTop(firstVisibleIndex: Int, lastVisibleIndex: Int): Boolean {
+    val visibleItemCount = (lastVisibleIndex - firstVisibleIndex + 1).coerceAtLeast(1)
+    return firstVisibleIndex <= visibleItemCount
+}
+
+internal fun MediaEntry.matchesLibraryQuery(query: String): Boolean =
+    title.contains(query, ignoreCase = true) ||
+        creator.contains(query, ignoreCase = true) ||
+        albumArtist.contains(query, ignoreCase = true)
 
 internal fun directionalPrefetchRange(
     firstVisibleIndex: Int,

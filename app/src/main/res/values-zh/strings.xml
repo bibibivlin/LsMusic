@@ -20,6 +20,7 @@
     <string name="back_to_network_settings">返回网络设置</string>
     <string name="library_root">音乐库</string>
     <string name="search_current_directory">搜索当前目录</string>
+    <string name="close_search">关闭搜索</string>
     <string name="clear_search">清空搜索</string>
     <string name="switch_to_list">切换到列表</string>
     <string name="switch_to_grid">切换到封面网格</string>
