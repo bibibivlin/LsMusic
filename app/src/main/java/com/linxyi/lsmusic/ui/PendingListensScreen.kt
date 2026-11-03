@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.DeleteOutline
@@ -35,6 +36,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -61,10 +63,13 @@ internal fun PendingListensScreen(
     val records = state.pendingListens
     val isUploading = state.isPendingListensUploading
     val canUpload = state.preferences.listenBrainzEnabled && state.preferences.listenBrainzToken.isNotBlank()
+    val topInset = LocalContentTopInset.current
+    val listState = rememberLazyListState()
 
     LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(20.dp, 20.dp, 20.dp, bottomContentPadding),
+        state = listState,
+        modifier = Modifier.fillMaxSize().protectTopEdge(listState).testTag("pending-listens-list"),
+        contentPadding = PaddingValues(20.dp, topInset + 20.dp, 20.dp, bottomContentPadding),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         item(key = "header") {

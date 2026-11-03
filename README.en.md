@@ -13,6 +13,7 @@ L's Music is an Android DLNA / UPnP music controller. Browse music libraries on 
 
 - Automatically discovers media servers and players on the local network.
 - Browse, search, and sort folders, albums, and playlists.
+- Search from your current position in a long list, and return to it when you clear the search.
 - Restore the previous search, layout, and browse position when returning to the library.
 - Play music on a remote DLNA device or on this device.
 - Manage the playback queue with shuffle, repeat, track changes, and seeking.
@@ -45,6 +46,8 @@ Double-tap an album cover on its detail page to view it full-screen against a bl
 
 Pressing an album gently shrinks the whole card, including its cover and information. Releasing it expands the cover into the detail page with a slight bounce as it settles, while album information, playback buttons, and tracks appear. Returning brings the cover back to its card and restores your browsing position. Both grid and list layouts are supported; dragging to scroll cancels the tap, and animations follow the system animation duration setting.
 
+As you scroll the library, album tracks, queue, or settings, content extends behind the status bar with a soft blur that keeps system icons readable. Returning to the top restores the original spacing.
+
 On sufficiently wide screens, album details show the cover and information beside the track list, with playback and queue buttons at the bottom right.
 
 ## Playback settings
@@ -52,7 +55,7 @@ On sufficiently wide screens, album details show the cover and information besid
 Settings > Playback provides the same controls for local and DLNA playback:
 
 - **Add to queue instead of interrupting playback** is off by default. When enabled, tapping a library song, Play all, or Shuffle play adds the selected tracks to the end of the queue without interrupting the current song. It does not apply while paused or stopped.
-- **Mini player** is on by default. Pressing it gently shrinks the whole player; releasing it opens Now playing with a continuous cover transition, smoothly changing corners and a slight settling bounce. Bottom navigation uses the same cover transition when the mini player is visible. Turn it off to hide the mini player on other pages; playback controls remain available through bottom navigation.
+- **Mini player** is on by default. Pressing it gently shrinks the whole player; releasing it opens Now playing with a continuous cover transition, smoothly changing corners and a slight settling bounce. When you open Now playing from the mini player, the back button or gesture returns you to the previous page. Bottom navigation uses the same cover transition when the mini player is visible. Turn it off to hide the mini player on other pages; playback controls remain available through bottom navigation.
 - **Clear the current queue when starting playback** is on by default. Turn it off to append library selections and immediately play the first newly added track. The enqueue-only option above takes priority when it applies.
 
 The queue allows duplicate songs as separate entries. Tapping an entry in the queue always plays that occurrence. Pause/resume, previous/next, and system media controls are unaffected by the library playback preferences.

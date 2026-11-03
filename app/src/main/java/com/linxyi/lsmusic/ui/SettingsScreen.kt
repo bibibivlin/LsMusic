@@ -141,9 +141,12 @@ internal fun SettingsScreen(
     }
     val isCheckingToken = tokenValidationStatus == ListenBrainzTokenValidationStatus.CHECKING
     val resources = LocalResources.current
+    val topInset = LocalContentTopInset.current
+    val listState = rememberLazyListState()
     LazyColumn(
-        modifier = Modifier.fillMaxSize().testTag("settings-list"),
-        contentPadding = PaddingValues(20.dp, 24.dp, 20.dp, bottomContentPadding),
+        state = listState,
+        modifier = Modifier.fillMaxSize().protectTopEdge(listState).testTag("settings-list"),
+        contentPadding = PaddingValues(20.dp, topInset + 24.dp, 20.dp, bottomContentPadding),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         item(key = "header", contentType = "header") {

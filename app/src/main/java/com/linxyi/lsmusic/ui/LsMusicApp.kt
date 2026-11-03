@@ -4,11 +4,15 @@ package com.linxyi.lsmusic.ui
 
 import android.os.SystemClock
 import android.widget.ImageView
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.PredictiveBackHandler
 import androidx.activity.BackEventCompat
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.AnimationVector1D
+import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateDp
 import androidx.compose.animation.core.animateDpAsState
@@ -21,7 +25,9 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -43,6 +49,8 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.calculateEndPadding
+import androidx.compose.foundation.layout.calculateStartPadding
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -159,6 +167,7 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
@@ -173,14 +182,19 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.LocalPinnableContainer
 import androidx.compose.ui.layout.PinnableContainer
+import androidx.compose.ui.layout.SubcomposeLayout
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.pluralStringResource
@@ -188,18 +202,25 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.setProgress
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.constrainHeight
+import androidx.compose.ui.unit.constrainWidth
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.lerp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.zIndex
 import androidx.core.view.WindowCompat
@@ -257,11 +278,10 @@ internal data class LibraryUiState(
         get() = browseLoadStatus == BrowseLoadStatus.LOADING
 }
 
-private const val MEDIA_ENTRY_KEY_PREFIX = "media:"
 private const val LIBRARY_GRID_HEADER_COUNT = 3
 private const val LIBRARY_TOP_ITEM_INDEX = 0
 private const val LIBRARY_SEARCH_ITEM_INDEX = 1
-private val LibrarySearchControlHeight = 56.dp
+private data class LibrarySearchScrollRequest(val index: Int, val offset: Int)
 private val LibraryFastScrollerTopInset = LibrarySearchControlHeight + 32.dp
 private val LibraryFastScrollerTouchWidth = 48.dp
 private val LibraryFastScrollerMinimumThumbHeight = 48.dp
@@ -271,13 +291,20 @@ internal val ReorderVisualPadding = 8.dp
 private const val ReorderPlacementAnimationDurationMillis = 110
 private const val QueuePostDragClickSuppressionMs = 450L
 private const val ALBUM_DETAIL_HEADER_COUNT = 1
-private val AlbumDetailTwoPaneMinWidth = 840.dp
-private const val ALBUM_DETAIL_TWO_PANE_MIN_ASPECT_RATIO = 1.2f
+private val AlbumDetailTwoPaneMinWidth = 480.dp
+private const val ALBUM_DETAIL_TWO_PANE_MIN_ASPECT_RATIO = 1.35f
+private val AlbumDetailLargeTwoPaneMinWidth = 840.dp
+private const val ALBUM_DETAIL_LARGE_TWO_PANE_MIN_ASPECT_RATIO = 1.2f
 private val AlbumDetailFloatingActionSize = 64.dp
 private val AlbumDetailSecondaryActionSize = 56.dp
 private val AlbumDetailFloatingActionSpacing = 12.dp
+private val AlbumDetailCompactActionSize = 48.dp
+private val AlbumDetailCompactPlayActionSize = 56.dp
+private val AlbumDetailCompactActionSpacing = 8.dp
 private val AlbumDetailFloatingActionEndMargin = 20.dp
 private val AlbumDetailFloatingActionGap = 16.dp
+private val AlbumDetailTrackSpacing = 14.dp
+private val AlbumDetailTrackMinimumHeight = 68.dp
 private val AlbumDetailFloatingActionHeight =
     AlbumDetailFloatingActionSize + AlbumDetailSecondaryActionSize * 2 + AlbumDetailFloatingActionSpacing * 2
 private const val ALBUM_ART_PREFETCH_SCREENS = 2
@@ -289,6 +316,13 @@ private val MiniPlayerHeight = 68.dp
 private val MiniPlayerBottomSpacing = 12.dp
 private val MiniPlayerContentInset = MiniPlayerHeight + MiniPlayerBottomSpacing
 private val MiniPlayerMaxWidth = 720.dp
+private const val MINI_PLAYER_MOTION_DURATION_MILLIS = 400
+private val MiniPlayerMotionEasing = CubicBezierEasing(0.2f, 0f, 0f, 1f)
+private const val ALBUM_ARTWORK_RESIZE_SETTLE_MILLIS = 150L
+
+private class MiniPlayerSnapshot {
+    var state: LsMusicUiState? = null
+}
 
 internal fun LazyItemScope.reorderPlacementModifier(dragged: Boolean): Modifier =
     if (dragged) {
@@ -307,23 +341,6 @@ private val artworkPalettes = listOf(
     listOf(Color(0xFFE27A45), Color(0xFFF0B85A)),
     listOf(Color(0xFF376DCC), Color(0xFF6B54E8)),
 )
-
-private fun mediaEntryKey(entry: MediaEntry): String =
-    "$MEDIA_ENTRY_KEY_PREFIX${entry.parentId}:${entry.id}"
-
-private fun initialBrowseItemIndex(
-    entries: List<MediaEntry>,
-    viewState: BrowseViewState,
-    headerCount: Int,
-): Int {
-    val anchorIndex = viewState.anchorEntryKey?.let { anchorKey ->
-        entries.indexOfFirst { mediaEntryKey(it) == anchorKey }
-            .takeIf { it >= 0 }
-            ?.plus(headerCount)
-    }
-    val maximumIndex = (headerCount + entries.lastIndex).coerceAtLeast(0)
-    return (anchorIndex ?: viewState.fallbackItemIndex).coerceIn(0, maximumIndex)
-}
 
 private fun albumArtworkRequest(
     context: android.content.Context,
@@ -428,6 +445,42 @@ private val destinations = listOf(
 )
 
 @Composable
+internal fun AppBackHandler(
+    state: LsMusicUiState,
+    onDestination: (AppDestination) -> Unit,
+    onNavigateTo: (Int) -> Unit,
+    backProgress: Animatable<Float, AnimationVector1D>,
+    onBackEdge: (Int) -> Unit,
+) {
+    val playerReturnDestination = state.miniPlayerReturnDestination
+        .takeIf { state.destination == AppDestination.NOW_PLAYING }
+    PredictiveBackHandler(
+        enabled = state.exitStatus != ExitStatus.IDLE || playerReturnDestination != null ||
+            state.destination.settingsParent != null ||
+            (state.destination == AppDestination.LIBRARY && state.path.size > 1),
+    ) { events ->
+        try {
+            events.collect { event ->
+                onBackEdge(event.swipeEdge)
+                if (state.exitStatus == ExitStatus.IDLE) backProgress.snapTo(event.progress)
+            }
+            if (state.exitStatus == ExitStatus.IDLE) {
+                when {
+                    playerReturnDestination != null -> onDestination(playerReturnDestination)
+                    state.destination.settingsParent != null -> onDestination(requireNotNull(state.destination.settingsParent))
+                    else -> onNavigateTo(state.path.lastIndex - 1)
+                }
+            }
+        } finally {
+            // A cancelled gesture must restore the page without changing navigation.
+            kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+                backProgress.animateTo(0f, tween(180))
+            }
+        }
+    }
+}
+
+@Composable
 fun LsMusicApp(viewModel: LsMusicViewModel) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val darkTheme = resolvesToDarkTheme(
@@ -440,7 +493,7 @@ fun LsMusicApp(viewModel: LsMusicViewModel) {
         dynamicColor = state.preferences.useDynamicColor,
         presetPalette = state.preferences.presetPalette,
     ) {
-        SystemNavigationBarAppearance()
+        SystemBarAppearance()
         val snackbar = remember { SnackbarHostState() }
         val resources = LocalResources.current
         val localeKey = resources.configuration.locales.toLanguageTags()
@@ -452,31 +505,15 @@ fun LsMusicApp(viewModel: LsMusicViewModel) {
             }
         }
 
-        val backProgress = remember { androidx.compose.animation.core.Animatable(0f) }
+        val backProgress = remember { Animatable(0f) }
         var backEdge by remember { mutableIntStateOf(BackEventCompat.EDGE_LEFT) }
-        PredictiveBackHandler(
-            enabled = state.exitStatus != ExitStatus.IDLE || state.destination.settingsParent != null ||
-                (state.destination == AppDestination.LIBRARY && state.path.size > 1),
-        ) { events ->
-            try {
-                events.collect { event ->
-                    backEdge = event.swipeEdge
-                    if (state.exitStatus == ExitStatus.IDLE) backProgress.snapTo(event.progress)
-                }
-                if (state.exitStatus == ExitStatus.IDLE) {
-                    if (state.destination.settingsParent != null) {
-                        viewModel.setDestination(requireNotNull(state.destination.settingsParent))
-                    } else {
-                        viewModel.navigateTo(state.path.lastIndex - 1)
-                    }
-                }
-            } finally {
-                // A cancelled gesture must restore the page without changing navigation.
-                kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
-                    backProgress.animateTo(0f, tween(180))
-                }
-            }
-        }
+        AppBackHandler(
+            state = state,
+            onDestination = viewModel::setDestination,
+            onNavigateTo = viewModel::navigateTo,
+            backProgress = backProgress,
+            onBackEdge = { backEdge = it },
+        )
 
         SleepTimerPermissionEffect(
             state.sleepTimerPermissionRequest,
@@ -496,6 +533,7 @@ fun LsMusicApp(viewModel: LsMusicViewModel) {
                 backProgress = { backProgress.value },
                 backEdge = { backEdge },
                 onDestination = viewModel::setDestination,
+                onOpenNowPlayingFromMiniPlayer = viewModel::openNowPlayingFromMiniPlayer,
                 onRefresh = viewModel::refreshDevices,
                 onSelectServer = viewModel::selectServer,
                 onSelectRenderer = viewModel::selectRenderer,
@@ -558,6 +596,7 @@ internal fun LsMusicContent(
     state: LsMusicUiState,
     snackbar: SnackbarHostState,
     onDestination: (AppDestination) -> Unit,
+    onOpenNowPlayingFromMiniPlayer: () -> Unit,
     onRefresh: () -> Unit,
     onSelectServer: (String) -> Unit,
     onSelectRenderer: (String) -> Unit,
@@ -649,6 +688,11 @@ internal fun LsMusicContent(
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val expanded = maxWidth >= 720.dp
         val showMiniPlayer = state.preferences.miniPlayerEnabled && state.currentTrack != null && state.destination != AppDestination.NOW_PLAYING
+        val snackbarBottomInset by animateDpAsState(
+            targetValue = if (showMiniPlayer) MiniPlayerContentInset else 0.dp,
+            animationSpec = tween(MINI_PLAYER_MOTION_DURATION_MILLIS, easing = MiniPlayerMotionEasing),
+            label = "mini-player-snackbar-inset",
+        )
         Row(Modifier.fillMaxSize()) {
             if (expanded) {
                 AppNavigationRail(state.destination, onDestination)
@@ -658,16 +702,20 @@ internal fun LsMusicContent(
                 snackbarHost = {
                     SnackbarHost(
                         hostState = snackbar,
-                        modifier = Modifier.padding(
-                            bottom = if (showMiniPlayer) MiniPlayerContentInset else 0.dp,
-                        ),
+                        modifier = Modifier.padding(bottom = snackbarBottomInset),
                     )
                 },
                 bottomBar = {
                     if (!expanded) AppNavigationBar(state.destination, onDestination)
                 },
             ) { padding ->
-                Box(Modifier.fillMaxSize().padding(padding).graphicsLayer {
+                val topInset = padding.calculateTopPadding()
+                val layoutDirection = LocalLayoutDirection.current
+                Box(Modifier.fillMaxSize().padding(
+                    start = padding.calculateStartPadding(layoutDirection),
+                    end = padding.calculateEndPadding(layoutDirection),
+                    bottom = padding.calculateBottomPadding(),
+                ).graphicsLayer {
                     // Read gesture frames in the layer, without recomposing the app or its pages.
                     val progress = backProgress()
                     scaleX = 1f - 0.08f * progress
@@ -681,12 +729,27 @@ internal fun LsMusicContent(
                         destination = state.destination,
                         track = state.currentTrack,
                         miniPlayerEnabled = state.preferences.miniPlayerEnabled,
+                        topInset = topInset,
                     ) { destination ->
                         // The outgoing page keeps its own inset and mini player until the flight ends.
                         val pageShowsMiniPlayer = state.preferences.miniPlayerEnabled && state.currentTrack != null &&
                             destination != AppDestination.NOW_PLAYING
-                        val bottomContentPadding = DefaultScreenBottomPadding +
-                            if (pageShowsMiniPlayer) MiniPlayerContentInset else 0.dp
+                        val miniPlayerTransition = updateTransition(pageShowsMiniPlayer, label = "mini-player-visibility")
+                        val miniPlayerInset by miniPlayerTransition.animateDp(
+                            transitionSpec = {
+                                tween(MINI_PLAYER_MOTION_DURATION_MILLIS, easing = MiniPlayerMotionEasing)
+                            },
+                            label = "mini-player-content-inset",
+                        ) { visible -> if (visible) MiniPlayerContentInset else 0.dp }
+                        val bottomContentPadding = DefaultScreenBottomPadding + miniPlayerInset
+                        val miniPlayerSnapshot = remember { MiniPlayerSnapshot() }
+                        SideEffect {
+                            if (state.currentTrack != null) {
+                                miniPlayerSnapshot.state = state
+                            } else if (!miniPlayerTransition.currentState && !miniPlayerTransition.targetState) {
+                                miniPlayerSnapshot.state = null
+                            }
+                        }
                         destinationStateHolder.SaveableStateProvider(destination.navigationDestination.name) {
                             when (destination) {
                                 AppDestination.LIBRARY -> LibraryScreen(
@@ -714,6 +777,7 @@ internal fun LsMusicContent(
                                 )
                                 AppDestination.NOW_PLAYING -> NowPlayingScreen(
                                     state = state,
+                                    modifier = Modifier.padding(top = topInset),
                                     onTogglePlayback = onTogglePlayback,
                                     onPrevious = onPrevious,
                                     onNext = onNext,
@@ -778,23 +842,33 @@ internal fun LsMusicContent(
                                 }
                             }
                         }
-                        if (pageShowsMiniPlayer) {
-                            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
-                                MiniPlayer(
-                                    state = state,
-                                    onOpen = { onDestination(AppDestination.NOW_PLAYING) },
-                                    onTogglePlayback = onTogglePlayback,
-                                    onNext = onNext,
-                                    modifier = Modifier
-                                        .padding(
-                                            PaddingValues(
-                                                start = 12.dp,
-                                                end = 12.dp,
-                                                bottom = MiniPlayerBottomSpacing,
-                                            ),
-                                        )
-                                        .widthIn(max = MiniPlayerMaxWidth),
-                                )
+                        Box(Modifier.fillMaxSize().clipToBounds(), contentAlignment = Alignment.BottomCenter) {
+                            miniPlayerTransition.AnimatedVisibility(
+                                visible = { it },
+                                enter = fadeIn(tween(MINI_PLAYER_MOTION_DURATION_MILLIS, easing = MiniPlayerMotionEasing)) +
+                                    slideInVertically(tween(MINI_PLAYER_MOTION_DURATION_MILLIS, easing = MiniPlayerMotionEasing)) { it },
+                                exit = fadeOut(tween(MINI_PLAYER_MOTION_DURATION_MILLIS, easing = MiniPlayerMotionEasing)) +
+                                    slideOutVertically(tween(MINI_PLAYER_MOTION_DURATION_MILLIS, easing = MiniPlayerMotionEasing)) { it },
+                            ) {
+                                val playerState = if (state.currentTrack != null) state else miniPlayerSnapshot.state
+                                if (playerState != null) {
+                                    MiniPlayer(
+                                        state = playerState,
+                                        onOpen = onOpenNowPlayingFromMiniPlayer,
+                                        onTogglePlayback = onTogglePlayback,
+                                        onNext = onNext,
+                                        enabled = pageShowsMiniPlayer,
+                                        modifier = Modifier
+                                            .padding(
+                                                PaddingValues(
+                                                    start = 12.dp,
+                                                    end = 12.dp,
+                                                    bottom = MiniPlayerBottomSpacing,
+                                                ),
+                                            )
+                                            .widthIn(max = MiniPlayerMaxWidth),
+                                    )
+                                }
                             }
                         }
                     }
@@ -831,15 +905,17 @@ private fun AppNavigationBar(selected: AppDestination, onDestination: (AppDestin
 }
 
 @Composable
-private fun SystemNavigationBarAppearance() {
+internal fun SystemBarAppearance() {
     val view = LocalView.current
     val colorScheme = MaterialTheme.colorScheme
     SideEffect {
         val window = (view.context as? android.app.Activity)?.window ?: return@SideEffect
         window.navigationBarColor = android.graphics.Color.TRANSPARENT
         window.isNavigationBarContrastEnforced = false
-        WindowCompat.getInsetsController(window, view).isAppearanceLightNavigationBars =
-            colorScheme.surfaceContainer.luminance() > .5f
+        WindowCompat.getInsetsController(window, view).apply {
+            isAppearanceLightNavigationBars = colorScheme.surfaceContainer.luminance() > .5f
+            isAppearanceLightStatusBars = useDarkStatusBarIcons(colorScheme.background)
+        }
     }
 }
 
@@ -933,7 +1009,7 @@ private fun ResolvingLibraryPage(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(start = 20.dp, top = 24.dp, end = 20.dp, bottom = 32.dp),
+            .padding(start = 20.dp, top = LocalContentTopInset.current + 24.dp, end = 20.dp, bottom = 32.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             if (path.size > 1) {
@@ -973,23 +1049,40 @@ internal fun LibraryDirectoryScreen(
     bottomContentPadding: Dp,
     onOpenSettings: () -> Unit,
 ) {
+    val topInset = LocalContentTopInset.current
     var query by remember { mutableStateOf(initialViewState.query) }
     var useGrid by remember {
         mutableStateOf(initialViewState.useGrid ?: state.preferences.useGridByDefault)
     }
+    var unfilteredPosition by remember { mutableStateOf(initialViewState.unfilteredPosition) }
+    var floatingSearchExpanded by remember { mutableStateOf(false) }
+    var pendingSearchScroll by remember { mutableStateOf<LibrarySearchScrollRequest?>(null) }
+    var keepInlineSearchHidden by remember { mutableStateOf(false) }
+    LaunchedEffect(floatingSearchExpanded) {
+        if (floatingSearchExpanded) {
+            keepInlineSearchHidden = true
+        } else if (keepInlineSearchHidden) {
+            // Let the floating text disappear before revealing its in-content counterpart.
+            delay(220)
+            keepInlineSearchHidden = false
+        }
+    }
+    val hideInlineSearch = floatingSearchExpanded || keepInlineSearchHidden
+    val inlineSearchAlpha by animateFloatAsState(
+        targetValue = if (hideInlineSearch) 0f else 1f,
+        animationSpec = tween(durationMillis = 120, easing = MiniPlayerMotionEasing),
+        label = "library-inline-search-alpha",
+    )
     val isAlbumCollection = remember(state.entries) {
         state.entries.isNotEmpty() &&
             state.entries.all { it.isContainer } &&
             state.entries.any { it.isAlbum }
     }
-    val visibleEntries = remember(state.entries, query, state.albumSort, isAlbumCollection) {
-        val filtered = if (query.isBlank()) state.entries
-        else state.entries.filter {
-            it.title.contains(query, ignoreCase = true) ||
-                it.creator.contains(query, ignoreCase = true) ||
-                it.albumArtist.contains(query, ignoreCase = true)
-        }
-        if (isAlbumCollection) filtered.sortedAlbums(state.albumSort) else filtered
+    val orderedEntries = remember(state.entries, state.albumSort, isAlbumCollection) {
+        if (isAlbumCollection) state.entries.sortedAlbums(state.albumSort) else state.entries
+    }
+    val visibleEntries = remember(orderedEntries, query) {
+        if (query.isBlank()) orderedEntries else orderedEntries.filter { it.matchesLibraryQuery(query) }
     }
     val gridState = rememberLazyGridState(
         initialFirstVisibleItemIndex = initialBrowseItemIndex(
@@ -1000,6 +1093,10 @@ internal fun LibraryDirectoryScreen(
         initialFirstVisibleItemScrollOffset = initialViewState.scrollOffset.coerceAtLeast(0),
     )
     val searchFocusRequester = remember { FocusRequester() }
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val density = LocalDensity.current
+    val floatingResultInsetPx = with(density) { (topInset + LibraryFloatingSearchResultInset).roundToPx() }
     val coroutineScope = rememberCoroutineScope()
     var isFastScrollerDragging by remember { mutableStateOf(false) }
     val showFloatingSearchButton by remember {
@@ -1009,7 +1106,9 @@ internal fun LibraryDirectoryScreen(
     }
     val currentQuery by rememberUpdatedState(query)
     val currentUseGrid by rememberUpdatedState(useGrid)
+    val currentUnfilteredPosition by rememberUpdatedState(unfilteredPosition)
     val isCurrentPage = LocalLibraryPageMotion.current?.isCurrentPage != false
+    val isCurrentDestination = LocalPlayerPageMotion.current?.isCurrentPage != false
     val contentStatus = resolveLibraryContentStatus(
         browseLoadStatus = state.browseLoadStatus,
         isSearching = state.isSearching,
@@ -1018,24 +1117,68 @@ internal fun LibraryDirectoryScreen(
         visibleEntriesEmpty = visibleEntries.isEmpty(),
     )
 
-    fun saveViewState() {
+    fun currentBrowsePosition(): BrowseScrollPosition {
         val anchorKey = gridState.layoutInfo.visibleItemsInfo
             .firstOrNull { it.index == gridState.firstVisibleItemIndex }
             ?.key as? String
+        return BrowseScrollPosition(
+            anchorEntryKey = anchorKey?.takeIf { it.startsWith(MEDIA_ENTRY_KEY_PREFIX) },
+            fallbackItemIndex = gridState.firstVisibleItemIndex,
+            scrollOffset = gridState.firstVisibleItemScrollOffset,
+        )
+    }
+
+    fun updateQuery(nextQuery: String) {
+        if (nextQuery == query) return
+        if (query.isBlank() && nextQuery.isNotBlank()) {
+            unfilteredPosition = currentBrowsePosition()
+        }
+        if (query.isNotBlank() && nextQuery.isBlank()) {
+            pendingSearchScroll = unfilteredPosition?.let { position ->
+                LibrarySearchScrollRequest(
+                    index = browseItemIndex(orderedEntries, position, LIBRARY_GRID_HEADER_COUNT),
+                    offset = position.scrollOffset,
+                )
+            }
+            unfilteredPosition = null
+        } else if (nextQuery.isNotBlank() && floatingSearchExpanded) {
+            val hasMatches = orderedEntries.any { it.matchesLibraryQuery(nextQuery) }
+            pendingSearchScroll = LibrarySearchScrollRequest(
+                index = if (hasMatches) LIBRARY_GRID_HEADER_COUNT else LIBRARY_TOP_ITEM_INDEX,
+                offset = if (hasMatches) -floatingResultInsetPx else 0,
+            )
+        }
+        query = nextQuery
+    }
+
+    fun closeFloatingSearch() {
+        floatingSearchExpanded = false
+        focusManager.clearFocus()
+        keyboardController?.hide()
+    }
+
+    BackHandler(enabled = floatingSearchExpanded && isCurrentPage && isCurrentDestination) {
+        closeFloatingSearch()
+    }
+
+    fun saveViewState() {
+        val position = currentBrowsePosition()
         onSaveBrowseViewState(
             pageKey,
             BrowseViewState(
                 query = currentQuery,
                 useGrid = currentUseGrid,
-                anchorEntryKey = anchorKey?.takeIf { it.startsWith(MEDIA_ENTRY_KEY_PREFIX) },
-                fallbackItemIndex = gridState.firstVisibleItemIndex,
-                scrollOffset = gridState.firstVisibleItemScrollOffset,
+                anchorEntryKey = position.anchorEntryKey,
+                fallbackItemIndex = position.fallbackItemIndex,
+                scrollOffset = position.scrollOffset,
+                unfilteredPosition = currentUnfilteredPosition,
             ),
         )
     }
     val openEntry: (MediaEntry) -> Unit = { entry ->
         // Save before navigating: AnimatedContent keeps this page alive during the cover flight.
         saveViewState()
+        if (floatingSearchExpanded) closeFloatingSearch()
         onOpen(entry)
     }
     // Publish layout choices before the next tap so the destination starts with the source corners.
@@ -1051,7 +1194,16 @@ internal fun LibraryDirectoryScreen(
 
     BoxWithConstraints(modifier) {
         val gridSpacing = 12.dp
-        val density = LocalDensity.current
+        val pinnedSearchTopPx = with(density) { (topInset + LibraryFloatingSearchTop).roundToPx() }
+        val floatingSearchTopPx = remember(gridState, pinnedSearchTopPx) {
+            derivedStateOf {
+                val layoutInfo = gridState.layoutInfo
+                val inlineTop = layoutInfo.visibleItemsInfo
+                    .firstOrNull { it.index == LIBRARY_SEARCH_ITEM_INDEX }
+                    ?.let { it.offset.y + layoutInfo.beforeContentPadding }
+                maxOf(pinnedSearchTopPx, inlineTop ?: pinnedSearchTopPx)
+            }
+        }
         val availableWidth = (maxWidth - 40.dp).coerceAtLeast(1.dp)
         val minimumCellWidth = state.preferences.gallerySize.minCellSize.dp
         val columnCount = if (useGrid) {
@@ -1074,10 +1226,10 @@ internal fun LibraryDirectoryScreen(
         LazyVerticalGrid(
             columns = if (useGrid) GridCells.Adaptive(minimumCellWidth) else GridCells.Fixed(1),
             state = gridState,
-            modifier = Modifier.fillMaxSize().testTag("library-directory-entries"),
+            modifier = Modifier.fillMaxSize().protectTopEdge(gridState).testTag("library-directory-entries"),
             contentPadding = PaddingValues(
                 start = 20.dp,
-                top = 24.dp,
+                top = topInset + 24.dp,
                 end = 20.dp,
                 bottom = bottomContentPadding,
             ),
@@ -1088,23 +1240,29 @@ internal fun LibraryDirectoryScreen(
                 Text(stringResource(R.string.app_name), style = MaterialTheme.typography.headlineLarge)
             }
             item(span = { GridItemSpan(maxLineSpan) }, contentType = "library-header") {
-                OutlinedTextField(
-                    value = query,
-                    onValueChange = { query = it },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(LibrarySearchControlHeight)
-                        .focusRequester(searchFocusRequester),
-                    singleLine = true,
-                    shape = RoundedCornerShape(24.dp),
-                    leadingIcon = { Icon(Icons.Rounded.Search, null) },
-                    trailingIcon = {
-                        if (query.isNotBlank()) IconButton(onClick = { query = "" }) {
-                            Icon(Icons.Rounded.Close, stringResource(R.string.clear_search))
-                        }
-                    },
-                    placeholder = { Text(stringResource(R.string.search_current_directory)) },
-                )
+                Box(Modifier.fillMaxWidth().height(LibrarySearchControlHeight).testTag("library-inline-search-slot")) {
+                    OutlinedTextField(
+                        value = query,
+                        onValueChange = ::updateQuery,
+                        enabled = !hideInlineSearch,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(LibrarySearchControlHeight)
+                            .focusRequester(searchFocusRequester)
+                            .graphicsLayer { alpha = inlineSearchAlpha }
+                            .then(if (hideInlineSearch) Modifier.clearAndSetSemantics { } else Modifier)
+                            .testTag("library-inline-search-input"),
+                        singleLine = true,
+                        shape = RoundedCornerShape(24.dp),
+                        leadingIcon = { Icon(Icons.Rounded.Search, null) },
+                        trailingIcon = {
+                            if (query.isNotBlank()) IconButton(onClick = { updateQuery("") }) {
+                                Icon(Icons.Rounded.Close, stringResource(R.string.clear_search))
+                            }
+                        },
+                        placeholder = { Text(stringResource(R.string.search_current_directory)) },
+                    )
+                }
             }
             item(span = { GridItemSpan(maxLineSpan) }, contentType = "library-header") {
                 if (isAlbumCollection) {
@@ -1173,9 +1331,19 @@ internal fun LibraryDirectoryScreen(
             }
         }
 
+        SideEffect {
+            // Apply the request after the filtered item provider has been updated, but before
+            // its next layout. Otherwise the old, shorter result set can clamp the restore index.
+            pendingSearchScroll?.let { request ->
+                gridState.requestScrollToItem(request.index, request.offset)
+                pendingSearchScroll = null
+            }
+        }
+
         if (contentStatus != LibraryContentStatus.CONTENT) {
             CenteredStatusLayout(
                 title = stringResource(R.string.app_name),
+                modifier = Modifier.padding(top = topInset),
                 showTitle = false,
             ) {
                 when (contentStatus) {
@@ -1226,32 +1394,41 @@ internal fun LibraryDirectoryScreen(
             viewportHeight = maxHeight,
             gridSpacing = gridSpacing,
             bottomContentPadding = bottomContentPadding,
+            topContentInset = topInset,
             onDragStateChanged = { isFastScrollerDragging = it },
         )
 
-        AnimatedVisibility(
-            visible = showFloatingSearchButton,
+        LibraryFloatingSearch(
+            expanded = floatingSearchExpanded,
+            showButton = showFloatingSearchButton,
+            expandedWidth = (maxWidth - 40.dp).coerceAtLeast(LibrarySearchControlHeight),
+            query = query,
+            onQueryChange = ::updateQuery,
+            onOpen = {
+                val first = gridState.firstVisibleItemIndex
+                val last = gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: first
+                if (isLibrarySearchNearTop(first, last)) {
+                    coroutineScope.launch {
+                        if (gridState.animateSearchReturnToTop(density)) {
+                            searchFocusRequester.requestFocus()
+                        }
+                    }
+                } else {
+                    floatingSearchExpanded = true
+                }
+            },
+            onClose = ::closeFloatingSearch,
+            onImeSearch = { keyboardController?.hide() },
             modifier = Modifier
                 .align(Alignment.TopEnd)
-                .padding(top = 20.dp, end = 20.dp),
-            enter = fadeIn() + scaleIn(),
-            exit = fadeOut() + scaleOut(),
-        ) {
-            FloatingActionButton(
-                onClick = {
-                    coroutineScope.launch {
-                        gridState.animateScrollToItem(LIBRARY_TOP_ITEM_INDEX)
-                        searchFocusRequester.requestFocus()
-                    }
-                },
-                modifier = Modifier.size(LibrarySearchControlHeight),
-                shape = CircleShape,
-                containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-            ) {
-                Icon(Icons.Rounded.Search, stringResource(R.string.search_current_directory))
-            }
-        }
+                .padding(end = 20.dp)
+                .offset {
+                    // Follow the original field as it comes into view, then stick to the
+                    // floating position once that field scrolls past the top edge.
+                    IntOffset(0, floatingSearchTopPx.value)
+                }
+                .libraryFloatingSearchOverlay(),
+        )
     }
 }
 
@@ -1262,10 +1439,11 @@ private fun BoxScope.LibraryFastScrollerOverlay(
     viewportHeight: Dp,
     gridSpacing: Dp,
     bottomContentPadding: Dp,
+    topContentInset: Dp,
     onDragStateChanged: (Boolean) -> Unit,
 ) {
     val density = LocalDensity.current
-    val minimumTopInsetPx = with(density) { LibraryFastScrollerTopInset.roundToPx() }
+    val minimumTopInsetPx = with(density) { (topContentInset + LibraryFastScrollerTopInset).roundToPx() }
     val gridSpacingPx = with(density) { gridSpacing.roundToPx() }
     val showFastScroller by remember(gridState) {
         derivedStateOf {
@@ -1281,7 +1459,7 @@ private fun BoxScope.LibraryFastScrollerOverlay(
             when {
                 lastHeader != null -> maxOf(
                     minimumTopInsetPx,
-                    lastHeader.offset.y + lastHeader.size.height + gridSpacingPx,
+                    lastHeader.offset.y + gridState.layoutInfo.beforeContentPadding + lastHeader.size.height + gridSpacingPx,
                 )
                 gridState.firstVisibleItemIndex >= LIBRARY_GRID_HEADER_COUNT -> minimumTopInsetPx
                 else -> null
@@ -1574,6 +1752,7 @@ internal fun AlbumDetailScreen(
     onQueueAll: (List<MediaEntry>) -> Unit,
     bottomContentPadding: Dp,
 ) {
+    val topInset = LocalContentTopInset.current
     val tracks = remember(state.entries) { state.entries.filterNot { it.isContainer } }
     val representativeTrack = tracks.firstOrNull()
     val currentLocation = state.path.lastOrNull()
@@ -1617,6 +1796,7 @@ internal fun AlbumDetailScreen(
         ),
         initialFirstVisibleItemScrollOffset = initialViewState.scrollOffset.coerceAtLeast(0),
     )
+    val summaryScrollState = rememberScrollState()
 
     val isCurrentPage = LocalLibraryPageMotion.current?.isCurrentPage != false
     val trackReveal = animateFloatAsState(
@@ -1642,101 +1822,182 @@ internal fun AlbumDetailScreen(
         }
     }
 
-    val albumSummary: @Composable () -> Unit = {
-        AlbumDetailSummary(
-            entry = headerArtworkEntry,
-            pageKey = pageKey,
-            title = title,
-            artists = artists,
-            trackCount = trackCount,
-            entries = state.entries,
-            browseLoadStatus = state.browseLoadStatus,
-            placeholderArtworkUri = currentLocation?.let { location ->
-                selectThumbnailArtworkUri(location.artworkCandidates, location.artworkUri)
-            } ?: representativeTrack?.thumbnailArtworkUri,
-            onResolveAlbumArtwork = onResolveAlbumArtwork,
-            onOpenArtwork = { showFullScreenArtwork = true },
-        )
-    }
-
     BoxWithConstraints(modifier.fillMaxSize()) {
         // Measure the actual content area after navigation and system insets.
-        val twoPane = maxWidth >= AlbumDetailTwoPaneMinWidth &&
-            maxWidth >= maxHeight * ALBUM_DETAIL_TWO_PANE_MIN_ASPECT_RATIO
+        val usableHeight = (maxHeight - topInset).coerceAtLeast(0.dp)
+        val twoPane = maxWidth >= AlbumDetailTwoPaneMinWidth && (
+            maxWidth >= usableHeight * ALBUM_DETAIL_TWO_PANE_MIN_ASPECT_RATIO ||
+                (maxWidth >= AlbumDetailLargeTwoPaneMinWidth &&
+                    maxWidth >= usableHeight * ALBUM_DETAIL_LARGE_TWO_PANE_MIN_ASPECT_RATIO)
+            )
+        val summaryAvailableHeight = (usableHeight - 24.dp - bottomContentPadding).coerceAtLeast(0.dp)
+        val compactActions = twoPane && summaryAvailableHeight <
+            AlbumDetailFloatingActionHeight + AlbumDetailFloatingActionGap + AlbumDetailTrackMinimumHeight
+        val compactActionProgress by animateFloatAsState(
+            targetValue = if (compactActions) 1f else 0f,
+            animationSpec = tween(MINI_PLAYER_MOTION_DURATION_MILLIS, easing = MiniPlayerMotionEasing),
+            label = "album-compact-actions",
+        )
+        val floatingActionHeight = lerp(
+            AlbumDetailFloatingActionHeight,
+            AlbumDetailCompactPlayActionSize,
+            compactActionProgress,
+        )
+        val compactActionInset = (AlbumDetailCompactPlayActionSize + AlbumDetailFloatingActionGap) * compactActionProgress
+        val sideActionInset = (AlbumDetailFloatingActionSize + AlbumDetailFloatingActionGap) * (1f - compactActionProgress)
+        val albumSummary: @Composable () -> Unit = {
+            AlbumDetailSummary(
+                entry = headerArtworkEntry,
+                pageKey = pageKey,
+                title = title,
+                artists = artists,
+                trackCount = trackCount,
+                entries = state.entries,
+                browseLoadStatus = state.browseLoadStatus,
+                placeholderArtworkUri = currentLocation?.let { location ->
+                    selectThumbnailArtworkUri(location.artworkCandidates, location.artworkUri)
+                } ?: representativeTrack?.thumbnailArtworkUri,
+                availableHeight = summaryAvailableHeight,
+                twoPane = twoPane,
+                onResolveAlbumArtwork = onResolveAlbumArtwork,
+                onOpenArtwork = { showFullScreenArtwork = true },
+            )
+        }
         Row(Modifier.fillMaxSize()) {
             if (twoPane) {
-                Column(
+                BoxWithConstraints(
                     modifier = Modifier
                         .weight(0.4f)
                         .fillMaxHeight()
-                        .padding(start = 20.dp, top = 24.dp, end = 12.dp, bottom = bottomContentPadding)
-                        .verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.Center,
+                        .protectTopEdge(summaryScrollState, 24.dp),
                 ) {
-                    albumSummary()
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .verticalScroll(summaryScrollState)
+                            .heightIn(min = maxHeight)
+                            .padding(start = 20.dp, top = topInset + 24.dp, end = 12.dp, bottom = bottomContentPadding),
+                        verticalArrangement = Arrangement.Center,
+                    ) {
+                        albumSummary()
+                    }
                 }
             }
-            LazyColumn(
-                state = listState,
-                modifier = Modifier.weight(if (twoPane) 0.6f else 1f).fillMaxHeight()
-                    .testTag("album-detail-tracks"),
-                contentPadding = PaddingValues(
-                    start = if (twoPane) 12.dp else 20.dp,
-                    top = 24.dp,
-                    end = 20.dp,
-                    // The last row can move completely above the floating actions.
-                    bottom = bottomContentPadding + if (twoPane) {
-                        AlbumDetailFloatingActionHeight + AlbumDetailFloatingActionGap
+            val trackList: @Composable (Boolean, Modifier) -> Unit = { centerTracks, listModifier ->
+                val overflowProgress by animateFloatAsState(
+                    targetValue = if (centerTracks) 0f else 1f,
+                    animationSpec = tween(MINI_PLAYER_MOTION_DURATION_MILLIS, easing = MiniPlayerMotionEasing),
+                    label = "album-track-overflow",
+                )
+                LazyColumn(
+                    state = listState,
+                    modifier = listModifier.protectTopEdge(listState).testTag("album-detail-tracks"),
+                    contentPadding = PaddingValues(
+                        start = if (twoPane) 12.dp else 20.dp,
+                        // The zero-height header still contributes one item spacing.
+                        top = topInset + if (twoPane) 24.dp - AlbumDetailTrackSpacing * (1f - overflowProgress) else 24.dp,
+                        end = 20.dp + if (twoPane) sideActionInset * (1f - overflowProgress) else 0.dp,
+                        // The last row can move completely above the floating actions.
+                        bottom = bottomContentPadding + if (twoPane) {
+                            lerp(compactActionInset, floatingActionHeight + AlbumDetailFloatingActionGap, overflowProgress)
+                        } else {
+                            0.dp
+                        },
+                    ),
+                    verticalArrangement = if (centerTracks) {
+                        Arrangement.spacedBy(AlbumDetailTrackSpacing, Alignment.CenterVertically)
                     } else {
-                        0.dp
+                        Arrangement.spacedBy(AlbumDetailTrackSpacing)
                     },
-                ),
-                verticalArrangement = Arrangement.spacedBy(14.dp),
-            ) {
-                // Keep one header in both layouts so saved track indices remain valid.
-                item(key = "album-detail-header", contentType = "header") {
-                    if (!twoPane) {
-                        Column {
-                            albumSummary()
-                            Spacer(Modifier.height(14.dp))
-                            AlbumPlaybackActions(
-                                tracks = tracks,
-                                enabled = !state.isBrowsing && trackCount > 0,
-                                onPlayAll = onPlayAll,
-                                onShufflePlay = onShufflePlay,
-                                onQueueAll = onQueueAll,
+                ) {
+                    // Keep one header in both layouts so saved track indices remain valid.
+                    item(key = "album-detail-header", contentType = "header") {
+                        if (!twoPane) {
+                            Column {
+                                albumSummary()
+                                Spacer(Modifier.height(14.dp))
+                                AlbumPlaybackActions(
+                                    tracks = tracks,
+                                    enabled = !state.isBrowsing && trackCount > 0,
+                                    onPlayAll = onPlayAll,
+                                    onShufflePlay = onShufflePlay,
+                                    onQueueAll = onQueueAll,
+                                )
+                            }
+                        }
+                    }
+                    if (!state.isBrowsing && trackCount == 0) {
+                        item(key = "album-detail-empty", contentType = "empty") {
+                            EmptyPanel(
+                                icon = Icons.Rounded.MusicNote,
+                                title = stringResource(R.string.album_no_playable_tracks_title),
+                                body = stringResource(R.string.album_no_playable_tracks_body),
                             )
                         }
                     }
-                }
-                if (!state.isBrowsing && trackCount == 0) {
-                    item(key = "album-detail-empty", contentType = "empty") {
-                        EmptyPanel(
-                            icon = Icons.Rounded.MusicNote,
-                            title = stringResource(R.string.album_no_playable_tracks_title),
-                            body = stringResource(R.string.album_no_playable_tracks_body),
+                    itemsIndexed(
+                        items = tracks,
+                        key = { _, item -> mediaEntryKey(item) },
+                        contentType = { _, _ -> "track" },
+                    ) { index, track ->
+                        TrackCollectionRow(
+                            track = track,
+                            number = index + 1,
+                            isPlaying = state.currentTrackId == track.id && state.playbackState == RemotePlaybackState.PLAYING,
+                            onPlay = { onPlay(track) },
+                            onQueue = { onQueue(track) },
+                            modifier = Modifier
+                                .albumDetailEnter(delayMillis = 150 + index.coerceAtMost(4) * 20)
+                                .graphicsLayer {
+                                    alpha = trackReveal.value
+                                    translationY = (1f - trackReveal.value) * 10.dp.toPx()
+                                },
                         )
                     }
                 }
-                itemsIndexed(
-                    items = tracks,
-                    key = { _, item -> mediaEntryKey(item) },
-                    contentType = { _, _ -> "track" },
-                ) { index, track ->
-                    TrackCollectionRow(
-                        track = track,
-                        number = index + 1,
-                        isPlaying = state.currentTrackId == track.id && state.playbackState == RemotePlaybackState.PLAYING,
-                        onPlay = { onPlay(track) },
-                        onQueue = { onQueue(track) },
-                        modifier = Modifier
-                            .albumDetailEnter(delayMillis = 150 + index.coerceAtMost(4) * 20)
-                            .graphicsLayer {
-                                alpha = trackReveal.value
-                                translationY = (1f - trackReveal.value) * 10.dp.toPx()
-                            },
-                    )
+            }
+            if (twoPane) {
+                SubcomposeLayout(Modifier.weight(0.6f).fillMaxHeight()) { constraints ->
+                    val availableHeight = (constraints.maxHeight - topInset.roundToPx() - 24.dp.roundToPx() -
+                        bottomContentPadding.roundToPx() - compactActionInset.roundToPx()).coerceAtLeast(0)
+                    // Each row contains a 24 dp icon and 10 dp of vertical padding on both sides.
+                    // Skip the measurement entirely when even these minimum heights cannot fit.
+                    val minimumRowHeight = 24.dp.roundToPx() + 2 * 10.dp.roundToPx()
+                    val minimumContentHeight = trackCount.toLong() * minimumRowHeight +
+                        (trackCount - 1).coerceAtLeast(0).toLong() * AlbumDetailTrackSpacing.roundToPx()
+                    val centerTracks = if (trackCount > 0 && minimumContentHeight <= availableHeight) {
+                        val reservedWidth = 12.dp.roundToPx() + 20.dp.roundToPx() + sideActionInset.roundToPx()
+                        val trackWidth = (constraints.maxWidth - reservedWidth).coerceAtLeast(0)
+                        // Measure only a potentially short list before composing the visible list, so
+                        // restored scroll positions and large-font row heights are handled on the first frame.
+                        val measuredTracks = subcompose("track-measurement") {
+                            Column(
+                                modifier = Modifier.clearAndSetSemantics { },
+                                verticalArrangement = Arrangement.spacedBy(AlbumDetailTrackSpacing),
+                            ) {
+                                tracks.forEachIndexed { index, track ->
+                                    TrackCollectionRow(
+                                        track = track,
+                                        number = index + 1,
+                                        isPlaying = state.currentTrackId == track.id &&
+                                            state.playbackState == RemotePlaybackState.PLAYING,
+                                        onPlay = {},
+                                        onQueue = {},
+                                    )
+                                }
+                            }
+                        }.single().measure(Constraints.fixedWidth(trackWidth))
+                        measuredTracks.height <= availableHeight
+                    } else {
+                        false
+                    }
+                    val list = subcompose("track-list") {
+                        trackList(centerTracks, Modifier.fillMaxSize())
+                    }.single().measure(constraints)
+                    layout(list.width, list.height) { list.placeRelative(0, 0) }
                 }
+            } else {
+                trackList(false, Modifier.weight(1f).fillMaxHeight())
             }
         }
         if (twoPane) {
@@ -1746,6 +2007,7 @@ internal fun AlbumDetailScreen(
                 onPlayAll = onPlayAll,
                 onShufflePlay = onShufflePlay,
                 onQueueAll = onQueueAll,
+                compactProgress = compactActionProgress,
                 modifier = Modifier.align(Alignment.BottomEnd)
                     .padding(end = AlbumDetailFloatingActionEndMargin, bottom = bottomContentPadding),
             )
@@ -1763,27 +2025,139 @@ private fun AlbumDetailSummary(
     entries: List<MediaEntry>,
     browseLoadStatus: BrowseLoadStatus,
     placeholderArtworkUri: String?,
+    availableHeight: Dp,
+    twoPane: Boolean,
     onResolveAlbumArtwork: (BrowsePageKey, Int) -> Unit,
     onOpenArtwork: () -> Unit,
 ) {
     val openArtworkLabel = stringResource(R.string.open_full_screen_artwork)
     val motion = LocalLibraryPageMotion.current
     val artworkCanResolve = motion == null || (motion.isCurrentPage && motion.isSettled)
-    Column(
+    val textMeasurer = rememberTextMeasurer()
+    val titleStyle = MaterialTheme.typography.headlineSmall
+    val artistStyle = MaterialTheme.typography.bodyLarge
+    val countStyle = MaterialTheme.typography.labelLarge
+    val trackCountLabel = if (browseLoadStatus == BrowseLoadStatus.LOADING) {
+        stringResource(R.string.loading_music_content)
+    } else {
+        pluralStringResource(R.plurals.track_count, trackCount, trackCount)
+    }
+    SubcomposeLayout(
         modifier = Modifier.fillMaxWidth().testTag("album-detail-summary"),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        entry?.let {
-            BoxWithConstraints(
-                modifier = Modifier.fillMaxWidth(),
-                contentAlignment = Alignment.Center,
-            ) {
-                val artworkSize = minOf(maxWidth, maxHeight, LargeSquareContentMaxSize)
-                val artworkSizePx = with(LocalDensity.current) { artworkSize.roundToPx() }
-                LaunchedEffect(pageKey, artworkSizePx, entries, browseLoadStatus, artworkCanResolve) {
+    ) { constraints ->
+        val textConstraints = Constraints(maxWidth = constraints.maxWidth)
+        // Interpolate the compact spacing so a changing player inset cannot make the cover jump.
+        val expandedSpacing = ((availableHeight - 300.dp) / 40.dp).coerceIn(0f, 1f)
+        val artworkGap = lerp(8.dp, 16.dp, expandedSpacing).roundToPx()
+        val artistGap = lerp(4.dp, 6.dp, expandedSpacing).roundToPx()
+        val countGap = lerp(4.dp, 8.dp, expandedSpacing).roundToPx()
+        val availableHeightPx = availableHeight.roundToPx().coerceAtLeast(0)
+        val minimumCoverSize = if (twoPane && entry != null) {
+            minOf(32.dp.roundToPx(), availableHeightPx / 4)
+        } else {
+            0
+        }
+        fun TextStyle.scaledForSummary(scale: Float): TextStyle = if (scale == 1f) this else copy(
+            fontSize = fontSize * scale,
+            lineHeight = lineHeight * scale,
+        )
+        val textScale = if (twoPane && entry != null) {
+            val textBudget = availableHeightPx - artworkGap - minimumCoverSize
+            // Keep the full title and metadata visible if shrinking the artwork alone is insufficient.
+            floatArrayOf(1f, .9f, .8f, .7f, .6f).firstOrNull { scale ->
+                val titleHeight = textMeasurer.measure(
+                    title,
+                    style = titleStyle.scaledForSummary(scale),
+                    constraints = textConstraints,
+                ).size.height
+                val artistHeight = if (artists.isNotBlank()) {
+                    artistGap + textMeasurer.measure(
+                        artists,
+                        style = artistStyle.scaledForSummary(scale),
+                        constraints = textConstraints,
+                    ).size.height
+                } else {
+                    0
+                }
+                val countHeight = textMeasurer.measure(
+                    trackCountLabel,
+                    style = countStyle.scaledForSummary(scale),
+                    constraints = textConstraints,
+                ).size.height
+                titleHeight + artistHeight + countGap + countHeight <= textBudget
+            } ?: .6f
+        } else {
+            1f
+        }
+        val titleText = subcompose("title") {
+            Text(
+                title,
+                modifier = Modifier.fillMaxWidth().testTag("album-detail-title").albumDetailEnter(),
+                style = titleStyle.scaledForSummary(textScale),
+                textAlign = TextAlign.Center,
+            )
+        }.single().measure(textConstraints)
+        val artistText = if (artists.isNotBlank()) {
+            subcompose("artist") {
+                Text(
+                    artists,
+                    modifier = Modifier.fillMaxWidth().testTag("album-detail-artist").albumDetailEnter(),
+                    style = artistStyle.scaledForSummary(textScale),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                )
+            }.single().measure(textConstraints)
+        } else {
+            null
+        }
+        val countText = subcompose("count") {
+            Text(
+                trackCountLabel,
+                modifier = Modifier.fillMaxWidth().testTag("album-detail-count").albumDetailEnter(),
+                style = countStyle.scaledForSummary(textScale),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+            )
+        }.single().measure(textConstraints)
+
+        val textHeight = titleText.height + (artistText?.let { artistGap + it.height } ?: 0) +
+            countGap + countText.height
+        // In a scrolling single-pane page, the artist and count may continue below the viewport.
+        // The cover and title should still fit above the mini player on the first frame.
+        val reservedTextHeight = if (twoPane ||
+            availableHeightPx >= artworkGap + textHeight + 48.dp.roundToPx()
+        ) {
+            textHeight
+        } else {
+            titleText.height
+        }
+        val artworkSizePx = if (entry != null) {
+            val fallbackCoverSize = if (twoPane && textHeight + artworkGap >= availableHeightPx) {
+                minOf(16.dp.roundToPx(), availableHeightPx / 4)
+            } else {
+                0
+            }
+            minOf(
+                constraints.maxWidth,
+                LargeSquareContentMaxSize.roundToPx(),
+                (availableHeightPx - artworkGap - reservedTextHeight).coerceAtLeast(fallbackCoverSize),
+            )
+        } else {
+            0
+        }
+        val artwork = if (entry != null && artworkSizePx > 0) {
+            subcompose("artwork") {
+                // Keep one image request while the available height is changing, then resolve
+                // the final size once. This also prevents a new decode on every animation frame.
+                var requestSizePx by remember(pageKey) { mutableIntStateOf(artworkSizePx) }
+                LaunchedEffect(artworkSizePx) {
+                    delay(ALBUM_ARTWORK_RESIZE_SETTLE_MILLIS)
+                    requestSizePx = artworkSizePx
+                }
+                LaunchedEffect(pageKey, requestSizePx, entries, browseLoadStatus, artworkCanResolve) {
                     // Keep the original thumbnail through the flight, then resolve the large cover.
                     if (artworkCanResolve && browseLoadStatus == BrowseLoadStatus.LOADED) {
-                        onResolveAlbumArtwork(pageKey, artworkSizePx)
+                        onResolveAlbumArtwork(pageKey, requestSizePx)
                     }
                 }
                 ArtworkTile(
@@ -1802,9 +2176,9 @@ private fun AlbumDetailSummary(
                             }
                         }
                     },
-                    size = artworkSize,
+                    size = artworkSizePx.toDp(),
                     imageIdentity = pageKey,
-                    requestSizePx = artworkSizePx,
+                    requestSizePx = requestSizePx,
                     useCachedAlbumThumbnailAsPlaceholder = true,
                     preferThumbnailSource = false,
                     placeholderArtworkUri = placeholderArtworkUri,
@@ -1812,25 +2186,22 @@ private fun AlbumDetailSummary(
                     albumTransitionKey = pageKey,
                     useCachedThumbnailDuringFlight = motion?.navigation?.opening == true && motion.isCurrentPage,
                 )
-            }
+            }.single().measure(Constraints.fixed(artworkSizePx, artworkSizePx))
+        } else {
+            null
         }
-        Spacer(Modifier.height(16.dp))
-        Column(
-            modifier = Modifier.fillMaxWidth().albumDetailEnter(),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Text(title, style = MaterialTheme.typography.headlineSmall, textAlign = TextAlign.Center)
-            if (artists.isNotBlank()) {
-                Spacer(Modifier.height(6.dp))
-                Text(artists, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
+        val contentHeight = artworkSizePx + artworkGap + textHeight
+        layout(constraints.maxWidth, contentHeight.coerceIn(constraints.minHeight, constraints.maxHeight)) {
+            artwork?.placeRelative((constraints.maxWidth - artwork.width) / 2, 0)
+            var y = artworkSizePx + artworkGap
+            titleText.placeRelative(0, y)
+            y += titleText.height
+            artistText?.let {
+                y += artistGap
+                it.placeRelative(0, y)
+                y += it.height
             }
-            Spacer(Modifier.height(8.dp))
-            Text(
-                if (browseLoadStatus == BrowseLoadStatus.LOADING) stringResource(R.string.loading_music_content)
-                else pluralStringResource(R.plurals.track_count, trackCount, trackCount),
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            countText.placeRelative(0, y + countGap)
         }
     }
 }
@@ -1887,17 +2258,16 @@ private fun AlbumFloatingPlaybackActions(
     onPlayAll: (List<MediaEntry>) -> Unit,
     onShufflePlay: (List<MediaEntry>) -> Unit,
     onQueueAll: (List<MediaEntry>) -> Unit,
+    compactProgress: Float,
     modifier: Modifier = Modifier,
 ) {
-    Column(
-        modifier = modifier.testTag("album-detail-floating-actions").albumDetailEnter(130),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(AlbumDetailFloatingActionSpacing),
-    ) {
+    val secondarySize = lerp(AlbumDetailSecondaryActionSize, AlbumDetailCompactActionSize, compactProgress)
+    val playSize = lerp(AlbumDetailFloatingActionSize, AlbumDetailCompactPlayActionSize, compactProgress)
+    val buttons: @Composable () -> Unit = {
         FilledTonalIconButton(
             onClick = { onShufflePlay(tracks) },
             enabled = enabled,
-            modifier = Modifier.size(AlbumDetailSecondaryActionSize)
+            modifier = Modifier.size(secondarySize)
                 .shadow(if (enabled) 6.dp else 0.dp, CircleShape).testTag("album-action-shuffle"),
         ) {
             Icon(Icons.Rounded.Shuffle, stringResource(R.string.shuffle_play))
@@ -1905,7 +2275,7 @@ private fun AlbumFloatingPlaybackActions(
         FilledTonalIconButton(
             onClick = { onQueueAll(tracks) },
             enabled = enabled,
-            modifier = Modifier.size(AlbumDetailSecondaryActionSize)
+            modifier = Modifier.size(secondarySize)
                 .shadow(if (enabled) 6.dp else 0.dp, CircleShape).testTag("album-action-queue-all"),
         ) {
             Icon(Icons.Rounded.Add, stringResource(R.string.add_to_queue))
@@ -1913,10 +2283,39 @@ private fun AlbumFloatingPlaybackActions(
         FilledIconButton(
             onClick = { onPlayAll(tracks) },
             enabled = enabled,
-            modifier = Modifier.size(AlbumDetailFloatingActionSize).shadow(if (enabled) 6.dp else 0.dp, CircleShape)
+            modifier = Modifier.size(playSize)
+                .shadow(if (enabled) 6.dp else 0.dp, CircleShape)
                 .testTag("album-action-play-all"),
         ) {
             Icon(Icons.Rounded.PlayArrow, stringResource(R.string.play_all), Modifier.size(28.dp))
+        }
+    }
+    val actionModifier = modifier.testTag("album-detail-floating-actions").albumDetailEnter(130)
+    Layout(content = buttons, modifier = actionModifier) { measurables, constraints ->
+        val secondary = secondarySize.roundToPx()
+        val play = playSize.roundToPx()
+        val verticalGap = AlbumDetailFloatingActionSpacing.roundToPx()
+        val horizontalGap = AlbumDetailCompactActionSpacing.roundToPx()
+        val sizes = listOf(secondary, secondary, play)
+        val placeables = measurables.mapIndexed { index, measurable ->
+            measurable.measure(Constraints.fixed(sizes[index], sizes[index]))
+        }
+        val verticalHeight = secondary * 2 + play + verticalGap * 2
+        val horizontalWidth = secondary * 2 + play + horizontalGap * 2
+        fun interpolate(start: Int, end: Int): Int = (start + (end - start) * compactProgress).roundToInt()
+        val width = constraints.constrainWidth(interpolate(play, horizontalWidth))
+        val height = constraints.constrainHeight(interpolate(verticalHeight, play))
+        layout(width, height) {
+            placeables.forEachIndexed { index, placeable ->
+                val verticalX = (play - sizes[index]) / 2
+                val verticalY = index * (secondary + verticalGap)
+                val horizontalX = index * (secondary + horizontalGap)
+                val horizontalY = (play - sizes[index]) / 2
+                placeable.placeRelative(
+                    interpolate(verticalX, horizontalX),
+                    interpolate(verticalY, horizontalY),
+                )
+            }
         }
     }
 }
@@ -2352,9 +2751,11 @@ private fun QueueScreen(
     onClear: () -> Unit,
     bottomContentPadding: Dp,
 ) {
+    val topInset = LocalContentTopInset.current
     if (state.queue.isEmpty()) {
         CenteredStatusLayout(
             title = stringResource(R.string.queue_up_next),
+            modifier = Modifier.padding(top = topInset),
             supportingContent = {
                 Text(pluralStringResource(R.plurals.queue_summary, 0, 0), color = MaterialTheme.colorScheme.onSurfaceVariant)
             },
@@ -2406,6 +2807,8 @@ private fun QueueScreen(
         state = listState,
         modifier = Modifier
             .fillMaxSize()
+            .protectTopEdge(listState)
+            .testTag("queue-list")
             .onGloballyPositioned { listPositionInRoot.value = it.positionInRoot() }
             .pointerInput(reorderState, dragHandles, listPositionInRoot) {
                 detectQueueReorderGestures(
@@ -2419,7 +2822,7 @@ private fun QueueScreen(
                     onDragCancel = commitQueueDrag,
                 )
             },
-        contentPadding = PaddingValues(20.dp, 24.dp, 20.dp, bottomContentPadding),
+        contentPadding = PaddingValues(20.dp, topInset + 24.dp, 20.dp, bottomContentPadding),
         verticalArrangement = Arrangement.spacedBy(10.dp),
         userScrollEnabled = reorderState.draggedItemKey == null,
     ) {
@@ -2870,13 +3273,14 @@ private fun MiniPlayer(
     onOpen: () -> Unit,
     onTogglePlayback: () -> Unit,
     onNext: () -> Unit,
+    enabled: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val track = state.currentTrack ?: return
     val pageMotion = LocalPlayerPageMotion.current
     Surface(
         modifier = modifier.fillMaxWidth().testTag("mini-player").pressableNavigationClick(
-            enabled = pageMotion?.isCurrentPage != false,
+            enabled = enabled && pageMotion?.isCurrentPage != false,
             onRelease = { scale -> pageMotion?.captureArtworkPress(track, scale) },
             onAbandon = { pageMotion?.handoff?.clear() },
             onClick = onOpen,
@@ -2898,12 +3302,12 @@ private fun MiniPlayer(
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
-            IconButton(onClick = onTogglePlayback) {
+            IconButton(onClick = onTogglePlayback, enabled = enabled) {
                 Icon(if (state.playbackState == RemotePlaybackState.PLAYING) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, stringResource(R.string.play_or_pause))
             }
             IconButton(
                 onClick = onNext,
-                enabled = canSelectNextTrack(state.queue, state.currentQueueIndex, state.playbackOrder),
+                enabled = enabled && canSelectNextTrack(state.queue, state.currentQueueIndex, state.playbackOrder),
             ) {
                 Icon(Icons.Rounded.SkipNext, stringResource(R.string.next_track))
             }
@@ -3180,6 +3584,7 @@ private fun LibraryPreview() {
             ),
             snackbar = remember { SnackbarHostState() },
             onDestination = {},
+            onOpenNowPlayingFromMiniPlayer = {},
             onRefresh = {},
             onSelectServer = {},
             onSelectRenderer = {},
