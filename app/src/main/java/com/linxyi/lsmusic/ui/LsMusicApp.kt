@@ -11,6 +11,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.AnimationVector1D
+import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateDp
 import androidx.compose.animation.core.animateDpAsState
@@ -23,7 +24,9 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -161,6 +164,7 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
@@ -175,6 +179,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.LocalPinnableContainer
 import androidx.compose.ui.layout.PinnableContainer
 import androidx.compose.ui.layout.SubcomposeLayout
@@ -206,7 +211,10 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.constrainHeight
+import androidx.compose.ui.unit.constrainWidth
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.lerp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.zIndex
 import androidx.core.view.WindowCompat
@@ -303,6 +311,13 @@ private val MiniPlayerHeight = 68.dp
 private val MiniPlayerBottomSpacing = 12.dp
 private val MiniPlayerContentInset = MiniPlayerHeight + MiniPlayerBottomSpacing
 private val MiniPlayerMaxWidth = 720.dp
+private const val MINI_PLAYER_MOTION_DURATION_MILLIS = 400
+private val MiniPlayerMotionEasing = CubicBezierEasing(0.2f, 0f, 0f, 1f)
+private const val ALBUM_ARTWORK_RESIZE_SETTLE_MILLIS = 150L
+
+private class MiniPlayerSnapshot {
+    var state: LsMusicUiState? = null
+}
 
 internal fun LazyItemScope.reorderPlacementModifier(dragged: Boolean): Modifier =
     if (dragged) {
@@ -685,6 +700,11 @@ internal fun LsMusicContent(
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val expanded = maxWidth >= 720.dp
         val showMiniPlayer = state.preferences.miniPlayerEnabled && state.currentTrack != null && state.destination != AppDestination.NOW_PLAYING
+        val snackbarBottomInset by animateDpAsState(
+            targetValue = if (showMiniPlayer) MiniPlayerContentInset else 0.dp,
+            animationSpec = tween(MINI_PLAYER_MOTION_DURATION_MILLIS, easing = MiniPlayerMotionEasing),
+            label = "mini-player-snackbar-inset",
+        )
         Row(Modifier.fillMaxSize()) {
             if (expanded) {
                 AppNavigationRail(state.destination, onDestination)
@@ -694,9 +714,7 @@ internal fun LsMusicContent(
                 snackbarHost = {
                     SnackbarHost(
                         hostState = snackbar,
-                        modifier = Modifier.padding(
-                            bottom = if (showMiniPlayer) MiniPlayerContentInset else 0.dp,
-                        ),
+                        modifier = Modifier.padding(bottom = snackbarBottomInset),
                     )
                 },
                 bottomBar = {
@@ -721,8 +739,22 @@ internal fun LsMusicContent(
                         // The outgoing page keeps its own inset and mini player until the flight ends.
                         val pageShowsMiniPlayer = state.preferences.miniPlayerEnabled && state.currentTrack != null &&
                             destination != AppDestination.NOW_PLAYING
-                        val bottomContentPadding = DefaultScreenBottomPadding +
-                            if (pageShowsMiniPlayer) MiniPlayerContentInset else 0.dp
+                        val miniPlayerTransition = updateTransition(pageShowsMiniPlayer, label = "mini-player-visibility")
+                        val miniPlayerInset by miniPlayerTransition.animateDp(
+                            transitionSpec = {
+                                tween(MINI_PLAYER_MOTION_DURATION_MILLIS, easing = MiniPlayerMotionEasing)
+                            },
+                            label = "mini-player-content-inset",
+                        ) { visible -> if (visible) MiniPlayerContentInset else 0.dp }
+                        val bottomContentPadding = DefaultScreenBottomPadding + miniPlayerInset
+                        val miniPlayerSnapshot = remember { MiniPlayerSnapshot() }
+                        SideEffect {
+                            if (state.currentTrack != null) {
+                                miniPlayerSnapshot.state = state
+                            } else if (!miniPlayerTransition.currentState && !miniPlayerTransition.targetState) {
+                                miniPlayerSnapshot.state = null
+                            }
+                        }
                         destinationStateHolder.SaveableStateProvider(destination.navigationDestination.name) {
                             when (destination) {
                                 AppDestination.LIBRARY -> LibraryScreen(
@@ -814,23 +846,33 @@ internal fun LsMusicContent(
                                 }
                             }
                         }
-                        if (pageShowsMiniPlayer) {
-                            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
-                                MiniPlayer(
-                                    state = state,
-                                    onOpen = onOpenNowPlayingFromMiniPlayer,
-                                    onTogglePlayback = onTogglePlayback,
-                                    onNext = onNext,
-                                    modifier = Modifier
-                                        .padding(
-                                            PaddingValues(
-                                                start = 12.dp,
-                                                end = 12.dp,
-                                                bottom = MiniPlayerBottomSpacing,
-                                            ),
-                                        )
-                                        .widthIn(max = MiniPlayerMaxWidth),
-                                )
+                        Box(Modifier.fillMaxSize().clipToBounds(), contentAlignment = Alignment.BottomCenter) {
+                            miniPlayerTransition.AnimatedVisibility(
+                                visible = { it },
+                                enter = fadeIn(tween(MINI_PLAYER_MOTION_DURATION_MILLIS, easing = MiniPlayerMotionEasing)) +
+                                    slideInVertically(tween(MINI_PLAYER_MOTION_DURATION_MILLIS, easing = MiniPlayerMotionEasing)) { it },
+                                exit = fadeOut(tween(MINI_PLAYER_MOTION_DURATION_MILLIS, easing = MiniPlayerMotionEasing)) +
+                                    slideOutVertically(tween(MINI_PLAYER_MOTION_DURATION_MILLIS, easing = MiniPlayerMotionEasing)) { it },
+                            ) {
+                                val playerState = if (state.currentTrack != null) state else miniPlayerSnapshot.state
+                                if (playerState != null) {
+                                    MiniPlayer(
+                                        state = playerState,
+                                        onOpen = onOpenNowPlayingFromMiniPlayer,
+                                        onTogglePlayback = onTogglePlayback,
+                                        onNext = onNext,
+                                        enabled = pageShowsMiniPlayer,
+                                        modifier = Modifier
+                                            .padding(
+                                                PaddingValues(
+                                                    start = 12.dp,
+                                                    end = 12.dp,
+                                                    bottom = MiniPlayerBottomSpacing,
+                                                ),
+                                            )
+                                            .widthIn(max = MiniPlayerMaxWidth),
+                                    )
+                                }
                             }
                         }
                     }
@@ -1688,11 +1730,18 @@ internal fun AlbumDetailScreen(
         val summaryAvailableHeight = (maxHeight - 24.dp - bottomContentPadding).coerceAtLeast(0.dp)
         val compactActions = twoPane && summaryAvailableHeight <
             AlbumDetailFloatingActionHeight + AlbumDetailFloatingActionGap + AlbumDetailTrackMinimumHeight
-        val floatingActionHeight = if (compactActions) {
-            AlbumDetailCompactPlayActionSize
-        } else {
-            AlbumDetailFloatingActionHeight
-        }
+        val compactActionProgress by animateFloatAsState(
+            targetValue = if (compactActions) 1f else 0f,
+            animationSpec = tween(MINI_PLAYER_MOTION_DURATION_MILLIS, easing = MiniPlayerMotionEasing),
+            label = "album-compact-actions",
+        )
+        val floatingActionHeight = lerp(
+            AlbumDetailFloatingActionHeight,
+            AlbumDetailCompactPlayActionSize,
+            compactActionProgress,
+        )
+        val compactActionInset = (AlbumDetailCompactPlayActionSize + AlbumDetailFloatingActionGap) * compactActionProgress
+        val sideActionInset = (AlbumDetailFloatingActionSize + AlbumDetailFloatingActionGap) * (1f - compactActionProgress)
         val albumSummary: @Composable () -> Unit = {
             AlbumDetailSummary(
                 entry = headerArtworkEntry,
@@ -1725,21 +1774,22 @@ internal fun AlbumDetailScreen(
                 }
             }
             val trackList: @Composable (Boolean, Modifier) -> Unit = { centerTracks, listModifier ->
+                val overflowProgress by animateFloatAsState(
+                    targetValue = if (centerTracks) 0f else 1f,
+                    animationSpec = tween(MINI_PLAYER_MOTION_DURATION_MILLIS, easing = MiniPlayerMotionEasing),
+                    label = "album-track-overflow",
+                )
                 LazyColumn(
                     state = listState,
                     modifier = listModifier.testTag("album-detail-tracks"),
                     contentPadding = PaddingValues(
                         start = if (twoPane) 12.dp else 20.dp,
                         // The zero-height header still contributes one item spacing.
-                        top = if (centerTracks) 24.dp - AlbumDetailTrackSpacing else 24.dp,
-                        end = 20.dp + if (centerTracks && !compactActions) {
-                            AlbumDetailFloatingActionSize + AlbumDetailFloatingActionGap
-                        } else {
-                            0.dp
-                        },
+                        top = if (twoPane) 24.dp - AlbumDetailTrackSpacing * (1f - overflowProgress) else 24.dp,
+                        end = 20.dp + if (twoPane) sideActionInset * (1f - overflowProgress) else 0.dp,
                         // The last row can move completely above the floating actions.
-                        bottom = bottomContentPadding + if (twoPane && (!centerTracks || compactActions)) {
-                            floatingActionHeight + AlbumDetailFloatingActionGap
+                        bottom = bottomContentPadding + if (twoPane) {
+                            lerp(compactActionInset, floatingActionHeight + AlbumDetailFloatingActionGap, overflowProgress)
                         } else {
                             0.dp
                         },
@@ -1799,22 +1849,14 @@ internal fun AlbumDetailScreen(
             if (twoPane) {
                 SubcomposeLayout(Modifier.weight(0.6f).fillMaxHeight()) { constraints ->
                     val availableHeight = (constraints.maxHeight - 24.dp.roundToPx() -
-                        bottomContentPadding.roundToPx() - if (compactActions) {
-                            (floatingActionHeight + AlbumDetailFloatingActionGap).roundToPx()
-                        } else {
-                            0
-                        }).coerceAtLeast(0)
+                        bottomContentPadding.roundToPx() - compactActionInset.roundToPx()).coerceAtLeast(0)
                     // Each row contains a 24 dp icon and 10 dp of vertical padding on both sides.
                     // Skip the measurement entirely when even these minimum heights cannot fit.
                     val minimumRowHeight = 24.dp.roundToPx() + 2 * 10.dp.roundToPx()
                     val minimumContentHeight = trackCount.toLong() * minimumRowHeight +
                         (trackCount - 1).coerceAtLeast(0).toLong() * AlbumDetailTrackSpacing.roundToPx()
                     val centerTracks = if (trackCount > 0 && minimumContentHeight <= availableHeight) {
-                        val reservedWidth = 12.dp.roundToPx() + 20.dp.roundToPx() + if (!compactActions) {
-                            (AlbumDetailFloatingActionSize + AlbumDetailFloatingActionGap).roundToPx()
-                        } else {
-                            0
-                        }
+                        val reservedWidth = 12.dp.roundToPx() + 20.dp.roundToPx() + sideActionInset.roundToPx()
                         val trackWidth = (constraints.maxWidth - reservedWidth).coerceAtLeast(0)
                         // Measure only a potentially short list before composing the visible list, so
                         // restored scroll positions and large-font row heights are handled on the first frame.
@@ -1855,7 +1897,7 @@ internal fun AlbumDetailScreen(
                 onPlayAll = onPlayAll,
                 onShufflePlay = onShufflePlay,
                 onQueueAll = onQueueAll,
-                compact = compactActions,
+                compactProgress = compactActionProgress,
                 modifier = Modifier.align(Alignment.BottomEnd)
                     .padding(end = AlbumDetailFloatingActionEndMargin, bottom = bottomContentPadding),
             )
@@ -1894,10 +1936,11 @@ private fun AlbumDetailSummary(
         modifier = Modifier.fillMaxWidth().testTag("album-detail-summary"),
     ) { constraints ->
         val textConstraints = Constraints(maxWidth = constraints.maxWidth)
-        val compactHeight = availableHeight < 320.dp
-        val artworkGap = (if (compactHeight) 8.dp else 16.dp).roundToPx()
-        val artistGap = (if (compactHeight) 4.dp else 6.dp).roundToPx()
-        val countGap = (if (compactHeight) 4.dp else 8.dp).roundToPx()
+        // Interpolate the compact spacing so a changing player inset cannot make the cover jump.
+        val expandedSpacing = ((availableHeight - 300.dp) / 40.dp).coerceIn(0f, 1f)
+        val artworkGap = lerp(8.dp, 16.dp, expandedSpacing).roundToPx()
+        val artistGap = lerp(4.dp, 6.dp, expandedSpacing).roundToPx()
+        val countGap = lerp(4.dp, 8.dp, expandedSpacing).roundToPx()
         val availableHeightPx = availableHeight.roundToPx().coerceAtLeast(0)
         val minimumCoverSize = if (twoPane && entry != null) {
             minOf(32.dp.roundToPx(), availableHeightPx / 4)
@@ -1994,10 +2037,17 @@ private fun AlbumDetailSummary(
         }
         val artwork = if (entry != null && artworkSizePx > 0) {
             subcompose("artwork") {
-                LaunchedEffect(pageKey, artworkSizePx, entries, browseLoadStatus, artworkCanResolve) {
+                // Keep one image request while the available height is changing, then resolve
+                // the final size once. This also prevents a new decode on every animation frame.
+                var requestSizePx by remember(pageKey) { mutableIntStateOf(artworkSizePx) }
+                LaunchedEffect(artworkSizePx) {
+                    delay(ALBUM_ARTWORK_RESIZE_SETTLE_MILLIS)
+                    requestSizePx = artworkSizePx
+                }
+                LaunchedEffect(pageKey, requestSizePx, entries, browseLoadStatus, artworkCanResolve) {
                     // Keep the original thumbnail through the flight, then resolve the large cover.
                     if (artworkCanResolve && browseLoadStatus == BrowseLoadStatus.LOADED) {
-                        onResolveAlbumArtwork(pageKey, artworkSizePx)
+                        onResolveAlbumArtwork(pageKey, requestSizePx)
                     }
                 }
                 ArtworkTile(
@@ -2018,7 +2068,7 @@ private fun AlbumDetailSummary(
                     },
                     size = artworkSizePx.toDp(),
                     imageIdentity = pageKey,
-                    requestSizePx = artworkSizePx,
+                    requestSizePx = requestSizePx,
                     useCachedAlbumThumbnailAsPlaceholder = true,
                     preferThumbnailSource = false,
                     placeholderArtworkUri = placeholderArtworkUri,
@@ -2098,14 +2148,16 @@ private fun AlbumFloatingPlaybackActions(
     onPlayAll: (List<MediaEntry>) -> Unit,
     onShufflePlay: (List<MediaEntry>) -> Unit,
     onQueueAll: (List<MediaEntry>) -> Unit,
-    compact: Boolean,
+    compactProgress: Float,
     modifier: Modifier = Modifier,
 ) {
+    val secondarySize = lerp(AlbumDetailSecondaryActionSize, AlbumDetailCompactActionSize, compactProgress)
+    val playSize = lerp(AlbumDetailFloatingActionSize, AlbumDetailCompactPlayActionSize, compactProgress)
     val buttons: @Composable () -> Unit = {
         FilledTonalIconButton(
             onClick = { onShufflePlay(tracks) },
             enabled = enabled,
-            modifier = Modifier.size(if (compact) AlbumDetailCompactActionSize else AlbumDetailSecondaryActionSize)
+            modifier = Modifier.size(secondarySize)
                 .shadow(if (enabled) 6.dp else 0.dp, CircleShape).testTag("album-action-shuffle"),
         ) {
             Icon(Icons.Rounded.Shuffle, stringResource(R.string.shuffle_play))
@@ -2113,7 +2165,7 @@ private fun AlbumFloatingPlaybackActions(
         FilledTonalIconButton(
             onClick = { onQueueAll(tracks) },
             enabled = enabled,
-            modifier = Modifier.size(if (compact) AlbumDetailCompactActionSize else AlbumDetailSecondaryActionSize)
+            modifier = Modifier.size(secondarySize)
                 .shadow(if (enabled) 6.dp else 0.dp, CircleShape).testTag("album-action-queue-all"),
         ) {
             Icon(Icons.Rounded.Add, stringResource(R.string.add_to_queue))
@@ -2121,7 +2173,7 @@ private fun AlbumFloatingPlaybackActions(
         FilledIconButton(
             onClick = { onPlayAll(tracks) },
             enabled = enabled,
-            modifier = Modifier.size(if (compact) AlbumDetailCompactPlayActionSize else AlbumDetailFloatingActionSize)
+            modifier = Modifier.size(playSize)
                 .shadow(if (enabled) 6.dp else 0.dp, CircleShape)
                 .testTag("album-action-play-all"),
         ) {
@@ -2129,18 +2181,32 @@ private fun AlbumFloatingPlaybackActions(
         }
     }
     val actionModifier = modifier.testTag("album-detail-floating-actions").albumDetailEnter(130)
-    if (compact) {
-        Row(
-            modifier = actionModifier,
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(AlbumDetailCompactActionSpacing),
-        ) { buttons() }
-    } else {
-        Column(
-            modifier = actionModifier,
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(AlbumDetailFloatingActionSpacing),
-        ) { buttons() }
+    Layout(content = buttons, modifier = actionModifier) { measurables, constraints ->
+        val secondary = secondarySize.roundToPx()
+        val play = playSize.roundToPx()
+        val verticalGap = AlbumDetailFloatingActionSpacing.roundToPx()
+        val horizontalGap = AlbumDetailCompactActionSpacing.roundToPx()
+        val sizes = listOf(secondary, secondary, play)
+        val placeables = measurables.mapIndexed { index, measurable ->
+            measurable.measure(Constraints.fixed(sizes[index], sizes[index]))
+        }
+        val verticalHeight = secondary * 2 + play + verticalGap * 2
+        val horizontalWidth = secondary * 2 + play + horizontalGap * 2
+        fun interpolate(start: Int, end: Int): Int = (start + (end - start) * compactProgress).roundToInt()
+        val width = constraints.constrainWidth(interpolate(play, horizontalWidth))
+        val height = constraints.constrainHeight(interpolate(verticalHeight, play))
+        layout(width, height) {
+            placeables.forEachIndexed { index, placeable ->
+                val verticalX = (play - sizes[index]) / 2
+                val verticalY = index * (secondary + verticalGap)
+                val horizontalX = index * (secondary + horizontalGap)
+                val horizontalY = (play - sizes[index]) / 2
+                placeable.placeRelative(
+                    interpolate(verticalX, horizontalX),
+                    interpolate(verticalY, horizontalY),
+                )
+            }
+        }
     }
 }
 
@@ -3093,13 +3159,14 @@ private fun MiniPlayer(
     onOpen: () -> Unit,
     onTogglePlayback: () -> Unit,
     onNext: () -> Unit,
+    enabled: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val track = state.currentTrack ?: return
     val pageMotion = LocalPlayerPageMotion.current
     Surface(
         modifier = modifier.fillMaxWidth().testTag("mini-player").pressableNavigationClick(
-            enabled = pageMotion?.isCurrentPage != false,
+            enabled = enabled && pageMotion?.isCurrentPage != false,
             onRelease = { scale -> pageMotion?.captureArtworkPress(track, scale) },
             onAbandon = { pageMotion?.handoff?.clear() },
             onClick = onOpen,
@@ -3121,12 +3188,12 @@ private fun MiniPlayer(
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
-            IconButton(onClick = onTogglePlayback) {
+            IconButton(onClick = onTogglePlayback, enabled = enabled) {
                 Icon(if (state.playbackState == RemotePlaybackState.PLAYING) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, stringResource(R.string.play_or_pause))
             }
             IconButton(
                 onClick = onNext,
-                enabled = canSelectNextTrack(state.queue, state.currentQueueIndex, state.playbackOrder),
+                enabled = enabled && canSelectNextTrack(state.queue, state.currentQueueIndex, state.playbackOrder),
             ) {
                 Icon(Icons.Rounded.SkipNext, stringResource(R.string.next_track))
             }
