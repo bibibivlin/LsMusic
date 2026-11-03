@@ -49,6 +49,8 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.calculateEndPadding
+import androidx.compose.foundation.layout.calculateStartPadding
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -191,6 +193,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
@@ -490,7 +493,7 @@ fun LsMusicApp(viewModel: LsMusicViewModel) {
         dynamicColor = state.preferences.useDynamicColor,
         presetPalette = state.preferences.presetPalette,
     ) {
-        SystemNavigationBarAppearance()
+        SystemBarAppearance()
         val snackbar = remember { SnackbarHostState() }
         val resources = LocalResources.current
         val localeKey = resources.configuration.locales.toLanguageTags()
@@ -706,7 +709,13 @@ internal fun LsMusicContent(
                     if (!expanded) AppNavigationBar(state.destination, onDestination)
                 },
             ) { padding ->
-                Box(Modifier.fillMaxSize().padding(padding).graphicsLayer {
+                val topInset = padding.calculateTopPadding()
+                val layoutDirection = LocalLayoutDirection.current
+                Box(Modifier.fillMaxSize().padding(
+                    start = padding.calculateStartPadding(layoutDirection),
+                    end = padding.calculateEndPadding(layoutDirection),
+                    bottom = padding.calculateBottomPadding(),
+                ).graphicsLayer {
                     // Read gesture frames in the layer, without recomposing the app or its pages.
                     val progress = backProgress()
                     scaleX = 1f - 0.08f * progress
@@ -720,6 +729,7 @@ internal fun LsMusicContent(
                         destination = state.destination,
                         track = state.currentTrack,
                         miniPlayerEnabled = state.preferences.miniPlayerEnabled,
+                        topInset = topInset,
                     ) { destination ->
                         // The outgoing page keeps its own inset and mini player until the flight ends.
                         val pageShowsMiniPlayer = state.preferences.miniPlayerEnabled && state.currentTrack != null &&
@@ -767,6 +777,7 @@ internal fun LsMusicContent(
                                 )
                                 AppDestination.NOW_PLAYING -> NowPlayingScreen(
                                     state = state,
+                                    modifier = Modifier.padding(top = topInset),
                                     onTogglePlayback = onTogglePlayback,
                                     onPrevious = onPrevious,
                                     onNext = onNext,
@@ -894,15 +905,17 @@ private fun AppNavigationBar(selected: AppDestination, onDestination: (AppDestin
 }
 
 @Composable
-private fun SystemNavigationBarAppearance() {
+internal fun SystemBarAppearance() {
     val view = LocalView.current
     val colorScheme = MaterialTheme.colorScheme
     SideEffect {
         val window = (view.context as? android.app.Activity)?.window ?: return@SideEffect
         window.navigationBarColor = android.graphics.Color.TRANSPARENT
         window.isNavigationBarContrastEnforced = false
-        WindowCompat.getInsetsController(window, view).isAppearanceLightNavigationBars =
-            colorScheme.surfaceContainer.luminance() > .5f
+        WindowCompat.getInsetsController(window, view).apply {
+            isAppearanceLightNavigationBars = colorScheme.surfaceContainer.luminance() > .5f
+            isAppearanceLightStatusBars = useDarkStatusBarIcons(colorScheme.background)
+        }
     }
 }
 
@@ -996,7 +1009,7 @@ private fun ResolvingLibraryPage(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(start = 20.dp, top = 24.dp, end = 20.dp, bottom = 32.dp),
+            .padding(start = 20.dp, top = LocalContentTopInset.current + 24.dp, end = 20.dp, bottom = 32.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             if (path.size > 1) {
@@ -1036,6 +1049,7 @@ internal fun LibraryDirectoryScreen(
     bottomContentPadding: Dp,
     onOpenSettings: () -> Unit,
 ) {
+    val topInset = LocalContentTopInset.current
     var query by remember { mutableStateOf(initialViewState.query) }
     var useGrid by remember {
         mutableStateOf(initialViewState.useGrid ?: state.preferences.useGridByDefault)
@@ -1082,7 +1096,7 @@ internal fun LibraryDirectoryScreen(
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
     val density = LocalDensity.current
-    val floatingResultInsetPx = with(density) { LibraryFloatingSearchResultInset.roundToPx() }
+    val floatingResultInsetPx = with(density) { (topInset + LibraryFloatingSearchResultInset).roundToPx() }
     val coroutineScope = rememberCoroutineScope()
     var isFastScrollerDragging by remember { mutableStateOf(false) }
     val showFloatingSearchButton by remember {
@@ -1180,7 +1194,7 @@ internal fun LibraryDirectoryScreen(
 
     BoxWithConstraints(modifier) {
         val gridSpacing = 12.dp
-        val pinnedSearchTopPx = with(density) { LibraryFloatingSearchTop.roundToPx() }
+        val pinnedSearchTopPx = with(density) { (topInset + LibraryFloatingSearchTop).roundToPx() }
         val floatingSearchTopPx = remember(gridState, pinnedSearchTopPx) {
             derivedStateOf {
                 val layoutInfo = gridState.layoutInfo
@@ -1212,10 +1226,10 @@ internal fun LibraryDirectoryScreen(
         LazyVerticalGrid(
             columns = if (useGrid) GridCells.Adaptive(minimumCellWidth) else GridCells.Fixed(1),
             state = gridState,
-            modifier = Modifier.fillMaxSize().testTag("library-directory-entries"),
+            modifier = Modifier.fillMaxSize().protectTopEdge(gridState).testTag("library-directory-entries"),
             contentPadding = PaddingValues(
                 start = 20.dp,
-                top = 24.dp,
+                top = topInset + 24.dp,
                 end = 20.dp,
                 bottom = bottomContentPadding,
             ),
@@ -1329,6 +1343,7 @@ internal fun LibraryDirectoryScreen(
         if (contentStatus != LibraryContentStatus.CONTENT) {
             CenteredStatusLayout(
                 title = stringResource(R.string.app_name),
+                modifier = Modifier.padding(top = topInset),
                 showTitle = false,
             ) {
                 when (contentStatus) {
@@ -1379,6 +1394,7 @@ internal fun LibraryDirectoryScreen(
             viewportHeight = maxHeight,
             gridSpacing = gridSpacing,
             bottomContentPadding = bottomContentPadding,
+            topContentInset = topInset,
             onDragStateChanged = { isFastScrollerDragging = it },
         )
 
@@ -1410,7 +1426,8 @@ internal fun LibraryDirectoryScreen(
                     // Follow the original field as it comes into view, then stick to the
                     // floating position once that field scrolls past the top edge.
                     IntOffset(0, floatingSearchTopPx.value)
-                },
+                }
+                .libraryFloatingSearchOverlay(),
         )
     }
 }
@@ -1422,10 +1439,11 @@ private fun BoxScope.LibraryFastScrollerOverlay(
     viewportHeight: Dp,
     gridSpacing: Dp,
     bottomContentPadding: Dp,
+    topContentInset: Dp,
     onDragStateChanged: (Boolean) -> Unit,
 ) {
     val density = LocalDensity.current
-    val minimumTopInsetPx = with(density) { LibraryFastScrollerTopInset.roundToPx() }
+    val minimumTopInsetPx = with(density) { (topContentInset + LibraryFastScrollerTopInset).roundToPx() }
     val gridSpacingPx = with(density) { gridSpacing.roundToPx() }
     val showFastScroller by remember(gridState) {
         derivedStateOf {
@@ -1441,7 +1459,7 @@ private fun BoxScope.LibraryFastScrollerOverlay(
             when {
                 lastHeader != null -> maxOf(
                     minimumTopInsetPx,
-                    lastHeader.offset.y + lastHeader.size.height + gridSpacingPx,
+                    lastHeader.offset.y + gridState.layoutInfo.beforeContentPadding + lastHeader.size.height + gridSpacingPx,
                 )
                 gridState.firstVisibleItemIndex >= LIBRARY_GRID_HEADER_COUNT -> minimumTopInsetPx
                 else -> null
@@ -1734,6 +1752,7 @@ internal fun AlbumDetailScreen(
     onQueueAll: (List<MediaEntry>) -> Unit,
     bottomContentPadding: Dp,
 ) {
+    val topInset = LocalContentTopInset.current
     val tracks = remember(state.entries) { state.entries.filterNot { it.isContainer } }
     val representativeTrack = tracks.firstOrNull()
     val currentLocation = state.path.lastOrNull()
@@ -1777,6 +1796,7 @@ internal fun AlbumDetailScreen(
         ),
         initialFirstVisibleItemScrollOffset = initialViewState.scrollOffset.coerceAtLeast(0),
     )
+    val summaryScrollState = rememberScrollState()
 
     val isCurrentPage = LocalLibraryPageMotion.current?.isCurrentPage != false
     val trackReveal = animateFloatAsState(
@@ -1804,12 +1824,13 @@ internal fun AlbumDetailScreen(
 
     BoxWithConstraints(modifier.fillMaxSize()) {
         // Measure the actual content area after navigation and system insets.
+        val usableHeight = (maxHeight - topInset).coerceAtLeast(0.dp)
         val twoPane = maxWidth >= AlbumDetailTwoPaneMinWidth && (
-            maxWidth >= maxHeight * ALBUM_DETAIL_TWO_PANE_MIN_ASPECT_RATIO ||
+            maxWidth >= usableHeight * ALBUM_DETAIL_TWO_PANE_MIN_ASPECT_RATIO ||
                 (maxWidth >= AlbumDetailLargeTwoPaneMinWidth &&
-                    maxWidth >= maxHeight * ALBUM_DETAIL_LARGE_TWO_PANE_MIN_ASPECT_RATIO)
+                    maxWidth >= usableHeight * ALBUM_DETAIL_LARGE_TWO_PANE_MIN_ASPECT_RATIO)
             )
-        val summaryAvailableHeight = (maxHeight - 24.dp - bottomContentPadding).coerceAtLeast(0.dp)
+        val summaryAvailableHeight = (usableHeight - 24.dp - bottomContentPadding).coerceAtLeast(0.dp)
         val compactActions = twoPane && summaryAvailableHeight <
             AlbumDetailFloatingActionHeight + AlbumDetailFloatingActionGap + AlbumDetailTrackMinimumHeight
         val compactActionProgress by animateFloatAsState(
@@ -1844,15 +1865,22 @@ internal fun AlbumDetailScreen(
         }
         Row(Modifier.fillMaxSize()) {
             if (twoPane) {
-                Column(
+                BoxWithConstraints(
                     modifier = Modifier
                         .weight(0.4f)
                         .fillMaxHeight()
-                        .padding(start = 20.dp, top = 24.dp, end = 12.dp, bottom = bottomContentPadding)
-                        .verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.Center,
+                        .protectTopEdge(summaryScrollState, 24.dp),
                 ) {
-                    albumSummary()
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .verticalScroll(summaryScrollState)
+                            .heightIn(min = maxHeight)
+                            .padding(start = 20.dp, top = topInset + 24.dp, end = 12.dp, bottom = bottomContentPadding),
+                        verticalArrangement = Arrangement.Center,
+                    ) {
+                        albumSummary()
+                    }
                 }
             }
             val trackList: @Composable (Boolean, Modifier) -> Unit = { centerTracks, listModifier ->
@@ -1863,11 +1891,11 @@ internal fun AlbumDetailScreen(
                 )
                 LazyColumn(
                     state = listState,
-                    modifier = listModifier.testTag("album-detail-tracks"),
+                    modifier = listModifier.protectTopEdge(listState).testTag("album-detail-tracks"),
                     contentPadding = PaddingValues(
                         start = if (twoPane) 12.dp else 20.dp,
                         // The zero-height header still contributes one item spacing.
-                        top = if (twoPane) 24.dp - AlbumDetailTrackSpacing * (1f - overflowProgress) else 24.dp,
+                        top = topInset + if (twoPane) 24.dp - AlbumDetailTrackSpacing * (1f - overflowProgress) else 24.dp,
                         end = 20.dp + if (twoPane) sideActionInset * (1f - overflowProgress) else 0.dp,
                         // The last row can move completely above the floating actions.
                         bottom = bottomContentPadding + if (twoPane) {
@@ -1930,7 +1958,7 @@ internal fun AlbumDetailScreen(
             }
             if (twoPane) {
                 SubcomposeLayout(Modifier.weight(0.6f).fillMaxHeight()) { constraints ->
-                    val availableHeight = (constraints.maxHeight - 24.dp.roundToPx() -
+                    val availableHeight = (constraints.maxHeight - topInset.roundToPx() - 24.dp.roundToPx() -
                         bottomContentPadding.roundToPx() - compactActionInset.roundToPx()).coerceAtLeast(0)
                     // Each row contains a 24 dp icon and 10 dp of vertical padding on both sides.
                     // Skip the measurement entirely when even these minimum heights cannot fit.
@@ -2723,9 +2751,11 @@ private fun QueueScreen(
     onClear: () -> Unit,
     bottomContentPadding: Dp,
 ) {
+    val topInset = LocalContentTopInset.current
     if (state.queue.isEmpty()) {
         CenteredStatusLayout(
             title = stringResource(R.string.queue_up_next),
+            modifier = Modifier.padding(top = topInset),
             supportingContent = {
                 Text(pluralStringResource(R.plurals.queue_summary, 0, 0), color = MaterialTheme.colorScheme.onSurfaceVariant)
             },
@@ -2777,6 +2807,8 @@ private fun QueueScreen(
         state = listState,
         modifier = Modifier
             .fillMaxSize()
+            .protectTopEdge(listState)
+            .testTag("queue-list")
             .onGloballyPositioned { listPositionInRoot.value = it.positionInRoot() }
             .pointerInput(reorderState, dragHandles, listPositionInRoot) {
                 detectQueueReorderGestures(
@@ -2790,7 +2822,7 @@ private fun QueueScreen(
                     onDragCancel = commitQueueDrag,
                 )
             },
-        contentPadding = PaddingValues(20.dp, 24.dp, 20.dp, bottomContentPadding),
+        contentPadding = PaddingValues(20.dp, topInset + 24.dp, 20.dp, bottomContentPadding),
         verticalArrangement = Arrangement.spacedBy(10.dp),
         userScrollEnabled = reorderState.draggedItemKey == null,
     ) {

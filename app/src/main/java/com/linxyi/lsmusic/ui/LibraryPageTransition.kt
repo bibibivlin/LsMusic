@@ -8,6 +8,7 @@ import androidx.compose.animation.EnterExitState
 import androidx.compose.animation.SharedTransitionLayout
 import androidx.compose.animation.SharedTransitionScope
 import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.updateTransition
 import androidx.compose.animation.fadeIn
@@ -27,6 +28,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
@@ -102,8 +104,9 @@ internal fun LibraryPageTransition(
     key(state.pageKey.serverId) {
         val coroutineScope = rememberCoroutineScope()
         val handoff = remember { CoverPressHandoff(coroutineScope) }
-        SharedTransitionLayout(Modifier.fillMaxSize()) {
+        SharedTransitionLayout(Modifier.fillMaxSize().clipToBounds()) {
             val sharedScope = this
+            ProtectTopEdgeDuringCoverFlight(sharedScope.isTransitionActive)
             val transition = updateTransition(state, label = "library-navigation")
             val navigation = albumNavigationMotion(
                 transition.currentState.pageKey,
@@ -134,6 +137,12 @@ internal fun LibraryPageTransition(
             ) { page ->
                 val isCurrentPage = page.pageKey == state.pageKey
                 val isNavigating = transition.currentState.pageKey != transition.targetState.pageKey
+                val topEdgeVisibility = this.transition.animateFloat(
+                    transitionSpec = {
+                        if (targetState == EnterExitState.Visible) tween(240, easing = AlbumMotionEasing) else tween(150)
+                    },
+                    label = "library-top-edge-visibility",
+                ) { visibility -> if (visibility == EnterExitState.Visible) 1f else 0f }
                 val motion = remember(
                     sharedScope, this, isCurrentPage, isNavigating, navigation, returningArtworkUri, handoff,
                 ) {
@@ -158,12 +167,37 @@ internal fun LibraryPageTransition(
                     }
                 CompositionLocalProvider(
                     LocalLibraryPageMotion provides motion,
+                    LocalTopEdgeVisibility provides topEdgeVisibility,
                 ) {
                     Box(Modifier.fillMaxSize().then(interactionModifier)) { content(page) }
                 }
             }
         }
     }
+}
+
+/** Keep the directory's floating control above both the cover and the top protection layer. */
+@Composable
+internal fun Modifier.libraryFloatingSearchOverlay(): Modifier {
+    val library = LocalLibraryPageMotion.current ?: return this
+    val player = LocalPlayerPageMotion.current
+    val overlay = player?.sharedScope ?: library.sharedScope
+    val overlayModifier = with(overlay) {
+        Modifier.renderInSharedTransitionScopeOverlay(zIndexInOverlay = 1f, renderInOverlay = { true })
+    }
+    val libraryFade = with(library.visibilityScope) {
+        Modifier.animateEnterExit(
+            enter = fadeIn(tween(240, easing = AlbumMotionEasing)),
+            exit = fadeOut(tween(150)),
+        )
+    }
+    val playerFade = if (player == null) Modifier else with(player.visibilityScope) {
+        Modifier.animateEnterExit(
+            enter = fadeIn(tween(300, 60, AlbumMotionEasing)),
+            exit = fadeOut(tween(180, easing = AlbumMotionEasing)),
+        )
+    }
+    return this.then(overlayModifier).then(libraryFade).then(playerFade)
 }
 
 /** Applied before the artwork's fixed size and clipping so the whole tile moves in the overlay. */

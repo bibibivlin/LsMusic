@@ -12,6 +12,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.platform.LocalDensity
@@ -25,6 +26,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.swipe
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
@@ -107,6 +109,98 @@ class AlbumNavigationUiTest {
         compose.mainClock.advanceTimeBy(650)
         assertSameBounds(originalPaint, requireNotNull(paintedCoverBounds()))
         assertSameBounds(original, albumRowBounds("Album 12"))
+    }
+
+    @Test
+    fun partiallyScrolledCoverRemainsBelowSearchAndProtectedStatusArea() {
+        setLibrary(useGrid = true, gallerySize = GallerySize.LARGE, statusInset = 24.dp, usePlayerTransition = true)
+        compose.onNodeWithTag("library-directory-entries").performScrollToIndex(15)
+        compose.onNodeWithTag("library-directory-entries").performTouchInput {
+            val start = Offset(centerX, height * .7f)
+            swipe(start, start + Offset(0f, -120f), durationMillis = 400L)
+        }
+        waitForPaintedCover()
+        val search = compose.onNodeWithTag("library-floating-search").fetchSemanticsNode().boundsInRoot
+        val root = coverBounds("album-navigation-root")
+        val source = coverBounds("library-cover:album-12")
+        val statusBottom = root.top + with(compose.density) { 24.dp.toPx() }
+        assertTrue("The test cover should extend behind the status bar", source.top < statusBottom)
+        assertTrue("The test cover should be underneath the floating search", source.overlaps(search))
+        val sampleX = (search.left - root.left + search.width * .22f).roundToInt()
+        val sampleY = (search.top - root.top + search.height * .5f).roundToInt()
+        val before = compose.onNodeWithTag("album-navigation-root").captureToImage().asAndroidBitmap()
+        val statusX = (source.center.x - root.left).roundToInt().coerceIn(0, before.width - 1)
+        val statusY = with(compose.density) { 8.dp.roundToPx() }.coerceIn(0, before.height - 1)
+        assertTrue("Artwork behind status icons must be protected", !isArtworkColor(before.getPixel(statusX, statusY)))
+        val originalSearchPixel = before.getPixel(sampleX, sampleY)
+        assertTrue("Search must initially cover the album", !isArtworkColor(originalSearchPixel))
+
+        openAlbum("album-12")
+        compose.mainClock.advanceTimeBy(48)
+        val opening = compose.onNodeWithTag("album-navigation-root").captureToImage().asAndroidBitmap()
+        assertTrue("The flying cover must not bypass status protection", !isArtworkColor(opening.getPixel(statusX, statusY)))
+        assertTrue("The flying cover must remain below the fading search control", !isArtworkColor(opening.getPixel(sampleX, sampleY)))
+        saveFrame("edge-opening")
+        returnToDirectory()
+        compose.mainClock.advanceTimeByFrame()
+        val reversed = compose.onNodeWithTag("album-navigation-root").captureToImage().asAndroidBitmap()
+        assertTrue("An interrupted flight must keep the status area protected", !isArtworkColor(reversed.getPixel(statusX, statusY)))
+        compose.mainClock.advanceTimeBy(800)
+        assertSameBounds(source, coverBounds("library-cover:album-12"))
+
+        openAlbum("album-12")
+        compose.mainClock.advanceTimeBy(800)
+        returnToDirectory()
+        compose.mainClock.advanceTimeBy(160)
+        val returning = compose.onNodeWithTag("album-navigation-root").captureToImage().asAndroidBitmap()
+        assertTrue("The returning cover must remain below the appearing search control", !isArtworkColor(returning.getPixel(sampleX, sampleY)))
+        saveFrame("edge-returning")
+        compose.mainClock.advanceTimeBy(800)
+        assertSameBounds(search, compose.onNodeWithTag("library-floating-search").fetchSemanticsNode().boundsInRoot)
+        assertSameBounds(source, coverBounds("library-cover:album-12"))
+    }
+
+    @Test
+    fun movingCoverStaysProtectedBehindStatusIconsThroughoutTheTransition() {
+        setLibrary(useGrid = true, gallerySize = GallerySize.LARGE, statusInset = 24.dp, usePlayerTransition = true)
+        compose.onNodeWithTag("library-directory-entries").performScrollToIndex(15)
+        compose.onNodeWithTag("library-directory-entries").performTouchInput {
+            val start = Offset(centerX, height * .7f)
+            swipe(start, start + Offset(0f, -210f), durationMillis = 400L)
+        }
+        waitForPaintedCover()
+        val root = coverBounds("album-navigation-root")
+        val source = coverBounds("library-cover:album-12")
+        assertTrue("The fixture should start behind the status bar: source=$source root=$root", source.top <= root.top)
+        val statusHeight = with(compose.density) { 24.dp.roundToPx() }
+
+        fun assertStatusProtected(phase: String) {
+            val frame = compose.onNodeWithTag("album-navigation-root").captureToImage().asAndroidBitmap()
+            var exposed = 0
+            for (y in 0 until statusHeight.coerceAtMost(frame.height)) {
+                for (x in 0 until frame.width) {
+                    if (isArtworkColor(frame.getPixel(x, y))) exposed++
+                }
+            }
+            assertEquals("Artwork must remain protected behind status icons at $phase", 0, exposed)
+        }
+
+        assertStatusProtected("source")
+        openAlbum("album-12")
+        var previous = 0L
+        for (time in listOf(48L, 112L, 176L, 240L, 320L, 480L)) {
+            compose.mainClock.advanceTimeBy(time - previous)
+            previous = time
+            assertStatusProtected("opening ${time}ms")
+        }
+        compose.mainClock.advanceTimeBy(400)
+        returnToDirectory()
+        previous = 0L
+        for (time in listOf(48L, 112L, 176L, 240L, 320L, 480L)) {
+            compose.mainClock.advanceTimeBy(time - previous)
+            previous = time
+            assertStatusProtected("returning ${time}ms")
+        }
     }
 
     @Test
@@ -355,6 +449,8 @@ class AlbumNavigationUiTest {
         viewportWidth: Dp? = null,
         viewportHeight: Dp = 650.dp,
         artworkSize: Int = 64,
+        statusInset: Dp = 0.dp,
+        usePlayerTransition: Boolean = false,
     ) {
         compose.activityRule.scenario.onActivity { activity ->
             activity.setShowWhenLocked(true)
@@ -391,26 +487,41 @@ class AlbumNavigationUiTest {
         compose.setContent {
             LsMusicTheme(dynamicColor = false) {
                 TestViewport(viewportWidth, viewportHeight) {
-                    LibraryScreen(
-                        state = currentPage.value!!,
-                        onOpen = { entry ->
-                            currentPage.value = directory.copy(
-                                entries = emptyList(),
-                                path = directory.path + BrowseLocation(
-                                    entry.id, entry.title, artworkUri = entry.artworkUri, albumArtist = entry.albumArtist,
-                                    pageKind = LibraryPageKind.ALBUM,
-                                ),
-                                browsePageKey = BrowsePageKey("server", entry.id),
-                                browseViewState = savedPages[BrowsePageKey("server", entry.id)] ?: BrowseViewState(),
-                                browseLoadStatus = BrowseLoadStatus.LOADING,
-                            )
-                        },
-                        onNavigateTo = {}, onPlay = {}, onQueue = {}, onPlayAll = {},
-                        onShufflePlay = {}, onQueueAll = {}, onAlbumSort = {},
-                        onSaveBrowseViewState = { page, view -> savedPages[page] = view },
-                        onResolveAlbumArtwork = { page, _ -> artworkResolutions += page },
-                        bottomContentPadding = 32.dp, onOpenSettings = {},
-                    )
+                    val libraryContent: @Composable () -> Unit = {
+                        CompositionLocalProvider(LocalContentTopInset provides statusInset) {
+                            TopEdgeProtection(statusInset) {
+                                LibraryScreen(
+                                    state = currentPage.value!!,
+                                    onOpen = { entry ->
+                                        currentPage.value = directory.copy(
+                                            entries = emptyList(),
+                                            path = directory.path + BrowseLocation(
+                                                entry.id, entry.title, artworkUri = entry.artworkUri, albumArtist = entry.albumArtist,
+                                                pageKind = LibraryPageKind.ALBUM,
+                                            ),
+                                            browsePageKey = BrowsePageKey("server", entry.id),
+                                            browseViewState = savedPages[BrowsePageKey("server", entry.id)] ?: BrowseViewState(),
+                                            browseLoadStatus = BrowseLoadStatus.LOADING,
+                                        )
+                                    },
+                                    onNavigateTo = {}, onPlay = {}, onQueue = {}, onPlayAll = {},
+                                    onShufflePlay = {}, onQueueAll = {}, onAlbumSort = {},
+                                    onSaveBrowseViewState = { page, view -> savedPages[page] = view },
+                                    onResolveAlbumArtwork = { page, _ -> artworkResolutions += page },
+                                    bottomContentPadding = 32.dp, onOpenSettings = {},
+                                )
+                            }
+                        }
+                    }
+                    if (usePlayerTransition) {
+                        PlayerPageTransition(
+                            destination = AppDestination.LIBRARY,
+                            track = null,
+                            miniPlayerEnabled = false,
+                        ) { libraryContent() }
+                    } else {
+                        libraryContent()
+                    }
                 }
             }
         }

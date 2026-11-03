@@ -94,6 +94,7 @@ internal fun PlayerPageTransition(
     track: MediaEntry?,
     miniPlayerEnabled: Boolean,
     modifier: Modifier = Modifier,
+    topInset: Dp = 0.dp,
     content: @Composable (AppDestination) -> Unit,
 ) {
     val coroutineScope = rememberCoroutineScope()
@@ -159,7 +160,7 @@ internal fun PlayerPageTransition(
                 LocalPlayerPageMotion provides motion,
             ) {
                 // Fixed viewport constraints keep the hero at its final size from the first frame.
-                Box(Modifier.fillMaxSize().then(interactionModifier)) { content(page) }
+                TopEdgeProtection(topInset, Modifier.fillMaxSize().then(interactionModifier)) { content(page) }
             }
         }
     }
