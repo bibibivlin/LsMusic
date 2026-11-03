@@ -138,6 +138,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderState
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
@@ -3223,9 +3224,14 @@ private fun PlaybackSlider(
     } else {
         0f
     }
+    val sliderState = remember { SliderState() }
+    sliderState.value = draggedFraction ?: liveFraction
     Slider(
-        value = draggedFraction ?: liveFraction,
-        onValueChange = { draggedFraction = it },
+        state = sliderState,
+        onValueChange = {
+            sliderState.value = it
+            draggedFraction = it
+        },
         onValueChangeFinished = {
             draggedFraction?.let { onSeek((it * durationMs).toLong()) }
             draggedFraction = null
