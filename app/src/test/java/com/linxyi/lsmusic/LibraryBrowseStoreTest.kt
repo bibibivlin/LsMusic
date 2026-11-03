@@ -3,15 +3,20 @@ package com.linxyi.lsmusic
 import com.linxyi.lsmusic.dlna.MediaEntry
 import com.linxyi.lsmusic.ui.BrowsePageKey
 import com.linxyi.lsmusic.ui.BrowseLoadStatus
+import com.linxyi.lsmusic.ui.BrowseScrollPosition
 import com.linxyi.lsmusic.ui.BrowseViewState
 import com.linxyi.lsmusic.ui.LibraryBrowseStore
 import com.linxyi.lsmusic.ui.LibraryContentStatus
 import com.linxyi.lsmusic.ui.LibraryPageKind
 import com.linxyi.lsmusic.ui.albumArtworkRetryDelayMillis
+import com.linxyi.lsmusic.ui.browseItemIndex
 import com.linxyi.lsmusic.ui.directionalPrefetchRange
 import com.linxyi.lsmusic.ui.directionalPrefetchIndices
 import com.linxyi.lsmusic.ui.fastScrollPositionFraction
 import com.linxyi.lsmusic.ui.fastScrollTargetItemIndex
+import com.linxyi.lsmusic.ui.isLibrarySearchNearTop
+import com.linxyi.lsmusic.ui.librarySearchReturnDuration
+import com.linxyi.lsmusic.ui.matchesLibraryQuery
 import com.linxyi.lsmusic.ui.resolveLibraryContentStatus
 import com.linxyi.lsmusic.ui.resolveLibraryPageKind
 import org.junit.Assert.assertEquals
@@ -219,6 +224,45 @@ class LibraryBrowseStoreTest {
     }
 
     @Test
+    fun searchButton_usesInlineSearchOnlyWithinOneViewport() {
+        assertTrue(isLibrarySearchNearTop(firstVisibleIndex = 6, lastVisibleIndex = 11))
+        assertFalse(isLibrarySearchNearTop(firstVisibleIndex = 7, lastVisibleIndex = 12))
+        assertTrue(isLibrarySearchNearTop(firstVisibleIndex = 14, lastVisibleIndex = 27))
+        assertFalse(isLibrarySearchNearTop(firstVisibleIndex = 15, lastVisibleIndex = 28))
+    }
+
+    @Test
+    fun searchReturnDuration_scalesWithDistanceAndStaysBounded() {
+        assertEquals(260, librarySearchReturnDuration(0f))
+        assertEquals(360, librarySearchReturnDuration(400f))
+        assertEquals(460, librarySearchReturnDuration(2_000f))
+    }
+
+    @Test
+    fun restoringUnfilteredPosition_findsTheSameEntryAfterOrderChanges() {
+        val entries = listOf(folder("first", "albums"), folder("anchor", "albums"), folder("last", "albums"))
+        val position = BrowseScrollPosition(
+            anchorEntryKey = "media:albums:anchor",
+            fallbackItemIndex = 12,
+            scrollOffset = 31,
+        )
+
+        assertEquals(4, browseItemIndex(entries, position, headerCount = 3))
+        assertEquals(5, browseItemIndex(entries.reversed(), position.copy(anchorEntryKey = "media:albums:first"), 3))
+        assertEquals(5, browseItemIndex(entries, position.copy(anchorEntryKey = "missing"), 3))
+        assertEquals(2, browseItemIndex(emptyList(), position, 3))
+    }
+
+    @Test
+    fun librarySearch_matchesTitleArtistAndAlbumArtistIgnoringCase() {
+        val album = folder("id", "albums").copy(title = "Kind of Blue", creator = "Miles Davis", albumArtist = "Sextet")
+        assertTrue(album.matchesLibraryQuery("BLUE"))
+        assertTrue(album.matchesLibraryQuery("miles"))
+        assertTrue(album.matchesLibraryQuery("SEXTET"))
+        assertFalse(album.matchesLibraryQuery("other"))
+    }
+
+    @Test
     fun emptyDirectory_isStoredAsLoadedContent() {
         val store = LibraryBrowseStore()
         val key = BrowsePageKey("server", "empty")
@@ -241,6 +285,7 @@ class LibraryBrowseStoreTest {
             anchorEntryKey = "media:albums:album-1",
             fallbackItemIndex = 18,
             scrollOffset = 42,
+            unfilteredPosition = BrowseScrollPosition("media:albums:album-2", 22, 15),
         )
 
         store.storeEntries(key, entries)

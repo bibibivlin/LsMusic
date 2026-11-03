@@ -4,6 +4,7 @@ package com.linxyi.lsmusic.ui
 
 import android.os.SystemClock
 import android.widget.ImageView
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.PredictiveBackHandler
 import androidx.activity.BackEventCompat
 import androidx.compose.animation.AnimatedContent
@@ -189,6 +190,8 @@ import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.pluralStringResource
@@ -272,11 +275,10 @@ internal data class LibraryUiState(
         get() = browseLoadStatus == BrowseLoadStatus.LOADING
 }
 
-private const val MEDIA_ENTRY_KEY_PREFIX = "media:"
 private const val LIBRARY_GRID_HEADER_COUNT = 3
 private const val LIBRARY_TOP_ITEM_INDEX = 0
 private const val LIBRARY_SEARCH_ITEM_INDEX = 1
-private val LibrarySearchControlHeight = 56.dp
+private data class LibrarySearchScrollRequest(val index: Int, val offset: Int)
 private val LibraryFastScrollerTopInset = LibrarySearchControlHeight + 32.dp
 private val LibraryFastScrollerTouchWidth = 48.dp
 private val LibraryFastScrollerMinimumThumbHeight = 48.dp
@@ -336,23 +338,6 @@ private val artworkPalettes = listOf(
     listOf(Color(0xFFE27A45), Color(0xFFF0B85A)),
     listOf(Color(0xFF376DCC), Color(0xFF6B54E8)),
 )
-
-private fun mediaEntryKey(entry: MediaEntry): String =
-    "$MEDIA_ENTRY_KEY_PREFIX${entry.parentId}:${entry.id}"
-
-private fun initialBrowseItemIndex(
-    entries: List<MediaEntry>,
-    viewState: BrowseViewState,
-    headerCount: Int,
-): Int {
-    val anchorIndex = viewState.anchorEntryKey?.let { anchorKey ->
-        entries.indexOfFirst { mediaEntryKey(it) == anchorKey }
-            .takeIf { it >= 0 }
-            ?.plus(headerCount)
-    }
-    val maximumIndex = (headerCount + entries.lastIndex).coerceAtLeast(0)
-    return (anchorIndex ?: viewState.fallbackItemIndex).coerceIn(0, maximumIndex)
-}
 
 private fun albumArtworkRequest(
     context: android.content.Context,
@@ -1055,19 +1040,35 @@ internal fun LibraryDirectoryScreen(
     var useGrid by remember {
         mutableStateOf(initialViewState.useGrid ?: state.preferences.useGridByDefault)
     }
+    var unfilteredPosition by remember { mutableStateOf(initialViewState.unfilteredPosition) }
+    var floatingSearchExpanded by remember { mutableStateOf(false) }
+    var pendingSearchScroll by remember { mutableStateOf<LibrarySearchScrollRequest?>(null) }
+    var keepInlineSearchHidden by remember { mutableStateOf(false) }
+    LaunchedEffect(floatingSearchExpanded) {
+        if (floatingSearchExpanded) {
+            keepInlineSearchHidden = true
+        } else if (keepInlineSearchHidden) {
+            // Let the floating text disappear before revealing its in-content counterpart.
+            delay(220)
+            keepInlineSearchHidden = false
+        }
+    }
+    val hideInlineSearch = floatingSearchExpanded || keepInlineSearchHidden
+    val inlineSearchAlpha by animateFloatAsState(
+        targetValue = if (hideInlineSearch) 0f else 1f,
+        animationSpec = tween(durationMillis = 120, easing = MiniPlayerMotionEasing),
+        label = "library-inline-search-alpha",
+    )
     val isAlbumCollection = remember(state.entries) {
         state.entries.isNotEmpty() &&
             state.entries.all { it.isContainer } &&
             state.entries.any { it.isAlbum }
     }
-    val visibleEntries = remember(state.entries, query, state.albumSort, isAlbumCollection) {
-        val filtered = if (query.isBlank()) state.entries
-        else state.entries.filter {
-            it.title.contains(query, ignoreCase = true) ||
-                it.creator.contains(query, ignoreCase = true) ||
-                it.albumArtist.contains(query, ignoreCase = true)
-        }
-        if (isAlbumCollection) filtered.sortedAlbums(state.albumSort) else filtered
+    val orderedEntries = remember(state.entries, state.albumSort, isAlbumCollection) {
+        if (isAlbumCollection) state.entries.sortedAlbums(state.albumSort) else state.entries
+    }
+    val visibleEntries = remember(orderedEntries, query) {
+        if (query.isBlank()) orderedEntries else orderedEntries.filter { it.matchesLibraryQuery(query) }
     }
     val gridState = rememberLazyGridState(
         initialFirstVisibleItemIndex = initialBrowseItemIndex(
@@ -1078,6 +1079,10 @@ internal fun LibraryDirectoryScreen(
         initialFirstVisibleItemScrollOffset = initialViewState.scrollOffset.coerceAtLeast(0),
     )
     val searchFocusRequester = remember { FocusRequester() }
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val density = LocalDensity.current
+    val floatingResultInsetPx = with(density) { LibraryFloatingSearchResultInset.roundToPx() }
     val coroutineScope = rememberCoroutineScope()
     var isFastScrollerDragging by remember { mutableStateOf(false) }
     val showFloatingSearchButton by remember {
@@ -1087,7 +1092,9 @@ internal fun LibraryDirectoryScreen(
     }
     val currentQuery by rememberUpdatedState(query)
     val currentUseGrid by rememberUpdatedState(useGrid)
+    val currentUnfilteredPosition by rememberUpdatedState(unfilteredPosition)
     val isCurrentPage = LocalLibraryPageMotion.current?.isCurrentPage != false
+    val isCurrentDestination = LocalPlayerPageMotion.current?.isCurrentPage != false
     val contentStatus = resolveLibraryContentStatus(
         browseLoadStatus = state.browseLoadStatus,
         isSearching = state.isSearching,
@@ -1096,24 +1103,68 @@ internal fun LibraryDirectoryScreen(
         visibleEntriesEmpty = visibleEntries.isEmpty(),
     )
 
-    fun saveViewState() {
+    fun currentBrowsePosition(): BrowseScrollPosition {
         val anchorKey = gridState.layoutInfo.visibleItemsInfo
             .firstOrNull { it.index == gridState.firstVisibleItemIndex }
             ?.key as? String
+        return BrowseScrollPosition(
+            anchorEntryKey = anchorKey?.takeIf { it.startsWith(MEDIA_ENTRY_KEY_PREFIX) },
+            fallbackItemIndex = gridState.firstVisibleItemIndex,
+            scrollOffset = gridState.firstVisibleItemScrollOffset,
+        )
+    }
+
+    fun updateQuery(nextQuery: String) {
+        if (nextQuery == query) return
+        if (query.isBlank() && nextQuery.isNotBlank()) {
+            unfilteredPosition = currentBrowsePosition()
+        }
+        if (query.isNotBlank() && nextQuery.isBlank()) {
+            pendingSearchScroll = unfilteredPosition?.let { position ->
+                LibrarySearchScrollRequest(
+                    index = browseItemIndex(orderedEntries, position, LIBRARY_GRID_HEADER_COUNT),
+                    offset = position.scrollOffset,
+                )
+            }
+            unfilteredPosition = null
+        } else if (nextQuery.isNotBlank() && floatingSearchExpanded) {
+            val hasMatches = orderedEntries.any { it.matchesLibraryQuery(nextQuery) }
+            pendingSearchScroll = LibrarySearchScrollRequest(
+                index = if (hasMatches) LIBRARY_GRID_HEADER_COUNT else LIBRARY_TOP_ITEM_INDEX,
+                offset = if (hasMatches) -floatingResultInsetPx else 0,
+            )
+        }
+        query = nextQuery
+    }
+
+    fun closeFloatingSearch() {
+        floatingSearchExpanded = false
+        focusManager.clearFocus()
+        keyboardController?.hide()
+    }
+
+    BackHandler(enabled = floatingSearchExpanded && isCurrentPage && isCurrentDestination) {
+        closeFloatingSearch()
+    }
+
+    fun saveViewState() {
+        val position = currentBrowsePosition()
         onSaveBrowseViewState(
             pageKey,
             BrowseViewState(
                 query = currentQuery,
                 useGrid = currentUseGrid,
-                anchorEntryKey = anchorKey?.takeIf { it.startsWith(MEDIA_ENTRY_KEY_PREFIX) },
-                fallbackItemIndex = gridState.firstVisibleItemIndex,
-                scrollOffset = gridState.firstVisibleItemScrollOffset,
+                anchorEntryKey = position.anchorEntryKey,
+                fallbackItemIndex = position.fallbackItemIndex,
+                scrollOffset = position.scrollOffset,
+                unfilteredPosition = currentUnfilteredPosition,
             ),
         )
     }
     val openEntry: (MediaEntry) -> Unit = { entry ->
         // Save before navigating: AnimatedContent keeps this page alive during the cover flight.
         saveViewState()
+        if (floatingSearchExpanded) closeFloatingSearch()
         onOpen(entry)
     }
     // Publish layout choices before the next tap so the destination starts with the source corners.
@@ -1129,7 +1180,16 @@ internal fun LibraryDirectoryScreen(
 
     BoxWithConstraints(modifier) {
         val gridSpacing = 12.dp
-        val density = LocalDensity.current
+        val pinnedSearchTopPx = with(density) { LibraryFloatingSearchTop.roundToPx() }
+        val floatingSearchTopPx = remember(gridState, pinnedSearchTopPx) {
+            derivedStateOf {
+                val layoutInfo = gridState.layoutInfo
+                val inlineTop = layoutInfo.visibleItemsInfo
+                    .firstOrNull { it.index == LIBRARY_SEARCH_ITEM_INDEX }
+                    ?.let { it.offset.y + layoutInfo.beforeContentPadding }
+                maxOf(pinnedSearchTopPx, inlineTop ?: pinnedSearchTopPx)
+            }
+        }
         val availableWidth = (maxWidth - 40.dp).coerceAtLeast(1.dp)
         val minimumCellWidth = state.preferences.gallerySize.minCellSize.dp
         val columnCount = if (useGrid) {
@@ -1166,23 +1226,29 @@ internal fun LibraryDirectoryScreen(
                 Text(stringResource(R.string.app_name), style = MaterialTheme.typography.headlineLarge)
             }
             item(span = { GridItemSpan(maxLineSpan) }, contentType = "library-header") {
-                OutlinedTextField(
-                    value = query,
-                    onValueChange = { query = it },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(LibrarySearchControlHeight)
-                        .focusRequester(searchFocusRequester),
-                    singleLine = true,
-                    shape = RoundedCornerShape(24.dp),
-                    leadingIcon = { Icon(Icons.Rounded.Search, null) },
-                    trailingIcon = {
-                        if (query.isNotBlank()) IconButton(onClick = { query = "" }) {
-                            Icon(Icons.Rounded.Close, stringResource(R.string.clear_search))
-                        }
-                    },
-                    placeholder = { Text(stringResource(R.string.search_current_directory)) },
-                )
+                Box(Modifier.fillMaxWidth().height(LibrarySearchControlHeight).testTag("library-inline-search-slot")) {
+                    OutlinedTextField(
+                        value = query,
+                        onValueChange = ::updateQuery,
+                        enabled = !hideInlineSearch,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(LibrarySearchControlHeight)
+                            .focusRequester(searchFocusRequester)
+                            .graphicsLayer { alpha = inlineSearchAlpha }
+                            .then(if (hideInlineSearch) Modifier.clearAndSetSemantics { } else Modifier)
+                            .testTag("library-inline-search-input"),
+                        singleLine = true,
+                        shape = RoundedCornerShape(24.dp),
+                        leadingIcon = { Icon(Icons.Rounded.Search, null) },
+                        trailingIcon = {
+                            if (query.isNotBlank()) IconButton(onClick = { updateQuery("") }) {
+                                Icon(Icons.Rounded.Close, stringResource(R.string.clear_search))
+                            }
+                        },
+                        placeholder = { Text(stringResource(R.string.search_current_directory)) },
+                    )
+                }
             }
             item(span = { GridItemSpan(maxLineSpan) }, contentType = "library-header") {
                 if (isAlbumCollection) {
@@ -1251,6 +1317,15 @@ internal fun LibraryDirectoryScreen(
             }
         }
 
+        SideEffect {
+            // Apply the request after the filtered item provider has been updated, but before
+            // its next layout. Otherwise the old, shorter result set can clamp the restore index.
+            pendingSearchScroll?.let { request ->
+                gridState.requestScrollToItem(request.index, request.offset)
+                pendingSearchScroll = null
+            }
+        }
+
         if (contentStatus != LibraryContentStatus.CONTENT) {
             CenteredStatusLayout(
                 title = stringResource(R.string.app_name),
@@ -1307,29 +1382,36 @@ internal fun LibraryDirectoryScreen(
             onDragStateChanged = { isFastScrollerDragging = it },
         )
 
-        AnimatedVisibility(
-            visible = showFloatingSearchButton,
+        LibraryFloatingSearch(
+            expanded = floatingSearchExpanded,
+            showButton = showFloatingSearchButton,
+            expandedWidth = (maxWidth - 40.dp).coerceAtLeast(LibrarySearchControlHeight),
+            query = query,
+            onQueryChange = ::updateQuery,
+            onOpen = {
+                val first = gridState.firstVisibleItemIndex
+                val last = gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: first
+                if (isLibrarySearchNearTop(first, last)) {
+                    coroutineScope.launch {
+                        if (gridState.animateSearchReturnToTop(density)) {
+                            searchFocusRequester.requestFocus()
+                        }
+                    }
+                } else {
+                    floatingSearchExpanded = true
+                }
+            },
+            onClose = ::closeFloatingSearch,
+            onImeSearch = { keyboardController?.hide() },
             modifier = Modifier
                 .align(Alignment.TopEnd)
-                .padding(top = 20.dp, end = 20.dp),
-            enter = fadeIn() + scaleIn(),
-            exit = fadeOut() + scaleOut(),
-        ) {
-            FloatingActionButton(
-                onClick = {
-                    coroutineScope.launch {
-                        gridState.animateScrollToItem(LIBRARY_TOP_ITEM_INDEX)
-                        searchFocusRequester.requestFocus()
-                    }
+                .padding(end = 20.dp)
+                .offset {
+                    // Follow the original field as it comes into view, then stick to the
+                    // floating position once that field scrolls past the top edge.
+                    IntOffset(0, floatingSearchTopPx.value)
                 },
-                modifier = Modifier.size(LibrarySearchControlHeight),
-                shape = CircleShape,
-                containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-            ) {
-                Icon(Icons.Rounded.Search, stringResource(R.string.search_current_directory))
-            }
-        }
+        )
     }
 }
 

@@ -23,6 +23,7 @@
     <string name="back_to_network_settings">Back to network settings</string>
     <string name="library_root">Music library</string>
     <string name="search_current_directory">Search this directory</string>
+    <string name="close_search">Close search</string>
     <string name="clear_search">Clear search</string>
     <string name="switch_to_list">Switch to list</string>
     <string name="switch_to_grid">Switch to album grid</string>

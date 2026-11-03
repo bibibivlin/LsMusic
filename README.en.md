@@ -13,6 +13,7 @@ L's Music is an Android DLNA / UPnP music controller. Browse music libraries on 
 
 - Automatically discovers media servers and players on the local network.
 - Browse, search, and sort folders, albums, and playlists.
+- Search from your current position in a long list, and return to it when you clear the search.
 - Restore the previous search, layout, and browse position when returning to the library.
 - Play music on a remote DLNA device or on this device.
 - Manage the playback queue with shuffle, repeat, track changes, and seeking.
