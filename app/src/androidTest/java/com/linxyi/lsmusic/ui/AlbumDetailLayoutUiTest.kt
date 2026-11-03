@@ -55,6 +55,19 @@ class AlbumDetailLayoutUiTest {
     val compose = createComposeRule()
 
     @Test
+    fun wideAlbumKeepsItsSummaryCenteredBelowTheStatusInset() {
+        setAlbumContent(width = 900.dp, state = albumState(), topInset = 24.dp)
+        val summary = bounds("album-detail-summary")
+        val tracks = bounds("album-detail-tracks")
+        val scale = tracks.height / 650f
+        val expectedCenter = (tracks.top + 48f * scale + tracks.bottom - 112f * scale) / 2f
+        assertTrue("The summary should remain centered below the status bar", abs(summary.center.y - expectedCenter) < tracks.height * .02f)
+        assertTrue("The tracks should remain alongside the summary", summary.right <= tracks.left)
+        compose.onNodeWithTag("album-detail-tracks").performScrollToIndex(20)
+        assertTrue("Scrolling the tracks must not move the summary", abs(bounds("album-detail-summary").center.y - summary.center.y) < 1f)
+    }
+
+    @Test
     fun wideLayoutCentersSummaryAndAllowsLastTrackAboveFloatingActions() {
         val actions = mutableListOf<String>()
         val state = albumState()
@@ -398,24 +411,27 @@ class AlbumDetailLayoutUiTest {
         actions: MutableList<String> = mutableListOf(),
         initialViewState: BrowseViewState = BrowseViewState(),
         fontScale: Float? = null,
+        topInset: Dp = 0.dp,
     ) {
         compose.setContent {
             LsMusicTheme(dynamicColor = false) {
                 TestViewport(fontScale = fontScale) {
-                    AlbumDetailScreen(
-                        state = state,
-                        modifier = Modifier.requiredSize(width, height),
-                        pageKey = pageKey,
-                        initialViewState = initialViewState,
-                        onSaveBrowseViewState = { _, _ -> },
-                        onResolveAlbumArtwork = { _, _ -> },
-                        onPlay = { actions.add("play:${it.id}") },
-                        onQueue = { actions.add("queue:${it.id}") },
-                        onPlayAll = { actions.add("play-all:${it.size}") },
-                        onShufflePlay = { actions.add("shuffle:${it.size}") },
-                        onQueueAll = { actions.add("queue-all:${it.size}") },
-                        bottomContentPadding = 112.dp,
-                    )
+                    CompositionLocalProvider(LocalContentTopInset provides topInset) {
+                        AlbumDetailScreen(
+                            state = state,
+                            modifier = Modifier.requiredSize(width, height),
+                            pageKey = pageKey,
+                            initialViewState = initialViewState,
+                            onSaveBrowseViewState = { _, _ -> },
+                            onResolveAlbumArtwork = { _, _ -> },
+                            onPlay = { actions.add("play:${it.id}") },
+                            onQueue = { actions.add("queue:${it.id}") },
+                            onPlayAll = { actions.add("play-all:${it.size}") },
+                            onShufflePlay = { actions.add("shuffle:${it.size}") },
+                            onQueueAll = { actions.add("queue-all:${it.size}") },
+                            bottomContentPadding = 112.dp,
+                        )
+                    }
                 }
             }
         }

@@ -2,6 +2,7 @@ package com.linxyi.lsmusic.ui
 
 import android.graphics.Bitmap
 import android.util.TypedValue
+import androidx.activity.enableEdgeToEdge
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.runtime.Composable
@@ -17,15 +18,22 @@ import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollToIndex
+import androidx.compose.ui.unit.dp
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowCompat
+import androidx.test.platform.app.InstrumentationRegistry
 import com.linxyi.lsmusic.dlna.DlnaDevice
 import com.linxyi.lsmusic.dlna.DlnaDeviceKind
 import com.linxyi.lsmusic.dlna.MediaEntry
+import com.linxyi.lsmusic.listenbrainz.PendingListen
 import com.linxyi.lsmusic.ui.theme.LsMusicTheme
 import com.linxyi.lsmusic.ui.theme.presetColorScheme
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
+import java.io.File
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.pow
@@ -33,6 +41,108 @@ import kotlin.math.pow
 class ThemeRenderingUiTest {
     @get:Rule
     val compose = createAndroidComposeRule<ThemeTestActivity>()
+
+    @Test
+    fun statusIconColorFollowsTheAppThemeInsteadOfTheDeviceTheme() {
+        compose.activityRule.scenario.onActivity { it.enableEdgeToEdge() }
+        var darkTheme by mutableStateOf(false)
+        compose.setContent {
+            LsMusicTheme(darkTheme = darkTheme, dynamicColor = false) { SystemBarAppearance() }
+        }
+        val controller = WindowCompat.getInsetsController(compose.activity.window, compose.activity.window.decorView)
+        compose.runOnIdle { assertTrue("Light app theme should use dark status icons", controller.isAppearanceLightStatusBars) }
+        compose.runOnIdle { darkTheme = true }
+        compose.runOnIdle { assertFalse("Dark app theme should use light status icons", controller.isAppearanceLightStatusBars) }
+    }
+
+    @Test
+    fun restoredLibraryUsesTheRealStatusInsetBeforeItsFirstFrame() {
+        compose.activityRule.scenario.onActivity { it.enableEdgeToEdge() }
+        val server = DlnaDevice("server", "Test server", "Test", "Test", DlnaDeviceKind.MEDIA_SERVER)
+        val albums = List(60) { index ->
+            MediaEntry("album-$index", "0", "Album $index", isContainer = true, isAlbum = true)
+        }
+        val state = LsMusicUiState(
+            servers = listOf(server),
+            selectedServerId = server.id,
+            entries = albums,
+            path = listOf(BrowseLocation(id = "0", title = "Music")),
+            browsePageKey = BrowsePageKey(server.id, "0"),
+            browseViewState = BrowseViewState(
+                useGrid = false,
+                anchorEntryKey = mediaEntryKey(albums[27]),
+                fallbackItemIndex = 30,
+                scrollOffset = 16,
+            ),
+            preferences = darkPreferences(),
+            isSearching = false,
+            browseLoadStatus = BrowseLoadStatus.LOADED,
+        )
+        compose.setContent { TestApp(state) }
+        compose.waitForIdle()
+        val statusHeight = WindowInsetsCompat.toWindowInsetsCompat(compose.activity.window.decorView.rootWindowInsets)
+            .getInsets(WindowInsetsCompat.Type.statusBars()).top
+        val list = compose.onNodeWithTag("library-directory-entries").fetchSemanticsNode().boundsInRoot
+        val card = compose.onNodeWithTag("library-card:album-27").fetchSemanticsNode().boundsInRoot
+        val search = compose.onNodeWithTag("library-floating-search").fetchSemanticsNode().boundsInRoot
+        assertTrue("The fixture requires a visible status bar", statusHeight > 0)
+        assertFalse("Dark app themes need light status bar icons",
+            WindowCompat.getInsetsController(compose.activity.window, compose.activity.window.decorView).isAppearanceLightStatusBars)
+        assertTrue("The list viewport should extend behind the status bar: $list", list.top < statusHeight)
+        assertTrue("The search control must stay below the status bar: $search", search.top >= statusHeight)
+        val expectedTop = statusHeight + with(compose.density) { 24.dp.toPx() } - 16f
+        assertTrue("The restored card should keep its first-frame position: expected $expectedTop, was ${card.top}",
+            kotlin.math.abs(card.top - expectedTop) < 3f)
+        saveStatusFrame("restored-library")
+    }
+
+    @Test
+    fun queueSettingsAndPendingListsExtendBehindTheRealStatusBar() {
+        compose.activityRule.scenario.onActivity { it.enableEdgeToEdge() }
+        val tracks = List(40) { index ->
+            MediaEntry("track-$index", "album", "Track $index", creator = "Artist", isContainer = false)
+        }
+        val pending = tracks.mapIndexed { index, track ->
+            PendingListen("listen-$index", track, 1_700_000_000L, 180_000, 120_000, 1_700_000_100L)
+        }
+        var state by mutableStateOf(
+            LsMusicUiState(
+                queue = tracks.mapIndexed { index, track -> QueueItem("queue-$index", track) },
+                currentQueueIndex = 0,
+                pendingListens = pending,
+                preferences = darkPreferences(),
+                destination = AppDestination.QUEUE,
+                isSearching = false,
+            ),
+        )
+        compose.setContent { TestApp(state) }
+        compose.waitForIdle()
+        val statusHeight = WindowInsetsCompat.toWindowInsetsCompat(compose.activity.window.decorView.rootWindowInsets)
+            .getInsets(WindowInsetsCompat.Type.statusBars()).top
+        listOf(
+            Triple(AppDestination.QUEUE, "queue-list", 12),
+            Triple(AppDestination.SETTINGS, "settings-list", 3),
+            Triple(AppDestination.PENDING_LISTENS, "pending-listens-list", 12),
+        ).forEach { (destination, tag, index) ->
+            compose.runOnIdle { state = state.copy(destination = destination) }
+            compose.waitForIdle()
+            val list = compose.onNodeWithTag(tag).assertIsDisplayed()
+            assertTrue("$tag should extend behind the status bar", list.fetchSemanticsNode().boundsInRoot.top < statusHeight)
+            list.performScrollToIndex(index)
+            assertTrue("$tag should stay behind the status bar after scrolling", list.fetchSemanticsNode().boundsInRoot.top < statusHeight)
+            saveStatusFrame(destination.name.lowercase())
+        }
+    }
+
+    private fun saveStatusFrame(name: String) {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        if (InstrumentationRegistry.getArguments().getString("captureStatusEdgeFrames") != "true") return
+        val directory = File(instrumentation.targetContext.getExternalFilesDir(null), "status-edge-review")
+        directory.mkdirs()
+        val bitmap = instrumentation.uiAutomation.takeScreenshot()
+        File(directory, "$name.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        bitmap.recycle()
+    }
 
     @Test
     fun darkTestActivityUsesDarkPlatformThemeWithoutForceDark() {
@@ -175,6 +285,7 @@ class ThemeRenderingUiTest {
             dynamicColor = dynamicColor,
             presetPalette = PresetPalette.MIST,
         ) {
+            SystemBarAppearance()
             LsMusicContent(
                 state = state,
                 snackbar = remember { SnackbarHostState() },
