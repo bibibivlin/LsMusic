@@ -7,6 +7,7 @@ import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.MaterialExpressiveTheme
 import androidx.compose.material3.MotionScheme
 import androidx.compose.material3.Shapes
+import androidx.compose.material3.Surface
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.runtime.Composable
@@ -50,8 +51,11 @@ fun LsMusicTheme(
             extraLarge = RoundedCornerShape(36.dp),
         ),
         motionScheme = MotionScheme.expressive(),
-        content = content
-    )
+    ) {
+        Surface(color = colorScheme.surface, contentColor = colorScheme.onSurface) {
+            content()
+        }
+    }
 }
 
 internal fun presetColorScheme(
