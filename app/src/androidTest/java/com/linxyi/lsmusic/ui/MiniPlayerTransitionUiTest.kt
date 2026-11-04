@@ -17,13 +17,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.SemanticsNode
+import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.DpSize
@@ -91,6 +94,103 @@ class MiniPlayerTransitionUiTest {
         )
         assertTrue("tracks: $trackBefore -> $earlyTrack -> $finalTrack", trackBefore.top > earlyTrack.top && earlyTrack.top > finalTrack.top)
         assertEquals("track-1", state.currentTrack?.id)
+    }
+
+    @Test
+    fun trackHighlightSweepsAcrossTheRowWhileTheMiniPlayerMovesIt() {
+        render(DpSize(920.dp, 650.dp), trackCount = 3)
+        val before = trackBackground("track-1")
+        val initialTrack = bounds("album-track-track-1")
+
+        compose.mainClock.autoAdvance = false
+        compose.onNodeWithText("Track 1").performClick()
+        compose.mainClock.advanceTimeByFrame()
+        compose.mainClock.advanceTimeBy(144)
+        val early = trackBackground("track-1")
+        val movingTrack = bounds("album-track-track-1")
+        compose.mainClock.advanceTimeBy(112)
+        val middle = trackBackground("track-1")
+        compose.mainClock.advanceTimeBy(600)
+        val finished = trackBackground("track-1")
+        val finalTrack = bounds("album-track-track-1")
+
+        assertTrue("The selected background should differ from the page", colorDistance(before.first, finished.first) > 15)
+        assertTrue(
+            "The beginning of the row should be filled before its end: $early",
+            colorDistance(early.first, finished.first) < colorDistance(early.second, finished.second),
+        )
+        assertTrue(
+            "The far edge should still be mostly unfilled early in the sweep: " +
+                "before=$before early=$early finished=$finished",
+            colorDistance(early.second, finished.second) > colorDistance(before.second, finished.second) * .45f,
+        )
+        assertTrue(
+            "The sweep should continue toward the far edge",
+            colorDistance(middle.second, finished.second) < colorDistance(early.second, finished.second),
+        )
+        assertTrue(
+            "The row should move up during the same animation",
+            initialTrack.top > movingTrack.top && movingTrack.top > finalTrack.top,
+        )
+        assertTrue("The completed background should cover both ends", colorDistance(finished.first, finished.second) < 8)
+    }
+
+    @Test
+    fun changingTracksDuringTheSweepSettlesOnTheLatestSelection() {
+        render(DpSize(920.dp, 650.dp), trackCount = 3)
+        val unselected = trackBackground("track-1")
+        val otherUnselected = trackBackground("track-2")
+
+        compose.mainClock.autoAdvance = false
+        compose.onNodeWithText("Track 1").performClick()
+        compose.mainClock.advanceTimeByFrame()
+        compose.mainClock.advanceTimeBy(144)
+        compose.onNodeWithText("Track 2").performClick()
+        compose.mainClock.advanceTimeByFrame()
+        compose.mainClock.advanceTimeBy(80)
+        val fading = trackBackground("track-1")
+        compose.onNodeWithText("Track 1").performClick()
+        compose.mainClock.advanceTimeByFrame()
+        val resumed = trackBackground("track-1")
+        compose.mainClock.advanceTimeBy(80)
+        val recovering = trackBackground("track-1")
+        compose.mainClock.advanceTimeBy(700)
+        val selected = trackBackground("track-1")
+        val other = trackBackground("track-2")
+
+        assertTrue(
+            "Reselecting a fading row should remain continuous: " +
+                "fading=$fading resumed=$resumed selected=$selected",
+            colorDistance(fading.first, resumed.first) < colorDistance(unselected.first, selected.first) * .3f,
+        )
+        assertTrue(
+            "The selected background should recover after the interrupted fade",
+            colorDistance(recovering.first, selected.first) < colorDistance(resumed.first, selected.first),
+        )
+        assertTrue("The latest track should end with the highlight", colorDistance(selected.first, unselected.first) > 15)
+        assertTrue(
+            "The other track should return to its normal background: before=$otherUnselected after=$other",
+            // A click or focus indication can still lightly tint the row after the highlight fades.
+            colorDistance(other.first, otherUnselected.first) < colorDistance(other.first, selected.first),
+        )
+        assertEquals("track-1", state.currentTrack?.id)
+    }
+
+    @Test
+    fun returningToAnAlreadyPlayingTrackShowsItsSettledBackground() {
+        render(DpSize(920.dp, 650.dp), trackCount = 30, initiallyPlaying = true)
+        val selected = trackBackground("track-1")
+        compose.onNodeWithTag("album-detail-tracks").performScrollToIndex(30)
+
+        compose.mainClock.autoAdvance = false
+        compose.onNodeWithTag("album-detail-tracks").performScrollToIndex(0)
+        compose.mainClock.advanceTimeByFrame()
+        val returned = trackBackground("track-1")
+
+        assertTrue(
+            "An already-playing track should not replay the sweep after scrolling back",
+            colorDistance(returned.first, selected.first) < 8 && colorDistance(returned.second, selected.second) < 8,
+        )
     }
 
     @Test
@@ -211,7 +311,12 @@ class MiniPlayerTransitionUiTest {
         assertEquals(start.bottom, bounds("album-detail-floating-actions").bottom, 2f)
     }
 
-    private fun render(viewport: DpSize, trackCount: Int, miniPlayerEnabled: Boolean = true) {
+    private fun render(
+        viewport: DpSize,
+        trackCount: Int,
+        miniPlayerEnabled: Boolean = true,
+        initiallyPlaying: Boolean = false,
+    ) {
         val tracks = List(trackCount) { index ->
             MediaEntry(
                 id = "track-${index + 1}",
@@ -232,6 +337,9 @@ class MiniPlayerTransitionUiTest {
             isSearching = false,
             browseLoadStatus = BrowseLoadStatus.LOADED,
             preferences = AppPreferences(miniPlayerEnabled = miniPlayerEnabled),
+            queue = if (initiallyPlaying) listOf(QueueItem.create(tracks.first())) else emptyList(),
+            currentQueueIndex = if (initiallyPlaying) 0 else -1,
+            playbackState = if (initiallyPlaying) RemotePlaybackState.PLAYING else RemotePlaybackState.STOPPED,
         )
         compose.setContent {
             LsMusicTheme(dynamicColor = false) {
@@ -334,6 +442,18 @@ class MiniPlayerTransitionUiTest {
     )
 
     private fun textBounds(text: String): Rect = nodeBounds(compose.onNodeWithText(text).fetchSemanticsNode())
+
+    private fun trackBackground(trackId: String): Pair<Int, Int> {
+        val image = compose.onNodeWithTag("album-track-$trackId").captureToImage().asAndroidBitmap()
+        val y = (image.height * .12f).toInt().coerceIn(0, image.height - 1)
+        return image.getPixel((image.width * .15f).toInt(), y) to
+            image.getPixel((image.width * .85f).toInt(), y)
+    }
+
+    private fun colorDistance(first: Int, second: Int): Int =
+        abs(android.graphics.Color.red(first) - android.graphics.Color.red(second)) +
+            abs(android.graphics.Color.green(first) - android.graphics.Color.green(second)) +
+            abs(android.graphics.Color.blue(first) - android.graphics.Color.blue(second))
 
     private fun nodeBounds(node: SemanticsNode): Rect {
         var result = Rect.Zero
