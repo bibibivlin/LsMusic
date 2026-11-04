@@ -35,8 +35,12 @@ import coil3.EventListener
 import coil3.ImageLoader
 import coil3.SingletonImageLoader
 import coil3.annotation.DelicateCoilApi
+import coil3.decode.DataSource
+import coil3.request.ErrorResult
 import coil3.request.ImageRequest
 import coil3.request.SuccessResult
+import coil3.size.Precision
+import coil3.size.Scale
 import com.linxyi.lsmusic.dlna.DlnaDevice
 import com.linxyi.lsmusic.dlna.DlnaDeviceKind
 import com.linxyi.lsmusic.dlna.MediaEntry
@@ -49,6 +53,7 @@ import org.junit.Rule
 import org.junit.Test
 import java.io.File
 import java.util.Collections
+import kotlinx.coroutines.runBlocking
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -389,6 +394,117 @@ class AlbumNavigationUiTest {
             SingletonImageLoader.setUnsafe(originalLoader)
             loader.shutdown()
         }
+    }
+
+    @Test
+    fun largeArtworkFadesOverTheThumbnailWhenLoadedFromDisk() {
+        verifyLargeArtworkTransition(preload = false)
+    }
+
+    @Test
+    fun largeArtworkFadesOverTheThumbnailWhenAlreadyInMemory() {
+        verifyLargeArtworkTransition(preload = true)
+    }
+
+    @OptIn(DelicateCoilApi::class)
+    private fun verifyLargeArtworkTransition(preload: Boolean) {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val originalLoader = SingletonImageLoader.get(context)
+        val loadedSources = Collections.synchronizedList(mutableListOf<Pair<String, DataSource>>())
+        val failedUris = Collections.synchronizedList(mutableListOf<String>())
+        val loader = ImageLoader.Builder(context)
+            .eventListener(object : EventListener() {
+                override fun onSuccess(request: ImageRequest, result: SuccessResult) {
+                    if (request.memoryCacheKey == null) {
+                        loadedSources.add(request.data.toString() to result.dataSource)
+                    }
+                }
+                override fun onError(request: ImageRequest, result: ErrorResult) {
+                    failedUris.add(request.data.toString())
+                }
+            })
+            .diskCache(null)
+            .build()
+        SingletonImageLoader.setUnsafe(loader)
+        try {
+            setLibrary(useGrid = true, artworkSize = 1024, concurrentArtwork = true)
+            val detailUri = requireNotNull(secondArtworkFile).toURI().toString()
+            if (preload) {
+                val result = runBlocking {
+                    loader.execute(
+                        ImageRequest.Builder(context)
+                            .data(detailUri)
+                            .size(1024)
+                            .scale(Scale.FILL)
+                            .precision(Precision.INEXACT)
+                            .build(),
+                    )
+                }
+                assertTrue(result is SuccessResult)
+            }
+            loadedSources.clear()
+            openAlbum("album-0")
+            compose.mainClock.advanceTimeBy(1_000)
+            val thumbnailUri = requireNotNull(artworkFile).toURI().toString()
+            compose.waitUntil(10_000) { synchronized(loadedSources) { loadedSources.any { it.first == thumbnailUri } } }
+            compose.mainClock.advanceTimeBy(400)
+            assertColorNear(artworkColor, detailCoverCenter())
+
+            compose.runOnIdle {
+                currentPage.value = currentPage.value!!.copy(
+                    albumArtwork = AlbumArtworkUiState(BrowsePageKey("server", "album-0"), 1024, detailUri),
+                )
+            }
+            compose.mainClock.advanceTimeByFrame()
+            compose.waitUntil(10_000) { synchronized(loadedSources) { loadedSources.any { it.first == detailUri } } }
+            val source = synchronized(loadedSources) { loadedSources.last { it.first == detailUri }.second }
+            assertEquals("The fixture must exercise the intended cache path", preload, source == DataSource.MEMORY_CACHE)
+            compose.mainClock.advanceTimeByFrame()
+            compose.mainClock.advanceTimeBy(110)
+            assertArtworkBlend(artworkColor, secondArtworkColor, detailCoverCenter())
+            compose.mainClock.advanceTimeBy(400)
+            assertColorNear(secondArtworkColor, detailCoverCenter())
+
+            if (!preload) {
+                val missingUri = File(context.cacheDir, "missing-album-${System.nanoTime()}.png").toURI().toString()
+                compose.runOnIdle {
+                    currentPage.value = currentPage.value!!.copy(
+                        albumArtwork = AlbumArtworkUiState(BrowsePageKey("server", "album-0"), 1024, missingUri),
+                    )
+                }
+                compose.mainClock.advanceTimeByFrame()
+                compose.waitUntil(10_000) { missingUri in failedUris }
+                compose.mainClock.advanceTimeBy(400)
+                assertColorNear(secondArtworkColor, detailCoverCenter())
+            }
+        } finally {
+            SingletonImageLoader.setUnsafe(originalLoader)
+            loader.shutdown()
+        }
+    }
+
+    private fun detailCoverCenter(): Int {
+        val bitmap = compose.onNodeWithTag("album-detail-cover", useUnmergedTree = true)
+            .captureToImage().asAndroidBitmap()
+        return bitmap.getPixel(bitmap.width / 2, bitmap.height / 2)
+    }
+
+    private fun assertColorNear(expected: Int, actual: Int) {
+        assertTrue("Expected artwork color $expected, was $actual", isArtworkColor(actual, expected))
+    }
+
+    private fun assertArtworkBlend(from: Int, to: Int, actual: Int) {
+        val red = android.graphics.Color.red(actual)
+        val startRed = android.graphics.Color.red(from)
+        val endRed = android.graphics.Color.red(to)
+        assertTrue("Both artwork images should be visible: $actual", red in (startRed + 8) until (endRed - 8))
+        val progress = (red - startRed).toFloat() / (endRed - startRed)
+        fun blendedChannel(start: Int, end: Int) = start + (end - start) * progress
+        assertTrue(
+            "The thumbnail should remain opaque beneath the incoming artwork: $actual",
+            abs(android.graphics.Color.green(actual) - blendedChannel(android.graphics.Color.green(from), android.graphics.Color.green(to))) < 8f &&
+                abs(android.graphics.Color.blue(actual) - blendedChannel(android.graphics.Color.blue(from), android.graphics.Color.blue(to))) < 8f,
+        )
     }
 
     @Test
