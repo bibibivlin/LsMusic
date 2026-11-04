@@ -13,9 +13,11 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -35,6 +37,7 @@ import com.linxyi.lsmusic.dlna.MediaEntry
 import com.linxyi.lsmusic.dlna.RemotePlaybackState
 import org.junit.Before
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -107,6 +110,85 @@ class CoverMotionRenderingUiTest {
         compose.runOnIdle {
             assertEquals("Unchanged page content must skip track updates", 0, counts.compositions)
             assertEquals("Unchanged library motion must skip track updates", 0, motionCounts.compositions)
+        }
+    }
+
+    @Test
+    fun completedAlbumPagesAreDisposedWhileNewerCoversKeepAnimating() {
+        val directory = LibraryUiState(
+            entries = emptyList(), albumSort = AlbumSort.SERVER_DEFAULT,
+            path = listOf(BrowseLocation("albums", "Albums")),
+            browsePageKey = BrowsePageKey("offline-server", "albums"),
+            browseViewState = BrowseViewState(), preferences = AppPreferences(),
+            isSearching = false, servers = emptyList(), selectedServerId = "offline-server",
+            browseLoadStatus = BrowseLoadStatus.LOADED, albumArtwork = null,
+            currentTrackId = null, playbackState = RemotePlaybackState.STOPPED,
+        )
+        val albums = List(3) { index ->
+            directory.copy(
+                browsePageKey = BrowsePageKey("offline-server", "album-$index"),
+                path = directory.path + BrowseLocation("album-$index", pageKind = LibraryPageKind.ALBUM),
+            )
+        }
+        var current by mutableStateOf(directory)
+        val retainedPages = mutableSetOf<BrowsePageKey>()
+        val motions = mutableMapOf<BrowsePageKey, LibraryPageMotionScope>()
+        compose.setContent {
+            LibraryPageTransition(current) { page ->
+                val motion = checkNotNull(LocalLibraryPageMotion.current)
+                SideEffect { motions[page.pageKey] = motion }
+                DisposableEffect(page.pageKey) {
+                    retainedPages.add(page.pageKey)
+                    onDispose {
+                        retainedPages.remove(page.pageKey)
+                        motions.remove(page.pageKey)
+                    }
+                }
+                Box(Modifier.fillMaxSize()) {
+                    if (page.pageKind == LibraryPageKind.ALBUM) {
+                        Box(Modifier.align(Alignment.TopCenter)
+                            .sharedAlbumArtwork(page.pageKey, AlbumArtworkCornerRadius)
+                            .size(300.dp).background(Color.Cyan))
+                    } else {
+                        albums.forEachIndexed { index, album ->
+                            Box(Modifier.align(Alignment.BottomStart).offset(x = (index * 80).dp, y = (-32).dp)
+                                .sharedAlbumArtwork(album.pageKey, AlbumArtworkCornerRadius)
+                                .size(64.dp).background(Color.Cyan))
+                        }
+                    }
+                }
+            }
+        }
+        compose.waitForIdle()
+        compose.mainClock.autoAdvance = false
+        fun show(page: LibraryUiState, millis: Long) {
+            compose.runOnIdle { current = page }
+            compose.mainClock.advanceTimeByFrame()
+            compose.mainClock.advanceTimeBy(millis)
+        }
+        show(albums[0], 96)
+        show(directory, 32)
+        show(albums[1], 96)
+        val returning = compose.runOnIdle {
+            val firstCover = checkNotNull(motions[directory.pageKey]?.covers?.get(
+                AlbumArtworkTransitionKey(directory.pageKey, albums[0].pageKey),
+            ))
+            assertFalse("The previous return must run concurrently with the new opening", firstCover.isIdle)
+            assertTrue(motions[albums[1].pageKey]!!.covers.values.any { !it.isIdle })
+            firstCover
+        }
+        show(directory, 32)
+        show(albums[2], 96)
+        compose.mainClock.advanceTimeUntil(2_000) { returning.isIdle }
+        compose.mainClock.advanceTimeByFrame()
+        compose.runOnIdle {
+            assertFalse("Finished pages must not wait for unrelated cover flights", albums[0].pageKey in retainedPages)
+            assertTrue("The newest cover should still be moving", motions[albums[2].pageKey]!!.covers.values.any { !it.isIdle })
+        }
+        compose.mainClock.advanceTimeBy(1_000)
+        compose.runOnIdle {
+            assertEquals("Only the selected page may remain after settling", setOf(albums[2].pageKey), retainedPages)
+            assertTrue(motions[albums[2].pageKey]!!.isSettled)
         }
     }
 

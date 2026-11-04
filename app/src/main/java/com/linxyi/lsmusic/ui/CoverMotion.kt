@@ -16,6 +16,7 @@ import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
@@ -46,26 +47,33 @@ internal fun <T> coverFlightSpring(durationMillis: Int, threshold: T): SpringSpe
 
 /** The overlay must start with the size the user saw while pressing its parent. */
 internal class CoverPressHandoff(private val scope: CoroutineScope) {
-    private var key: Any? = null
-    private val correction = Animatable(1f)
-    private var animation: Job? = null
+    private class PressCorrection {
+        val scale = Animatable(1f)
+        var animation: Job? = null
+    }
+
+    private val corrections = mutableStateMapOf<Any, PressCorrection>()
 
     fun capture(key: Any, scale: Float) {
-        this.key = key
-        animation?.cancel()
-        animation = scope.launch(start = CoroutineStart.UNDISPATCHED) {
-            correction.snapTo(scale)
+        val correction = corrections.getOrPut(key) { PressCorrection() }
+        correction.animation?.cancel()
+        correction.animation = scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            correction.scale.snapTo(scale)
             if (abs(scale - 1f) > .001f) {
-                correction.animateTo(1f, coverFlightSpring(COVER_OPEN_DURATION_MILLIS, .00005f))
+                correction.scale.animateTo(1f, coverFlightSpring(COVER_OPEN_DURATION_MILLIS, .00005f))
             }
         }
     }
 
-    fun scaleFor(key: Any): Float = if (this.key == key) correction.value else 1f
+    fun scaleFor(key: Any): Float = corrections[key]?.scale?.value ?: 1f
+
+    fun clear(key: Any) {
+        corrections.remove(key)?.animation?.cancel()
+    }
 
     fun clear() {
-        animation?.cancel()
-        key = null
+        corrections.values.forEach { it.animation?.cancel() }
+        corrections.clear()
     }
 }
 
@@ -153,24 +161,33 @@ internal fun Modifier.sharedCoverArtwork(
     durationMillis: Int,
     cornerRadius: () -> Dp,
     handoff: CoverPressHandoff? = null,
+    handoffKey: Any = contentKey,
+    renderInOverlayDuringTransition: Boolean = true,
+    overlayAlpha: () -> Float = { 1f },
 ): Modifier = with(sharedScope) {
     val sharedState = rememberSharedContentState(contentKey)
     val currentRadius = rememberUpdatedState(cornerRadius)
     val measurement = remember { CoverMeasureState() }
-    this@sharedCoverArtwork.sharedElement(
+    val boundsTransform = BoundsTransform { _, _ ->
+        coverFlightSpring(durationMillis, Rect(.5f, .5f, .5f, .5f))
+    }
+    val sharedModifier = this@sharedCoverArtwork.sharedElement(
         sharedContentState = sharedState,
         animatedVisibilityScope = visibilityScope,
-        boundsTransform = BoundsTransform { _, _ ->
-            coverFlightSpring(durationMillis, Rect(.5f, .5f, .5f, .5f))
-        },
-    ).graphicsLayer {
+        boundsTransform = boundsTransform,
+        renderInOverlayDuringTransition = renderInOverlayDuringTransition,
+    )
+    sharedModifier.graphicsLayer {
+        alpha = if (renderInOverlayDuringTransition && sharedState.isMatchFound && sharedScope.isTransitionActive) {
+            overlayAlpha()
+        } else 1f
         // The overlay retains the transformed source position but drops the parent's scale.
         // Carry that scale from the pressed frame through the same flight, anchored at its
         // already-transformed top-left. The source itself remains scaled until it fades away.
         val correction = if (handoff != null && sharedState.isMatchFound && sharedScope.isTransitionActive &&
             visibilityScope.transition.targetState == EnterExitState.Visible
         ) {
-            handoff.scaleFor(contentKey)
+            handoff.scaleFor(handoffKey)
         } else 1f
         transformOrigin = TransformOrigin(0f, 0f)
         scaleX = correction

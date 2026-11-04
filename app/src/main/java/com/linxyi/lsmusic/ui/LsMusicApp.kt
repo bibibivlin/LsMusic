@@ -2185,7 +2185,8 @@ private fun AlbumDetailSummary(
                     placeholderArtworkUri = placeholderArtworkUri,
                     filterQuality = FilterQuality.High,
                     albumTransitionKey = pageKey,
-                    useCachedThumbnailDuringFlight = motion?.navigation?.opening == true && motion.isCurrentPage,
+                    useCachedThumbnailDuringFlight = motion?.navigation?.opening == true &&
+                        motion.isCurrentPage && !motion.isSettled,
                 )
             }.single().measure(Constraints.fixed(artworkSizePx, artworkSizePx))
         } else {
@@ -2568,7 +2569,7 @@ private fun MediaGridCard(
             if (entry.isContainer) Modifier.pressableNavigationClick(
                 enabled = pageMotion?.isCurrentPage != false,
                 onRelease = { scale -> albumTransitionKey?.let { pageMotion?.handoff?.capture(it, scale) } },
-                onAbandon = { pageMotion?.handoff?.clear() },
+                onAbandon = { albumTransitionKey?.let { pageMotion?.handoff?.clear(it) } },
                 onClick = onOpen,
             ) else Modifier.clickable(onClick = onOpen),
         ),
@@ -2649,7 +2650,7 @@ private fun MediaEntryRow(
             if (entry.isContainer) Modifier.pressableNavigationClick(
                 enabled = pageMotion?.isCurrentPage != false,
                 onRelease = { scale -> albumTransitionKey?.let { pageMotion?.handoff?.capture(it, scale) } },
-                onAbandon = { pageMotion?.handoff?.clear() },
+                onAbandon = { albumTransitionKey?.let { pageMotion?.handoff?.clear(it) } },
                 onClick = onOpen,
             ) else Modifier.clickable(onClick = onOpen),
         ),
@@ -3339,8 +3340,7 @@ private fun ArtworkTile(
 ) {
     val context = LocalContext.current
     val motion = LocalLibraryPageMotion.current
-    val returningPlaceholderKey = motion?.returningArtworkUri
-        ?.takeIf { motion.navigation?.albumKey == albumTransitionKey }
+    val returningPlaceholderKey = motion?.returningArtwork?.get(albumTransitionKey)
     val colors = remember(entry.title) {
         artworkPalettes[(entry.title.hashCode() and Int.MAX_VALUE) % artworkPalettes.size]
     }
