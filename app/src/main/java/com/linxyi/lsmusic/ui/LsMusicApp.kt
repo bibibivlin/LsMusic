@@ -132,6 +132,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.LinearWavyProgressIndicator
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -174,15 +175,18 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.lerp as lerpColor
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -224,6 +228,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.constrainHeight
 import androidx.compose.ui.unit.constrainWidth
 import androidx.compose.ui.unit.dp
@@ -254,6 +259,7 @@ import coil3.size.Precision
 import coil3.size.Scale
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -327,6 +333,10 @@ private val MiniPlayerContentInset = MiniPlayerHeight + MiniPlayerBottomSpacing
 private val MiniPlayerMaxWidth = 720.dp
 private const val MINI_PLAYER_MOTION_DURATION_MILLIS = 400
 private val MiniPlayerMotionEasing = CubicBezierEasing(0.2f, 0f, 0f, 1f)
+private const val TRACK_HIGHLIGHT_SWEEP_DURATION_MILLIS = 560
+private const val TRACK_HIGHLIGHT_FADE_DURATION_MILLIS = 220
+private const val TRACK_HIGHLIGHT_RECOVER_DURATION_MILLIS = 140
+private const val TRACK_HIGHLIGHT_EDGE_WIDTH = 0.28f
 private const val ALBUM_ARTWORK_RESIZE_SETTLE_MILLIS = 150L
 private const val ALBUM_ARTWORK_CROSSFADE_MILLIS = 280
 
@@ -2000,6 +2010,7 @@ internal fun AlbumDetailScreen(
                                             state.playbackState == RemotePlaybackState.PLAYING,
                                         onPlay = {},
                                         onQueue = {},
+                                        animateHighlight = false,
                                     )
                                 }
                             }
@@ -2346,19 +2357,42 @@ private fun TrackCollectionRow(
     onPlay: () -> Unit,
     onQueue: () -> Unit,
     modifier: Modifier = Modifier,
+    animateHighlight: Boolean = true,
 ) {
-    val supportingContentColor = if (isPlaying) {
+    val targetContentColor = if (isPlaying) MaterialTheme.colorScheme.onPrimaryContainer else LocalContentColor.current
+    val targetSupportingColor = if (isPlaying) {
         MaterialTheme.colorScheme.onPrimaryContainer
     } else {
         MaterialTheme.colorScheme.onSurfaceVariant
     }
+    val colorAnimation = tween<Color>(
+        durationMillis = if (isPlaying) MINI_PLAYER_MOTION_DURATION_MILLIS else TRACK_HIGHLIGHT_FADE_DURATION_MILLIS,
+        easing = MiniPlayerMotionEasing,
+    )
+    val contentColor = if (animateHighlight) {
+        animateColorAsState(targetContentColor, colorAnimation, label = "track-content-color").value
+    } else {
+        targetContentColor
+    }
+    val supportingContentColor = if (animateHighlight) {
+        animateColorAsState(targetSupportingColor, colorAnimation, label = "track-supporting-color").value
+    } else {
+        targetSupportingColor
+    }
+    val highlight = if (animateHighlight) {
+        trackHighlightModifier(mediaEntryKey(track), isPlaying, MaterialTheme.colorScheme.primaryContainer)
+    } else {
+        Modifier
+    }
+    val testTag = if (animateHighlight) Modifier.testTag("album-track-${track.id}") else Modifier
     Surface(
-        modifier = modifier.fillMaxWidth().clickable(onClick = onPlay),
-        color = if (isPlaying) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
+        modifier = modifier.fillMaxWidth().then(testTag).clickable(onClick = onPlay),
+        color = Color.Transparent,
+        contentColor = contentColor,
         shape = RoundedCornerShape(18.dp),
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            modifier = highlight.padding(horizontal = 12.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Box(Modifier.width(32.dp), contentAlignment = Alignment.Center) {
@@ -2366,10 +2400,10 @@ private fun TrackCollectionRow(
                     Icon(
                         Icons.Rounded.GraphicEq,
                         stringResource(R.string.playing),
-                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                        tint = supportingContentColor,
                     )
                 } else {
-                    Text(number.toString(), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(number.toString(), color = supportingContentColor)
                 }
             }
             Spacer(Modifier.width(12.dp))
@@ -2390,6 +2424,80 @@ private fun TrackCollectionRow(
             )
             IconButton(onClick = onQueue) { Icon(Icons.Rounded.Add, stringResource(R.string.add_to_queue)) }
         }
+    }
+}
+
+@Composable
+private fun trackHighlightModifier(trackKey: String, isPlaying: Boolean, highlightColor: Color): Modifier {
+    // A row first composed for an already-playing track should show its settled state.
+    val reveal = remember(trackKey) { Animatable(if (isPlaying) 1f else 0f) }
+    val opacity = remember(trackKey) { Animatable(if (isPlaying) 1f else 0f) }
+    LaunchedEffect(isPlaying, reveal, opacity) {
+        if (isPlaying) {
+            if (reveal.value == 0f) opacity.snapTo(1f)
+            coroutineScope {
+                if (opacity.value < 1f) {
+                    launch {
+                        opacity.animateTo(
+                            1f,
+                            tween(TRACK_HIGHLIGHT_RECOVER_DURATION_MILLIS, easing = MiniPlayerMotionEasing),
+                        )
+                    }
+                }
+                if (reveal.value < 1f) {
+                    launch {
+                        reveal.animateTo(
+                            1f,
+                            tween(TRACK_HIGHLIGHT_SWEEP_DURATION_MILLIS, easing = MiniPlayerMotionEasing),
+                        )
+                    }
+                }
+            }
+        } else {
+            if (opacity.value > 0f) {
+                opacity.animateTo(
+                    0f,
+                    tween(TRACK_HIGHLIGHT_FADE_DURATION_MILLIS, easing = MiniPlayerMotionEasing),
+                )
+            }
+            reveal.snapTo(0f)
+        }
+    }
+    val glowColor = lerpColor(highlightColor, Color.White, 0.14f)
+    return Modifier.drawWithContent {
+        val progress = reveal.value.coerceIn(0f, 1f)
+        val alpha = opacity.value.coerceIn(0f, 1f)
+        if (progress > 0f && alpha > 0f) {
+            val base = highlightColor.copy(alpha = highlightColor.alpha * alpha)
+            if (progress >= 1f) {
+                drawRect(base)
+            } else {
+                // Keep the sweep in row-local coordinates so it follows layout and scroll motion.
+                val edgeWidth = size.width * TRACK_HIGHLIGHT_EDGE_WIDTH
+                val edgeStart = (size.width + edgeWidth) * progress - edgeWidth
+                val edgeEnd = edgeStart + edgeWidth
+                val filledWidth = edgeStart.coerceIn(0f, size.width)
+                val leftToRight = layoutDirection == LayoutDirection.Ltr
+                if (filledWidth > 0f) {
+                    drawRect(
+                        color = base,
+                        topLeft = Offset(if (leftToRight) 0f else size.width - filledWidth, 0f),
+                        size = Size(filledWidth, size.height),
+                    )
+                }
+                drawRect(
+                    brush = Brush.linearGradient(
+                        0f to base,
+                        0.44f to base,
+                        0.67f to glowColor.copy(alpha = glowColor.alpha * alpha),
+                        1f to highlightColor.copy(alpha = 0f),
+                        start = Offset(if (leftToRight) edgeStart else size.width - edgeStart, 0f),
+                        end = Offset(if (leftToRight) edgeEnd else size.width - edgeEnd, 0f),
+                    ),
+                )
+            }
+        }
+        drawContent()
     }
 }
 
