@@ -6,6 +6,7 @@ import android.graphics.Bitmap
 import android.view.WindowManager
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -19,6 +20,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.captureToImage
@@ -50,6 +52,8 @@ import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import java.io.File
+import kotlin.math.abs
+import kotlin.math.roundToInt
 
 class NavigationInsetsUiTest {
     @get:Rule
@@ -75,6 +79,73 @@ class NavigationInsetsUiTest {
     @After
     fun restoreOrientation() {
         compose.activityRule.scenario.onActivity { it.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED }
+    }
+
+    @Test
+    fun returningFromNowPlayingKeepsTheWideMiniPlayerShadowStable() {
+        val track = MediaEntry("shadow-track", "album", "Shadow track", creator = "Artist", isContainer = false)
+        var state by mutableStateOf(
+            LsMusicUiState(
+                destination = AppDestination.NOW_PLAYING,
+                queue = listOf(QueueItem.create(track)),
+                currentQueueIndex = 0,
+                isSearching = false,
+            ),
+        )
+        compose.setContent { TestApp(state, darkTheme = false) }
+        compose.waitForIdle()
+        compose.mainClock.autoAdvance = false
+        listOf(AppDestination.SETTINGS, AppDestination.LIBRARY, AppDestination.QUEUE).forEach { destination ->
+            if (state.destination != AppDestination.NOW_PLAYING) {
+                compose.runOnIdle { state = state.copy(destination = AppDestination.NOW_PLAYING) }
+                compose.mainClock.advanceTimeBy(1_000)
+            }
+            compose.runOnIdle { state = state.copy(destination = destination) }
+            compose.mainClock.advanceTimeBy(336)
+            val fadingBounds = miniPlayerBounds()
+            val fading = screenshot()
+            compose.mainClock.advanceTimeBy(160)
+            val settledBounds = miniPlayerBounds()
+            val settled = screenshot()
+            assertEquals("The player should remain in place", fadingBounds.bottom, settledBounds.bottom, 1f)
+            val fadingShadow = pixelBelowPlayer(fading, fadingBounds)
+            val settledShadow = pixelBelowPlayer(settled, settledBounds)
+            assertTrue(
+                "The shadow should not jump when the $destination page finishes fading: " +
+                    "$fadingShadow -> $settledShadow",
+                colorDifference(fadingShadow, settledShadow) <= 8,
+            )
+        }
+    }
+
+    @Test
+    fun appearingWideMiniPlayerKeepsItsTopShadowDuringTheFade() {
+        val track = MediaEntry("shadow-track", "album", "Shadow track", creator = "Artist", isContainer = false)
+        var state by mutableStateOf(LsMusicUiState(destination = AppDestination.LIBRARY, isSearching = false))
+        compose.setContent { TestApp(state, darkTheme = false) }
+        compose.waitForIdle()
+        val background = screenshot()
+        compose.mainClock.autoAdvance = false
+        compose.runOnIdle { state = state.copy(queue = listOf(QueueItem.create(track)), currentQueueIndex = 0) }
+        compose.mainClock.advanceTimeBy(224)
+        val fadingBounds = miniPlayerBounds()
+        val fading = screenshot()
+        compose.mainClock.advanceTimeBy(400)
+        val settledBounds = miniPlayerBounds()
+        val settled = screenshot()
+
+        val fadingShadow = shadowDarkening(background, fading, fadingBounds, above = true)
+        val settledShadow = shadowDarkening(background, settled, settledBounds, above = true)
+        val fadingBody = shadowDarkening(background, fading, fadingBounds, above = false)
+        val settledBody = shadowDarkening(background, settled, settledBounds, above = false)
+        assertTrue("The settled player must cast a visible top shadow", settledShadow >= 4)
+        assertTrue("The shadow must remain visible while the player fades in", fadingShadow >= 3)
+        assertTrue("The player body must darken the background", fadingBody > 0 && settledBody > 0)
+        assertTrue(
+            "Shadow and player should fade together: shadow=$fadingShadow/$settledShadow, " +
+                "body=$fadingBody/$settledBody",
+            abs(fadingShadow.toFloat() / settledShadow - fadingBody.toFloat() / settledBody) < .3f,
+        )
     }
 
     @Test
@@ -222,6 +293,33 @@ class NavigationInsetsUiTest {
         }
     }
 
+    private fun screenshot(): Bitmap = compose.onRoot().captureToImage().asAndroidBitmap()
+
+    private fun miniPlayerBounds(): Rect =
+        compose.onNodeWithTag("mini-player", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+
+    private fun playerSample(bitmap: Bitmap, bounds: Rect, offsetFromTop: Float): Int {
+        val root = compose.onRoot().fetchSemanticsNode().boundsInRoot
+        val x = (bounds.left + bounds.width * .85f - root.left).roundToInt()
+        val y = (bounds.top + offsetFromTop - root.top).roundToInt()
+        return bitmap.getPixel(x, y)
+    }
+
+    private fun pixelBelowPlayer(bitmap: Bitmap, bounds: Rect): Int =
+        playerSample(bitmap, bounds, bounds.height + with(compose.density) { 2.dp.toPx() })
+
+    private fun shadowDarkening(background: Bitmap, image: Bitmap, bounds: Rect, above: Boolean): Int {
+        val offset = with(compose.density) { (if (above) (-2).dp else 2.dp).toPx() }
+        return android.graphics.Color.red(playerSample(background, bounds, offset)) -
+            android.graphics.Color.red(playerSample(image, bounds, offset))
+    }
+
+    private fun colorDifference(first: Int, second: Int): Int = maxOf(
+        abs(android.graphics.Color.red(first) - android.graphics.Color.red(second)),
+        abs(android.graphics.Color.green(first) - android.graphics.Color.green(second)),
+        abs(android.graphics.Color.blue(first) - android.graphics.Color.blue(second)),
+    )
+
     private fun assertExtendsToWindowBottom(tag: String) {
         val root = compose.onRoot().fetchSemanticsNode().boundsInRoot
         val list = compose.onNodeWithTag(tag).fetchSemanticsNode().boundsInRoot
@@ -237,8 +335,8 @@ class NavigationInsetsUiTest {
     private fun navigationTop(): Float = compose.onRoot().fetchSemanticsNode().boundsInRoot.bottom - navigationInset()
 
     @Composable
-    private fun TestApp(state: LsMusicUiState) {
-        LsMusicTheme(dynamicColor = false) {
+    private fun TestApp(state: LsMusicUiState, darkTheme: Boolean = isSystemInDarkTheme()) {
+        LsMusicTheme(darkTheme = darkTheme, dynamicColor = false) {
             LsMusicContent(
                 state = state, snackbar = remember { SnackbarHostState() },
                 contentWindowInsets = ScaffoldDefaults.contentWindowInsets.union(WindowInsets(bottom = 24.dp)),
