@@ -2,30 +2,37 @@
 
 package com.linxyi.lsmusic.ui
 
-import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.EnterExitState
 import androidx.compose.animation.SharedTransitionLayout
 import androidx.compose.animation.SharedTransitionScope
 import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.MutableTransitionState
+import androidx.compose.animation.core.Transition
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.rememberTransition
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.core.updateTransition
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
-import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
 import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
@@ -35,6 +42,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import com.linxyi.lsmusic.dlna.selectThumbnailArtworkUri
 
 private val AlbumMotionEasing = CubicBezierEasing(0.2f, 0f, 0f, 1f)
@@ -76,25 +84,46 @@ internal val LibraryUiState.pageKey: BrowsePageKey
 internal val LibraryUiState.pageKind: LibraryPageKind
     get() = path.lastOrNull()?.pageKind ?: LibraryPageKind.DIRECTORY
 
+private val LibraryUiState.parentPageKey: BrowsePageKey?
+    get() = path.dropLast(1).lastOrNull()?.let { BrowsePageKey(pageKey.serverId, it.id) }
+
+internal data class AlbumArtworkTransitionKey(val parentKey: BrowsePageKey, val albumKey: BrowsePageKey)
+
+private class RetainedLibraryPage(initialState: LibraryUiState, initiallyVisible: Boolean) {
+    var state by mutableStateOf(initialState)
+    val visibility = MutableTransitionState(if (initiallyVisible) EnterExitState.Visible else EnterExitState.PreEnter)
+    val covers = mutableStateMapOf<Any, MutableTransitionState<EnterExitState>>()
+}
+
+/** Page fades and cover flights have independent lifetimes, but share the same viewport. */
+private class LibraryPageVisibilityScope(
+    override val transition: Transition<EnterExitState>,
+) : AnimatedVisibilityScope
+
 internal class LibraryPageMotionScope(
     val sharedScope: SharedTransitionScope,
     val visibilityScope: AnimatedVisibilityScope,
+    val pageVisibility: State<Float>,
     val isCurrentPage: Boolean,
-    val isNavigating: Boolean,
+    val pageKey: BrowsePageKey,
+    val parentPageKey: BrowsePageKey?,
+    val currentPageKey: BrowsePageKey,
+    val currentParentPageKey: BrowsePageKey?,
     val navigation: AlbumNavigationMotion?,
-    val returningArtworkUri: String?,
+    val returningArtwork: Map<BrowsePageKey, String>,
+    val covers: MutableMap<Any, MutableTransitionState<EnterExitState>>,
     val handoff: CoverPressHandoff,
 ) {
     val isSettled: Boolean
         get() = visibilityScope.transition.currentState == EnterExitState.Visible &&
             visibilityScope.transition.targetState == EnterExitState.Visible &&
-            !sharedScope.isTransitionActive
+            covers.values.all { it.isIdle }
 }
 
 // Motion changes at navigation boundaries; only its readers should be invalidated.
 internal val LocalLibraryPageMotion = compositionLocalOf<LibraryPageMotionScope?> { null }
 
-/** Retain the outgoing page only for the transition; browse caching remains in the ViewModel. */
+/** Retain each outgoing page only until its own fade and cover pairs have finished. */
 @Composable
 internal fun LibraryPageTransition(
     state: LibraryUiState,
@@ -104,72 +133,98 @@ internal fun LibraryPageTransition(
     key(state.pageKey.serverId) {
         val coroutineScope = rememberCoroutineScope()
         val handoff = remember { CoverPressHandoff(coroutineScope) }
+        val pages = remember { mutableStateListOf(RetainedLibraryPage(state, initiallyVisible = true)) }
+        val currentPage = pages.firstOrNull { it.state.pageKey == state.pageKey }
+            ?: RetainedLibraryPage(state, initiallyVisible = false).also { pages.add(it) }
+        currentPage.state = state
+        pages.forEach { page ->
+            page.visibility.targetState = if (page === currentPage) EnterExitState.Visible else EnterExitState.PostExit
+        }
         SharedTransitionLayout(Modifier.fillMaxSize().clipToBounds()) {
             val sharedScope = this
             ProtectTopEdgeDuringCoverFlight(sharedScope.isTransitionActive)
-            val transition = updateTransition(state, label = "library-navigation")
-            val navigation = albumNavigationMotion(
-                transition.currentState.pageKey,
-                transition.currentState.path,
-                transition.targetState.pageKey,
-                transition.targetState.path,
-            )
-            LaunchedEffect(transition.currentState.pageKey, transition.targetState.pageKey, sharedScope.isTransitionActive) {
-                if (transition.currentState.pageKey == transition.targetState.pageKey && !sharedScope.isTransitionActive) {
-                    handoff.clear()
+            val finishedPages = pages.filter { page ->
+                page !== currentPage && page.visibility.isIdle && page.covers.keys.none { coverKey ->
+                    // A reversed flight can finish its outgoing endpoint before the incoming
+                    // one. Keep both endpoints until this cover pair (not the whole library) lands.
+                    pages.any { it.covers[coverKey]?.isIdle == false }
                 }
             }
-            val returningArtworkUri = if (navigation?.opening == false) {
-                val album = transition.currentState
-                album.albumArtwork?.takeIf { it.pageKey == navigation.albumKey }?.displayUri
+            LaunchedEffect(currentPage, finishedPages) {
+                finishedPages.forEach { handoff.clear(it.state.pageKey) }
+                pages.removeAll(finishedPages.toSet())
+            }
+            val currentPageIdle = currentPage.visibility.isIdle && currentPage.covers.values.all { it.isIdle }
+            LaunchedEffect(currentPage, currentPageIdle) {
+                if (currentPageIdle) handoff.clear(currentPage.state.pageKey)
+            }
+            val returningArtwork = pages.mapNotNull { retained ->
+                val album = retained.state
+                if (album.pageKind != LibraryPageKind.ALBUM || retained === currentPage) return@mapNotNull null
+                val uri = album.albumArtwork?.takeIf { it.pageKey == album.pageKey }?.displayUri
                     ?: album.path.lastOrNull()?.let { selectThumbnailArtworkUri(it.artworkCandidates, it.artworkUri) }
-            } else {
-                null
-            }
-            transition.AnimatedContent(
-                modifier = Modifier.fillMaxSize(),
-                // Loading, artwork and playback updates must not restart page navigation.
-                contentKey = { it.pageKey },
-                transitionSpec = {
-                    (fadeIn(tween(240, easing = AlbumMotionEasing)) togetherWith
-                        fadeOut(tween(150))).using(null)
-                },
-            ) { page ->
-                val isCurrentPage = page.pageKey == state.pageKey
-                val isNavigating = transition.currentState.pageKey != transition.targetState.pageKey
-                val topEdgeVisibility = this.transition.animateFloat(
-                    transitionSpec = {
-                        if (targetState == EnterExitState.Visible) tween(240, easing = AlbumMotionEasing) else tween(150)
-                    },
-                    label = "library-top-edge-visibility",
-                ) { visibility -> if (visibility == EnterExitState.Visible) 1f else 0f }
-                val motion = remember(
-                    sharedScope, this, isCurrentPage, isNavigating, navigation, returningArtworkUri, handoff,
-                ) {
-                    LibraryPageMotionScope(
-                        sharedScope = sharedScope,
-                        visibilityScope = this,
-                        isCurrentPage = isCurrentPage,
-                        isNavigating = isNavigating,
-                        navigation = navigation,
-                        returningArtworkUri = returningArtworkUri,
-                        handoff = handoff,
-                    )
-                }
-                val interactionModifier = if (isCurrentPage) Modifier else Modifier
-                    .clearAndSetSemantics { }
-                    .pointerInput(Unit) {
-                        awaitPointerEventScope {
-                            while (true) {
-                                awaitPointerEvent(PointerEventPass.Initial).changes.forEach { it.consume() }
+                uri?.let { album.pageKey to it }
+            }.toMap()
+            pages.forEach { retained ->
+                key(retained.state.pageKey) {
+                    val page = retained.state
+                    val isCurrentPage = retained === currentPage
+                    val transition = rememberTransition(retained.visibility, label = "library-page-visibility")
+                    val visibilityScope = remember(transition) { LibraryPageVisibilityScope(transition) }
+                    val parent = pages.firstOrNull { it.state.pageKey == page.parentPageKey }?.state
+                    val navigation = parent?.let {
+                        albumNavigationMotion(it.pageKey, it.path, page.pageKey, page.path)
+                            ?.copy(opening = isCurrentPage)
+                    }
+                    val topEdgeVisibility = transition.animateFloat(
+                        transitionSpec = {
+                            if (targetState == EnterExitState.Visible) tween(240, easing = AlbumMotionEasing) else tween(150)
+                        },
+                        label = "library-top-edge-visibility",
+                    ) { visibility -> if (visibility == EnterExitState.Visible) 1f else 0f }
+                    val motion = remember(
+                        sharedScope, visibilityScope, topEdgeVisibility, isCurrentPage, page.pageKey, page.parentPageKey,
+                        state.pageKey, state.parentPageKey, navigation, returningArtwork, handoff,
+                    ) {
+                        LibraryPageMotionScope(
+                            sharedScope = sharedScope,
+                            visibilityScope = visibilityScope,
+                            pageVisibility = topEdgeVisibility,
+                            isCurrentPage = isCurrentPage,
+                            pageKey = page.pageKey,
+                            parentPageKey = page.parentPageKey,
+                            currentPageKey = state.pageKey,
+                            currentParentPageKey = state.parentPageKey,
+                            navigation = navigation,
+                            returningArtwork = returningArtwork,
+                            covers = retained.covers,
+                            handoff = handoff,
+                        )
+                    }
+                    val interactionModifier = if (isCurrentPage) Modifier else Modifier
+                        .clearAndSetSemantics { }
+                        .pointerInput(Unit) {
+                            awaitPointerEventScope {
+                                while (true) {
+                                    awaitPointerEvent(PointerEventPass.Initial).changes.forEach { it.consume() }
+                                }
                             }
                         }
+                    val pageFade = with(visibilityScope) {
+                        Modifier.animateEnterExit(
+                            enter = fadeIn(tween(240, easing = AlbumMotionEasing)),
+                            exit = fadeOut(tween(150)),
+                        )
                     }
-                CompositionLocalProvider(
-                    LocalLibraryPageMotion provides motion,
-                    LocalTopEdgeVisibility provides topEdgeVisibility,
-                ) {
-                    Box(Modifier.fillMaxSize().then(interactionModifier)) { content(page) }
+                    CompositionLocalProvider(
+                        LocalLibraryPageMotion provides motion,
+                        LocalTopEdgeVisibility provides topEdgeVisibility,
+                    ) {
+                        Box(
+                            Modifier.fillMaxSize().zIndex(if (isCurrentPage) 1f else 0f)
+                                .then(pageFade).then(interactionModifier),
+                        ) { content(page) }
+                    }
                 }
             }
         }
@@ -207,17 +262,47 @@ internal fun Modifier.sharedAlbumArtwork(
     cornerRadius: Dp,
 ): Modifier {
     val motion = LocalLibraryPageMotion.current
-    if (motion == null || albumKey == null ||
-        (motion.isNavigating && motion.navigation?.albumKey != albumKey)
-    ) return clip(RoundedCornerShape(cornerRadius))
-    val duration = motion.navigation?.durationMillis ?: ALBUM_OPEN_DURATION_MILLIS
+    if (motion == null || albumKey == null) return clip(RoundedCornerShape(cornerRadius))
+    val isDetailCover = motion.pageKey == albumKey
+    val parentKey = if (isDetailCover) motion.parentPageKey else motion.pageKey
+    if (parentKey == null) return clip(RoundedCornerShape(cornerRadius))
+    val expanded = motion.currentPageKey == albumKey && motion.currentParentPageKey == parentKey
+    val coverKey = AlbumArtworkTransitionKey(parentKey, albumKey)
+    val visibility = remember(coverKey) {
+        MutableTransitionState(
+            if (motion.visibilityScope.transition.currentState == EnterExitState.Visible &&
+                motion.visibilityScope.transition.targetState == EnterExitState.Visible
+            ) EnterExitState.Visible else EnterExitState.PreEnter,
+        )
+    }
+    val coverVisible = if (isDetailCover) expanded else !expanded
+    visibility.targetState = if (coverVisible) {
+        EnterExitState.Visible
+    } else {
+        EnterExitState.PostExit
+    }
+    val coverTransition = rememberTransition(visibility, label = "album-cover-visibility")
+    val coverScope = remember(coverTransition) { LibraryPageVisibilityScope(coverTransition) }
+    DisposableEffect(motion.covers, coverKey, visibility) {
+        motion.covers[coverKey] = visibility
+        onDispose { motion.covers.remove(coverKey) }
+    }
+    // Keep every source registered, including the next album while another cover is returning.
+    // Visibility belongs to each cover pair, not to its fading directory page.
     return sharedCoverArtwork(
         sharedScope = motion.sharedScope,
-        visibilityScope = motion.visibilityScope,
-        contentKey = albumKey,
-        durationMillis = duration,
+        visibilityScope = coverScope,
+        contentKey = coverKey,
+        durationMillis = if (expanded) ALBUM_OPEN_DURATION_MILLIS else ALBUM_CLOSE_DURATION_MILLIS,
         cornerRadius = { cornerRadius },
         handoff = motion.handoff,
+        handoffKey = albumKey,
+        // SharedTransitionScope remains active for other albums. A completed return must draw
+        // in its own (possibly hidden) directory, never float above the next album's track list.
+        renderInOverlayDuringTransition = !visibility.isIdle,
+        // A return may overlap the next opening, but must fade with its departing directory.
+        // Only the selected album's shared cover stays opaque above the new page.
+        overlayAlpha = { if (motion.isCurrentPage || expanded) 1f else motion.pageVisibility.value },
     )
 }
 

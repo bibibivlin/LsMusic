@@ -62,11 +62,17 @@ class AlbumNavigationUiTest {
     private val currentPage = mutableStateOf<LibraryUiState?>(null)
     private val artworkResolutions = mutableListOf<BrowsePageKey>()
     private var artworkFile: File? = null
+    private var secondArtworkFile: File? = null
+    private var thirdArtworkFile: File? = null
     private val artworkColor = android.graphics.Color.rgb(11, 223, 183)
+    private val secondArtworkColor = android.graphics.Color.rgb(239, 71, 112)
+    private val thirdArtworkColor = android.graphics.Color.rgb(58, 91, 237)
 
     @After
     fun removeArtworkFixture() {
         artworkFile?.delete()
+        secondArtworkFile?.delete()
+        thirdArtworkFile?.delete()
     }
 
     @Test
@@ -412,6 +418,128 @@ class AlbumNavigationUiTest {
     }
 
     @Test
+    fun quickGridAlbumChangesStartEveryCoverWithoutWaitingForReturn() {
+        assertConcurrentAlbumChanges(useGrid = true)
+    }
+
+    @Test
+    fun quickListAlbumChangesStartEveryCoverWithoutWaitingForReturn() {
+        assertConcurrentAlbumChanges(useGrid = false)
+    }
+
+    @Test
+    fun consecutiveGridAlbumsRemoveEveryPreviousCoverWhenTheLastAlbumSettles() {
+        assertPreviousCoversAreRemoved(useGrid = true)
+    }
+
+    @Test
+    fun consecutiveListAlbumsRemoveEveryPreviousCoverWhenTheLastAlbumSettles() {
+        assertPreviousCoversAreRemoved(useGrid = false)
+    }
+
+    private fun assertPreviousCoversAreRemoved(useGrid: Boolean) {
+        setLibrary(useGrid = useGrid, concurrentArtwork = true)
+        compose.waitUntil(10_000) {
+            paintedCoverBounds() != null && paintedCoverBounds(secondArtworkColor) != null &&
+                paintedCoverBounds(thirdArtworkColor) != null
+        }
+        repeat(9) { iteration ->
+            val index = iteration % 3
+            openAlbum("album-$index", waitForArtwork = false)
+            compose.runOnIdle {
+                currentPage.value = currentPage.value!!.copy(
+                    entries = tracks("album-$index"), browseLoadStatus = BrowseLoadStatus.LOADED,
+                )
+            }
+            compose.mainClock.advanceTimeBy(96)
+            if (iteration < 8) {
+                returnToDirectory()
+                compose.mainClock.advanceTimeBy(32)
+            }
+        }
+        // Earlier returns have finished while the last, larger opening spring still runs.
+        compose.mainClock.advanceTimeBy(480)
+        saveFrame(if (useGrid) "grid-previous-covers-finished" else "list-previous-covers-finished")
+        assertOnlyLastCoverIsPainted()
+        compose.mainClock.advanceTimeBy(1_000)
+        saveFrame(if (useGrid) "grid-settled-no-ghosts" else "list-settled-no-ghosts")
+        assertOnlyLastCoverIsPainted()
+        compose.onNodeWithText("Track 1").assertIsDisplayed()
+        compose.runOnIdle {
+            assertTrue("The final album must finish its transition and resolve artwork",
+                artworkResolutions.contains(BrowsePageKey("server", "album-2")))
+        }
+    }
+
+    private fun assertOnlyLastCoverIsPainted() {
+        val bitmap = compose.onNodeWithTag("album-navigation-root").captureToImage().asAndroidBitmap()
+        val pixels = IntArray(bitmap.width * bitmap.height)
+        bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+        assertEquals("The first album must not remain above the track list", 0,
+            pixels.count { isArtworkColor(it, artworkColor) })
+        assertEquals("The second album must not remain above the track list", 0,
+            pixels.count { isArtworkColor(it, secondArtworkColor) })
+        assertTrue("The last album must retain its own cover", pixels.any { isArtworkColor(it, thirdArtworkColor) })
+    }
+
+    private fun assertConcurrentAlbumChanges(useGrid: Boolean) {
+        setLibrary(useGrid = useGrid, concurrentArtwork = true)
+        waitForPaintedCover()
+        compose.waitUntil(10_000) { paintedCoverBounds(secondArtworkColor) != null }
+        val sourceBounds = listOf(
+            requireNotNull(paintedCoverBounds()),
+            requireNotNull(paintedCoverBounds(secondArtworkColor)),
+        )
+        val movingWidths = mutableListOf<Float>()
+        // Never let the cover spring settle between clicks. Alternate real card touch events,
+        // including reopening an album whose previous return is still running.
+        repeat(6) { iteration ->
+            val index = iteration % 2
+            val color = if (index == 0) artworkColor else secondArtworkColor
+            openAlbum("album-$index", waitForArtwork = false)
+            compose.mainClock.advanceTimeBy(96)
+            val moving = requireNotNull(paintedCoverBounds(color))
+            assertTrue("Album $index must grow on click $iteration: $moving", moving.width > sourceBounds[index].width + 1f)
+            movingWidths += moving.width
+            if (iteration == 1) {
+                saveFrame(if (useGrid) "grid-concurrent-covers" else "list-concurrent-covers")
+            }
+            returnToDirectory()
+            compose.mainClock.advanceTimeBy(32)
+        }
+        compose.mainClock.advanceTimeBy(1_000)
+        assertSameBounds(sourceBounds[0], requireNotNull(paintedCoverBounds()))
+        assertSameBounds(sourceBounds[1], requireNotNull(paintedCoverBounds(secondArtworkColor)))
+        compose.onNodeWithTag("album-detail-cover", useUnmergedTree = true).assertDoesNotExist()
+        compose.runOnIdle {
+            assertTrue("Abandoned albums must not start full artwork resolution", artworkResolutions.isEmpty())
+        }
+
+        openAlbum("album-1")
+        compose.mainClock.advanceTimeBy(1_000)
+        val expanded = requireNotNull(paintedCoverBounds(secondArtworkColor))
+        movingWidths.forEachIndexed { iteration, width ->
+            assertTrue("Click $iteration must not skip its flight: $width -> ${expanded.width}", width < expanded.width - 1f)
+        }
+        compose.onNodeWithTag("album-detail-cover", useUnmergedTree = true).assertIsDisplayed()
+        compose.runOnIdle {
+            currentPage.value = currentPage.value!!.copy(entries = tracks("album-1"), browseLoadStatus = BrowseLoadStatus.LOADED)
+        }
+        compose.mainClock.advanceTimeBy(32)
+        compose.runOnIdle { assertTrue(artworkResolutions.contains(BrowsePageKey("server", "album-1"))) }
+
+        // Also interrupt a return after the previous album fully settled. Its old page must
+        // not become the next animation's source just because its fade has not finished.
+        returnToDirectory()
+        compose.mainClock.advanceTimeBy(32)
+        openAlbum("album-0", waitForArtwork = false)
+        compose.mainClock.advanceTimeBy(96)
+        val next = requireNotNull(paintedCoverBounds())
+        assertTrue("A settled previous album must not suppress the next flight: $next",
+            next.width > sourceBounds[0].width + 1f && next.width < expanded.width - 1f)
+    }
+
+    @Test
     fun wideLayoutKeepsTheCoverInFlightWhenTracksArriveAndReturnsToTheSameCard() {
         setLibrary(useGrid = true, viewportWidth = 900.dp, viewportHeight = 650.dp)
         compose.onNodeWithTag("library-directory-entries").performScrollToIndex(15)
@@ -451,6 +579,7 @@ class AlbumNavigationUiTest {
         artworkSize: Int = 64,
         statusInset: Dp = 0.dp,
         usePlayerTransition: Boolean = false,
+        concurrentArtwork: Boolean = false,
     ) {
         compose.activityRule.scenario.onActivity { activity ->
             activity.setShowWhenLocked(true)
@@ -465,13 +594,32 @@ class AlbumNavigationUiTest {
         bitmap.eraseColor(artworkColor)
         file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
         bitmap.recycle()
+        if (concurrentArtwork) {
+            secondArtworkFile = File.createTempFile("album-navigation-second-", ".png", context.cacheDir).also { secondFile ->
+                val secondBitmap = Bitmap.createBitmap(artworkSize, artworkSize, Bitmap.Config.ARGB_8888)
+                secondBitmap.eraseColor(secondArtworkColor)
+                secondFile.outputStream().use { secondBitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                secondBitmap.recycle()
+            }
+            thirdArtworkFile = File.createTempFile("album-navigation-third-", ".png", context.cacheDir).also { thirdFile ->
+                val thirdBitmap = Bitmap.createBitmap(artworkSize, artworkSize, Bitmap.Config.ARGB_8888)
+                thirdBitmap.eraseColor(thirdArtworkColor)
+                thirdFile.outputStream().use { thirdBitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                thirdBitmap.recycle()
+            }
+        }
         val server = DlnaDevice("server", "Offline library", "Test", "Server", DlnaDeviceKind.MEDIA_SERVER)
         directory = LibraryUiState(
             entries = List(400) { index ->
                 MediaEntry(
                     id = "album-$index", parentId = "albums", title = "Album $index",
                     creator = "Artist", albumArtist = "Artist", isContainer = true, isAlbum = true,
-                    artworkUri = if (index == 0 || index == 12) file.toURI().toString() else null,
+                    artworkUri = when (index) {
+                        0, 12 -> file.toURI().toString()
+                        1 -> secondArtworkFile?.toURI()?.toString()
+                        2 -> thirdArtworkFile?.toURI()?.toString()
+                        else -> null
+                    },
                 )
             },
             albumSort = AlbumSort.SERVER_DEFAULT,
@@ -543,8 +691,8 @@ class AlbumNavigationUiTest {
         }
     }
 
-    private fun openAlbum(id: String) {
-        waitForPaintedCover()
+    private fun openAlbum(id: String, waitForArtwork: Boolean = true) {
+        if (waitForArtwork) waitForPaintedCover()
         compose.mainClock.autoAdvance = false
         compose.onNodeWithTag("library-cover:$id", useUnmergedTree = true).performTouchInput { click() }
         compose.mainClock.advanceTimeUntil(500) { currentPage.value!!.pageKey.objectId == id }
@@ -576,7 +724,7 @@ class AlbumNavigationUiTest {
         val bottomRightInset: Int,
     )
 
-    private fun paintedCoverBounds(): Rect? = paintedCoverGeometry()?.bounds
+    private fun paintedCoverBounds(color: Int = artworkColor): Rect? = paintedCoverGeometry(color)?.bounds
 
     private fun saveFrame(name: String) {
         val directory = File(InstrumentationRegistry.getInstrumentation().targetContext.getExternalFilesDir(null), "album-transition-review")
@@ -587,7 +735,7 @@ class AlbumNavigationUiTest {
         }
     }
 
-    private fun paintedCoverGeometry(): CoverGeometry? {
+    private fun paintedCoverGeometry(artwork: Int = artworkColor): CoverGeometry? {
         val bitmap = compose.onNodeWithTag("album-navigation-root")
             .captureToImage().asAndroidBitmap()
         val pixels = IntArray(bitmap.width * bitmap.height)
@@ -597,7 +745,7 @@ class AlbumNavigationUiTest {
         var right = -1
         var bottom = -1
         pixels.forEachIndexed { index, color ->
-            if (isArtworkColor(color)) {
+            if (isArtworkColor(color, artwork)) {
                 val x = index % bitmap.width
                 val y = index / bitmap.width
                 left = minOf(left, x)
@@ -613,9 +761,9 @@ class AlbumNavigationUiTest {
             .displayMetrics.density * 4f).roundToInt().coerceAtLeast(2)
         fun cornerInsets(y: Int): Pair<Int, Int> {
             val row = y.coerceIn(top, bottom) * bitmap.width
-            val first = (left..right).firstOrNull { x -> isArtworkColor(pixels[row + x]) }
+            val first = (left..right).firstOrNull { x -> isArtworkColor(pixels[row + x], artwork) }
                 ?: error("No cover pixels on row $y")
-            val last = (right downTo left).first { x -> isArtworkColor(pixels[row + x]) }
+            val last = (right downTo left).first { x -> isArtworkColor(pixels[row + x], artwork) }
             return (first - left) to (right - last)
         }
         val (topLeft, topRight) = cornerInsets(top + sampleInset)
@@ -629,11 +777,11 @@ class AlbumNavigationUiTest {
         )
     }
 
-    private fun isArtworkColor(color: Int): Boolean =
+    private fun isArtworkColor(color: Int, artwork: Int = artworkColor): Boolean =
         // Device color conversion can shift a channel by a few levels when scaling a bitmap.
-        abs(android.graphics.Color.red(color) - android.graphics.Color.red(artworkColor)) <= 4 &&
-            abs(android.graphics.Color.green(color) - android.graphics.Color.green(artworkColor)) <= 4 &&
-            abs(android.graphics.Color.blue(color) - android.graphics.Color.blue(artworkColor)) <= 4
+        abs(android.graphics.Color.red(color) - android.graphics.Color.red(artwork)) <= 4 &&
+            abs(android.graphics.Color.green(color) - android.graphics.Color.green(artwork)) <= 4 &&
+            abs(android.graphics.Color.blue(color) - android.graphics.Color.blue(artwork)) <= 4
 
     private fun assertSameCorners(expected: CoverGeometry, vararg actual: CoverGeometry) {
         actual.forEach {
