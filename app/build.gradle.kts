@@ -21,8 +21,8 @@ android {
         applicationId = "com.linxyi.lsmusic"
         minSdk = 31
         targetSdk = 37
-        versionCode = 5
-        versionName = "1.4.0"
+        versionCode = 6
+        versionName = "1.5.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
