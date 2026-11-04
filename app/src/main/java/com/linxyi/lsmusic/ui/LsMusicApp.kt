@@ -9,6 +9,7 @@ import androidx.activity.compose.PredictiveBackHandler
 import androidx.activity.BackEventCompat
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.AnimationVector1D
@@ -28,6 +29,7 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -150,6 +152,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -179,6 +182,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.pointerInput
@@ -237,7 +241,9 @@ import com.linxyi.lsmusic.lyrics.LyricsTranslationMode
 import com.linxyi.lsmusic.ui.theme.LsMusicTheme
 import com.linxyi.lsmusic.ui.theme.presetColorScheme
 import coil3.compose.AsyncImage
+import coil3.compose.AsyncImagePainter
 import coil3.compose.asPainter
+import coil3.compose.rememberAsyncImagePainter
 import coil3.memory.MemoryCache
 import coil3.SingletonImageLoader
 import coil3.request.ImageRequest
@@ -320,6 +326,7 @@ private val MiniPlayerMaxWidth = 720.dp
 private const val MINI_PLAYER_MOTION_DURATION_MILLIS = 400
 private val MiniPlayerMotionEasing = CubicBezierEasing(0.2f, 0f, 0f, 1f)
 private const val ALBUM_ARTWORK_RESIZE_SETTLE_MILLIS = 150L
+private const val ALBUM_ARTWORK_CROSSFADE_MILLIS = 280
 
 private class MiniPlayerSnapshot {
     var state: LsMusicUiState? = null
@@ -3346,8 +3353,11 @@ private fun ArtworkTile(
     }
     val placeholderBrush = remember(colors) { Brush.linearGradient(colors) }
     val selectedArtworkUri = if (preferThumbnailSource) entry.thumbnailArtworkUri else entry.artworkUri
-    val flightThumbnail = remember(context, imageIdentity, selectedArtworkUri, placeholderArtworkUri, useCachedThumbnailDuringFlight) {
-        if (useCachedThumbnailDuringFlight) {
+    val cachedThumbnail = remember(
+        context, imageIdentity, selectedArtworkUri, placeholderArtworkUri,
+        useCachedAlbumThumbnailAsPlaceholder, useCachedThumbnailDuringFlight,
+    ) {
+        if (useCachedAlbumThumbnailAsPlaceholder) {
             (placeholderArtworkUri ?: selectedArtworkUri)?.takeIf(String::isNotBlank)?.let { uri ->
                 SingletonImageLoader.get(context).memoryCache
                     ?.get(MemoryCache.Key(albumArtworkThumbnailMemoryCacheKey(uri)))
@@ -3396,7 +3406,7 @@ private fun ArtworkTile(
                     .apply { if (requestSizePx != null) size(requestSizePx) }
                     .scale(Scale.FILL)
                     .precision(Precision.INEXACT)
-                    // The cached thumbnail is already visible; dissolving it breaks the shared cover.
+                    // The detail image performs its own transition, including for memory-cache hits.
                     .crossfade(false)
                     .build()
                 requestSizePx != null -> albumArtworkRequest(
@@ -3426,13 +3436,18 @@ private fun ArtworkTile(
             tint = Color.White,
             modifier = Modifier.fillMaxSize(.48f),
         )
-        if (useCachedThumbnailDuringFlight) {
-            flightThumbnail?.let { painter ->
-                Image(
-                    painter = painter,
+        if (useCachedAlbumThumbnailAsPlaceholder) {
+            key(imageIdentity, placeholderArtworkUri) {
+                AlbumDetailArtworkImage(
+                    model = artworkModel as? ImageRequest,
+                    imageIdentity = imageIdentity,
+                    artworkUri = selectedArtworkUri,
+                    placeholderArtworkUri = placeholderArtworkUri,
+                    requestSizePx = requestSizePx,
+                    cachedThumbnail = cachedThumbnail,
+                    useCachedThumbnailDuringFlight = useCachedThumbnailDuringFlight,
                     contentDescription = stringResource(R.string.album_cover, entry.title),
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop,
+                    filterQuality = filterQuality,
                 )
             }
         } else if (artworkModel != null) {
@@ -3462,6 +3477,70 @@ private fun ArtworkTile(
                             artworkFailureCount += 1
                         }
                     },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AlbumDetailArtworkImage(
+    model: ImageRequest?,
+    imageIdentity: Any,
+    artworkUri: String?,
+    placeholderArtworkUri: String?,
+    requestSizePx: Int?,
+    cachedThumbnail: Painter?,
+    useCachedThumbnailDuringFlight: Boolean,
+    contentDescription: String,
+    filterQuality: FilterQuality,
+) {
+    // Keep the last successfully displayed image while another source or size loads. The
+    // thumbnail and previous result belong only to this album and its original artwork URI.
+    var displayedPainter by remember(imageIdentity, placeholderArtworkUri) { mutableStateOf(cachedThumbnail) }
+    if (useCachedThumbnailDuringFlight) {
+        LaunchedEffect(cachedThumbnail) { displayedPainter = cachedThumbnail }
+        cachedThumbnail?.let { painter ->
+            Image(
+                painter = painter,
+                contentDescription = contentDescription,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop,
+            )
+        }
+    } else {
+        if (model != null) {
+            val requestPainter = key(imageIdentity, artworkUri, requestSizePx) {
+                rememberAsyncImagePainter(
+                    model = model,
+                    contentScale = ContentScale.Crop,
+                    filterQuality = filterQuality,
+                )
+            }
+            val requestState by requestPainter.state.collectAsState()
+            val loadedImage = (requestState as? AsyncImagePainter.State.Success)?.result?.image
+            val loadedPainter = remember(loadedImage, filterQuality) {
+                loadedImage?.asPainter(model.context, filterQuality)
+            }
+            LaunchedEffect(requestPainter, loadedPainter) {
+                if (loadedPainter != null) displayedPainter = loadedPainter
+            }
+        }
+        AnimatedContent(
+            targetState = displayedPainter ?: cachedThumbnail,
+            modifier = Modifier.fillMaxSize().semantics { this.contentDescription = contentDescription },
+            transitionSpec = {
+                // Keep the old image opaque beneath the new one to avoid a flash of the tile background.
+                fadeIn(tween(ALBUM_ARTWORK_CROSSFADE_MILLIS)) togetherWith ExitTransition.KeepUntilTransitionsFinished
+            },
+            label = "album-detail-artwork",
+        ) { painter ->
+            if (painter != null) {
+                Image(
+                    painter = painter,
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop,
                 )
             }
         }
