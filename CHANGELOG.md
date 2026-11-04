@@ -2,6 +2,24 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/)。用户可见的主要变化记录在此文件中。
 
+## [1.5.0] - 2026-11-04
+
+### Changed
+
+- 改进媒体库长列表中的悬浮搜索，清空搜索或返回目录时保留原来的浏览位置。
+- 优化手机横屏、折叠屏和大屏设备上的专辑详情布局，以及迷你播放器出现和关闭时的过渡。
+- 从迷你播放器进入“正在播放”后，返回时回到之前的页面。
+- 改进滚动内容与状态栏之间的过渡，并修复快速切换专辑时的封面动画和深色模式首次启动时的文字颜色。
+- 更新 Android、Compose 和构建工具依赖。
+
+## [1.4.0] - 2026-11-02
+
+### Changed
+
+- 改进专辑封面、迷你播放器与歌词之间的过渡动画。
+- 点击播放通知可直接打开“正在播放”界面。
+- 支持为不同屏幕分别设置封面大小，并将设置包含在备份中。
+
 ## [1.3.0] - 2026-10-31
 
 ### Added
@@ -58,3 +76,5 @@
 [1.1.0]: https://github.com/bibibivlin/LsMusic/releases/tag/v1.1.0
 [1.2.0]: https://github.com/bibibivlin/LsMusic/releases/tag/v1.2.0
 [1.3.0]: https://github.com/bibibivlin/LsMusic/releases/tag/v1.3.0
+[1.4.0]: https://github.com/bibibivlin/LsMusic/releases/tag/v1.4.0
+[1.5.0]: https://github.com/bibibivlin/LsMusic/releases/tag/v1.5.0
