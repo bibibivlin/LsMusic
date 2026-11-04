@@ -175,6 +175,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.dropShadow
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
@@ -189,6 +190,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp as lerpColor
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.painter.Painter
+import androidx.compose.ui.graphics.shadow.Shadow
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.pointerInput
@@ -227,6 +229,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.constrainHeight
@@ -329,8 +332,11 @@ private val LargeSquareContentMaxSize = 360.dp
 private val DefaultScreenBottomPadding = 32.dp
 private val MiniPlayerHeight = 68.dp
 private val MiniPlayerBottomSpacing = 12.dp
+private val MiniPlayerShadowPadding = 12.dp
 private val MiniPlayerContentInset = MiniPlayerHeight + MiniPlayerBottomSpacing
 private val MiniPlayerMaxWidth = 720.dp
+private val MiniPlayerShape = RoundedCornerShape(26.dp)
+private val MiniPlayerShadow = Shadow(radius = 8.dp, offset = DpOffset(0.dp, 3.dp), alpha = .24f)
 private const val MINI_PLAYER_MOTION_DURATION_MILLIS = 400
 private val MiniPlayerMotionEasing = CubicBezierEasing(0.2f, 0f, 0f, 1f)
 private const val TRACK_HIGHLIGHT_SWEEP_DURATION_MILLIS = 560
@@ -867,13 +873,15 @@ internal fun LsMusicContent(
                                 }
                             }
                         }
+                        // The visibility layer must include the shadow, without changing the slide distance.
+                        val shadowPaddingPx = with(LocalDensity.current) { MiniPlayerShadowPadding.roundToPx() }
                         Box(Modifier.fillMaxSize().clipToBounds(), contentAlignment = Alignment.BottomCenter) {
                             miniPlayerTransition.AnimatedVisibility(
                                 visible = { it },
                                 enter = fadeIn(tween(MINI_PLAYER_MOTION_DURATION_MILLIS, easing = MiniPlayerMotionEasing)) +
-                                    slideInVertically(tween(MINI_PLAYER_MOTION_DURATION_MILLIS, easing = MiniPlayerMotionEasing)) { it },
+                                    slideInVertically(tween(MINI_PLAYER_MOTION_DURATION_MILLIS, easing = MiniPlayerMotionEasing)) { it - shadowPaddingPx },
                                 exit = fadeOut(tween(MINI_PLAYER_MOTION_DURATION_MILLIS, easing = MiniPlayerMotionEasing)) +
-                                    slideOutVertically(tween(MINI_PLAYER_MOTION_DURATION_MILLIS, easing = MiniPlayerMotionEasing)) { it },
+                                    slideOutVertically(tween(MINI_PLAYER_MOTION_DURATION_MILLIS, easing = MiniPlayerMotionEasing)) { it - shadowPaddingPx },
                             ) {
                                 val playerState = if (state.currentTrack != null) state else miniPlayerSnapshot.state
                                 if (playerState != null) {
@@ -888,6 +896,7 @@ internal fun LsMusicContent(
                                                 PaddingValues(
                                                     start = 12.dp,
                                                     end = 12.dp,
+                                                    top = MiniPlayerShadowPadding,
                                                     bottom = MiniPlayerBottomSpacing + bottomInset,
                                                 ),
                                             )
@@ -3409,16 +3418,16 @@ private fun MiniPlayer(
 ) {
     val track = state.currentTrack ?: return
     val pageMotion = LocalPlayerPageMotion.current
+    // Elevation shadows can shift when the enclosing page switches its fade compositing layer.
     Surface(
         modifier = modifier.fillMaxWidth().testTag("mini-player").pressableNavigationClick(
             enabled = enabled && pageMotion?.isCurrentPage != false,
             onRelease = { scale -> pageMotion?.captureArtworkPress(track, scale) },
             onAbandon = { pageMotion?.handoff?.clear() },
             onClick = onOpen,
-        ),
-        shape = RoundedCornerShape(26.dp),
+        ).dropShadow(MiniPlayerShape, MiniPlayerShadow),
+        shape = MiniPlayerShape,
         color = MaterialTheme.colorScheme.primaryContainer,
-        shadowElevation = 8.dp,
     ) {
         Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
             PlaybackArtwork(track, 48.dp, expanded = false)
