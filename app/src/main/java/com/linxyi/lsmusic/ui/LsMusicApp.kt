@@ -50,6 +50,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.calculateEndPadding
 import androidx.compose.foundation.layout.calculateStartPadding
@@ -139,6 +140,7 @@ import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.ScaffoldDefaults
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderState
 import androidx.compose.material3.SnackbarHost
@@ -501,7 +503,6 @@ fun LsMusicApp(viewModel: LsMusicViewModel) {
         dynamicColor = state.preferences.useDynamicColor,
         presetPalette = state.preferences.presetPalette,
     ) {
-        SystemBarAppearance()
         val snackbar = remember { SnackbarHostState() }
         val resources = LocalResources.current
         val localeKey = resources.configuration.locales.toLanguageTags()
@@ -659,6 +660,7 @@ internal fun LsMusicContent(
     onImportData: () -> Unit = {},
     backProgress: () -> Float = { 0f },
     backEdge: () -> Int = { BackEventCompat.EDGE_LEFT },
+    contentWindowInsets: WindowInsets = ScaffoldDefaults.contentWindowInsets,
 ) {
     val destinationStateHolder = rememberSaveableStateHolder()
     val libraryState = remember(
@@ -695,6 +697,7 @@ internal fun LsMusicContent(
     }
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val expanded = maxWidth >= 720.dp
+        SystemBarAppearance(hasBottomNavigationBar = !expanded)
         val showMiniPlayer = state.preferences.miniPlayerEnabled && state.currentTrack != null && state.destination != AppDestination.NOW_PLAYING
         val snackbarBottomInset by animateDpAsState(
             targetValue = if (showMiniPlayer) MiniPlayerContentInset else 0.dp,
@@ -707,6 +710,7 @@ internal fun LsMusicContent(
             }
             Scaffold(
                 modifier = Modifier.weight(1f),
+                contentWindowInsets = contentWindowInsets,
                 snackbarHost = {
                     SnackbarHost(
                         hostState = snackbar,
@@ -718,11 +722,14 @@ internal fun LsMusicContent(
                 },
             ) { padding ->
                 val topInset = padding.calculateTopPadding()
+                // With a navigation rail, let scrolling pages draw behind the system bar and
+                // apply its inset to their content and floating controls instead.
+                val bottomInset = if (expanded) padding.calculateBottomPadding() else 0.dp
                 val layoutDirection = LocalLayoutDirection.current
                 Box(Modifier.fillMaxSize().padding(
                     start = padding.calculateStartPadding(layoutDirection),
                     end = padding.calculateEndPadding(layoutDirection),
-                    bottom = padding.calculateBottomPadding(),
+                    bottom = if (expanded) 0.dp else padding.calculateBottomPadding(),
                 ).graphicsLayer {
                     // Read gesture frames in the layer, without recomposing the app or its pages.
                     val progress = backProgress()
@@ -749,7 +756,7 @@ internal fun LsMusicContent(
                             },
                             label = "mini-player-content-inset",
                         ) { visible -> if (visible) MiniPlayerContentInset else 0.dp }
-                        val bottomContentPadding = DefaultScreenBottomPadding + miniPlayerInset
+                        val bottomContentPadding = DefaultScreenBottomPadding + miniPlayerInset + bottomInset
                         val miniPlayerSnapshot = remember { MiniPlayerSnapshot() }
                         SideEffect {
                             if (state.currentTrack != null) {
@@ -785,7 +792,7 @@ internal fun LsMusicContent(
                                 )
                                 AppDestination.NOW_PLAYING -> NowPlayingScreen(
                                     state = state,
-                                    modifier = Modifier.padding(top = topInset),
+                                    modifier = Modifier.padding(top = topInset, bottom = bottomInset),
                                     onTogglePlayback = onTogglePlayback,
                                     onPrevious = onPrevious,
                                     onNext = onNext,
@@ -871,7 +878,7 @@ internal fun LsMusicContent(
                                                 PaddingValues(
                                                     start = 12.dp,
                                                     end = 12.dp,
-                                                    bottom = MiniPlayerBottomSpacing,
+                                                    bottom = MiniPlayerBottomSpacing + bottomInset,
                                                 ),
                                             )
                                             .widthIn(max = MiniPlayerMaxWidth),
@@ -913,13 +920,15 @@ private fun AppNavigationBar(selected: AppDestination, onDestination: (AppDestin
 }
 
 @Composable
-internal fun SystemBarAppearance() {
+internal fun SystemBarAppearance(hasBottomNavigationBar: Boolean = true) {
     val view = LocalView.current
     val colorScheme = MaterialTheme.colorScheme
     SideEffect {
         val window = (view.context as? android.app.Activity)?.window ?: return@SideEffect
         window.navigationBarColor = android.graphics.Color.TRANSPARENT
-        window.isNavigationBarContrastEnforced = false
+        // Gesture navigation remains transparent; let the system protect three-button
+        // navigation over scrolling content when there is no bottom app bar.
+        window.isNavigationBarContrastEnforced = !hasBottomNavigationBar
         WindowCompat.getInsetsController(window, view).apply {
             isAppearanceLightNavigationBars = colorScheme.surfaceContainer.luminance() > .5f
             isAppearanceLightStatusBars = useDarkStatusBarIcons(colorScheme.background)
