@@ -119,7 +119,6 @@ import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
@@ -130,7 +129,6 @@ import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.LinearWavyProgressIndicator
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
@@ -1302,7 +1300,7 @@ internal fun LibraryDirectoryScreen(
             }
             item(span = { GridItemSpan(maxLineSpan) }, contentType = "library-header") {
                 if (isAlbumCollection) {
-                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Column(modifier = Modifier.testTag("library-breadcrumbs"), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             if (state.path.size > 1) {
                                 FilledTonalIconButton(onClick = { onNavigateTo(state.path.lastIndex - 1) }) {
@@ -1321,7 +1319,7 @@ internal fun LibraryDirectoryScreen(
                         )
                     }
                 } else {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(modifier = Modifier.testTag("library-breadcrumbs"), verticalAlignment = Alignment.CenterVertically) {
                         if (state.path.size > 1) {
                             FilledTonalIconButton(onClick = { onNavigateTo(state.path.lastIndex - 1) }) {
                                 Icon(Icons.AutoMirrored.Rounded.ArrowBack, stringResource(R.string.back_to_parent))
@@ -1336,6 +1334,26 @@ internal fun LibraryDirectoryScreen(
                                  if (useGrid) stringResource(R.string.switch_to_list) else stringResource(R.string.switch_to_grid),
                             )
                         }
+                    }
+                }
+            }
+
+            if (contentStatus == LibraryContentStatus.LOADING) {
+                item(span = { GridItemSpan(maxLineSpan) }, contentType = "library-loading") {
+                    val headerBottom = gridState.layoutInfo.visibleItemsInfo
+                        .firstOrNull { it.index == LIBRARY_GRID_HEADER_COUNT - 1 }
+                        ?.let { it.offset.y + it.size.height + gridState.layoutInfo.beforeContentPadding }
+                    val remainingHeight = headerBottom?.let { bottom ->
+                        maxHeight - with(density) { bottom.toDp() } - bottomContentPadding - gridSpacing
+                    } ?: 0.dp
+                    Box(
+                        modifier = Modifier.fillMaxWidth().height(remainingHeight.coerceAtLeast(48.dp)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        LoadingPanel(
+                            stringResource(R.string.loading_music_library),
+                            compact = remainingHeight < 96.dp,
+                        )
                     }
                 }
             }
@@ -1376,16 +1394,14 @@ internal fun LibraryDirectoryScreen(
             }
         }
 
-        if (contentStatus != LibraryContentStatus.CONTENT) {
+        if (contentStatus != LibraryContentStatus.CONTENT && contentStatus != LibraryContentStatus.LOADING) {
             CenteredStatusLayout(
                 title = stringResource(R.string.app_name),
                 modifier = Modifier.padding(top = topInset),
                 showTitle = false,
             ) {
                 when (contentStatus) {
-                    LibraryContentStatus.LOADING -> {
-                        LoadingPanel(stringResource(R.string.loading_music_library))
-                    }
+                    LibraryContentStatus.LOADING -> Unit
                     LibraryContentStatus.NO_SERVER -> {
                         EmptyPanel(
                             icon = Icons.Rounded.Devices,
@@ -1866,7 +1882,9 @@ internal fun AlbumDetailScreen(
                 (maxWidth >= AlbumDetailLargeTwoPaneMinWidth &&
                     maxWidth >= usableHeight * ALBUM_DETAIL_LARGE_TWO_PANE_MIN_ASPECT_RATIO)
             )
-        val summaryAvailableHeight = (usableHeight - 24.dp - bottomContentPadding).coerceAtLeast(0.dp)
+        // Leave room for the loading indicator below the summary on the first phone frame.
+        val loadingInset = if (state.isBrowsing && !twoPane) 64.dp else 0.dp
+        val summaryAvailableHeight = (usableHeight - 24.dp - bottomContentPadding - loadingInset).coerceAtLeast(0.dp)
         val compactActions = twoPane && summaryAvailableHeight <
             AlbumDetailFloatingActionHeight + AlbumDetailFloatingActionGap + AlbumDetailTrackMinimumHeight
         val compactActionProgress by animateFloatAsState(
@@ -1952,17 +1970,31 @@ internal fun AlbumDetailScreen(
                             Column {
                                 albumSummary()
                                 Spacer(Modifier.height(14.dp))
-                                AlbumPlaybackActions(
-                                    tracks = tracks,
-                                    enabled = !state.isBrowsing && trackCount > 0,
-                                    onPlayAll = onPlayAll,
-                                    onShufflePlay = onShufflePlay,
-                                    onQueueAll = onQueueAll,
-                                )
+                                if (state.isBrowsing) {
+                                    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                                        LoadingPanel(stringResource(R.string.loading_music_content), showLabel = false)
+                                    }
+                                } else {
+                                    AlbumPlaybackActions(
+                                        tracks = tracks,
+                                        enabled = trackCount > 0,
+                                        onPlayAll = onPlayAll,
+                                        onShufflePlay = onShufflePlay,
+                                        onQueueAll = onQueueAll,
+                                    )
+                                }
                             }
                         }
                     }
-                    if (!state.isBrowsing && trackCount == 0) {
+                    if (state.browseLoadStatus == BrowseLoadStatus.FAILED) {
+                        item(key = "album-detail-error", contentType = "error") {
+                            EmptyPanel(
+                                icon = Icons.Rounded.MusicNote,
+                                title = stringResource(R.string.library_load_failed_title),
+                                body = stringResource(R.string.library_load_failed_body),
+                            )
+                        }
+                    } else if (state.browseLoadStatus == BrowseLoadStatus.LOADED && trackCount == 0) {
                         item(key = "album-detail-empty", contentType = "empty") {
                             EmptyPanel(
                                 icon = Icons.Rounded.MusicNote,
@@ -1993,51 +2025,61 @@ internal fun AlbumDetailScreen(
                 }
             }
             if (twoPane) {
-                SubcomposeLayout(Modifier.weight(0.6f).fillMaxHeight()) { constraints ->
-                    val availableHeight = (constraints.maxHeight - topInset.roundToPx() - 24.dp.roundToPx() -
-                        bottomContentPadding.roundToPx() - compactActionInset.roundToPx()).coerceAtLeast(0)
-                    // Each row contains a 24 dp icon and 10 dp of vertical padding on both sides.
-                    // Skip the measurement entirely when even these minimum heights cannot fit.
-                    val minimumRowHeight = 24.dp.roundToPx() + 2 * 10.dp.roundToPx()
-                    val minimumContentHeight = trackCount.toLong() * minimumRowHeight +
-                        (trackCount - 1).coerceAtLeast(0).toLong() * AlbumDetailTrackSpacing.roundToPx()
-                    val centerTracks = if (trackCount > 0 && minimumContentHeight <= availableHeight) {
-                        val reservedWidth = 12.dp.roundToPx() + 20.dp.roundToPx() + sideActionInset.roundToPx()
-                        val trackWidth = (constraints.maxWidth - reservedWidth).coerceAtLeast(0)
-                        // Measure only a potentially short list before composing the visible list, so
-                        // restored scroll positions and large-font row heights are handled on the first frame.
-                        val measuredTracks = subcompose("track-measurement") {
-                            Column(
-                                modifier = Modifier.clearAndSetSemantics { },
-                                verticalArrangement = Arrangement.spacedBy(AlbumDetailTrackSpacing),
-                            ) {
-                                tracks.forEachIndexed { index, track ->
-                                    TrackCollectionRow(
-                                        track = track,
-                                        number = index + 1,
-                                        isPlaying = state.currentTrackId == track.id &&
-                                            state.playbackState == RemotePlaybackState.PLAYING,
-                                        onPlay = {},
-                                        onQueue = {},
-                                        animateHighlight = false,
-                                    )
+                Box(Modifier.weight(0.6f).fillMaxHeight()) {
+                    SubcomposeLayout(Modifier.fillMaxSize()) { constraints ->
+                        val availableHeight = (constraints.maxHeight - topInset.roundToPx() - 24.dp.roundToPx() -
+                            bottomContentPadding.roundToPx() - compactActionInset.roundToPx()).coerceAtLeast(0)
+                        // Each row contains a 24 dp icon and 10 dp of vertical padding on both sides.
+                        // Skip the measurement entirely when even these minimum heights cannot fit.
+                        val minimumRowHeight = 24.dp.roundToPx() + 2 * 10.dp.roundToPx()
+                        val minimumContentHeight = trackCount.toLong() * minimumRowHeight +
+                            (trackCount - 1).coerceAtLeast(0).toLong() * AlbumDetailTrackSpacing.roundToPx()
+                        val centerTracks = if (trackCount > 0 && minimumContentHeight <= availableHeight) {
+                            val reservedWidth = 12.dp.roundToPx() + 20.dp.roundToPx() + sideActionInset.roundToPx()
+                            val trackWidth = (constraints.maxWidth - reservedWidth).coerceAtLeast(0)
+                            // Measure only a potentially short list before composing the visible list, so
+                            // restored scroll positions and large-font row heights are handled on the first frame.
+                            val measuredTracks = subcompose("track-measurement") {
+                                Column(
+                                    modifier = Modifier.clearAndSetSemantics { },
+                                    verticalArrangement = Arrangement.spacedBy(AlbumDetailTrackSpacing),
+                                ) {
+                                    tracks.forEachIndexed { index, track ->
+                                        TrackCollectionRow(
+                                            track = track,
+                                            number = index + 1,
+                                            isPlaying = state.currentTrackId == track.id &&
+                                                state.playbackState == RemotePlaybackState.PLAYING,
+                                            onPlay = {},
+                                            onQueue = {},
+                                            animateHighlight = false,
+                                        )
+                                    }
                                 }
-                            }
-                        }.single().measure(Constraints.fixedWidth(trackWidth))
-                        measuredTracks.height <= availableHeight
-                    } else {
-                        false
+                            }.single().measure(Constraints.fixedWidth(trackWidth))
+                            measuredTracks.height <= availableHeight
+                        } else {
+                            false
+                        }
+                        val list = subcompose("track-list") {
+                            trackList(centerTracks, Modifier.fillMaxSize())
+                        }.single().measure(constraints)
+                        layout(list.width, list.height) { list.placeRelative(0, 0) }
                     }
-                    val list = subcompose("track-list") {
-                        trackList(centerTracks, Modifier.fillMaxSize())
-                    }.single().measure(constraints)
-                    layout(list.width, list.height) { list.placeRelative(0, 0) }
+                    if (state.isBrowsing) {
+                        Box(
+                            modifier = Modifier.fillMaxSize().padding(top = topInset, bottom = bottomContentPadding),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            LoadingPanel(stringResource(R.string.loading_music_content), showLabel = false)
+                        }
+                    }
                 }
             } else {
                 trackList(false, Modifier.weight(1f).fillMaxHeight())
             }
         }
-        if (twoPane) {
+        if (twoPane && !state.isBrowsing) {
             AlbumFloatingPlaybackActions(
                 tracks = tracks,
                 enabled = !state.isBrowsing && trackCount > 0,
@@ -2074,10 +2116,10 @@ private fun AlbumDetailSummary(
     val titleStyle = MaterialTheme.typography.headlineSmall
     val artistStyle = MaterialTheme.typography.bodyLarge
     val countStyle = MaterialTheme.typography.labelLarge
-    val trackCountLabel = if (browseLoadStatus == BrowseLoadStatus.LOADING) {
-        stringResource(R.string.loading_music_content)
-    } else {
+    val trackCountLabel = if (browseLoadStatus == BrowseLoadStatus.LOADED) {
         pluralStringResource(R.plurals.track_count, trackCount, trackCount)
+    } else {
+        null
     }
     SubcomposeLayout(
         modifier = Modifier.fillMaxWidth().testTag("album-detail-summary"),
@@ -2116,12 +2158,14 @@ private fun AlbumDetailSummary(
                 } else {
                     0
                 }
-                val countHeight = textMeasurer.measure(
-                    trackCountLabel,
-                    style = countStyle.scaledForSummary(scale),
-                    constraints = textConstraints,
-                ).size.height
-                titleHeight + artistHeight + countGap + countHeight <= textBudget
+                val countHeight = trackCountLabel?.let {
+                    countGap + textMeasurer.measure(
+                        it,
+                        style = countStyle.scaledForSummary(scale),
+                        constraints = textConstraints,
+                    ).size.height
+                } ?: 0
+                titleHeight + artistHeight + countHeight <= textBudget
             } ?: .6f
         } else {
             1f
@@ -2147,18 +2191,20 @@ private fun AlbumDetailSummary(
         } else {
             null
         }
-        val countText = subcompose("count") {
-            Text(
-                trackCountLabel,
-                modifier = Modifier.fillMaxWidth().testTag("album-detail-count").albumDetailEnter(),
-                style = countStyle.scaledForSummary(textScale),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center,
-            )
-        }.single().measure(textConstraints)
+        val countText = trackCountLabel?.let { label ->
+            subcompose("count") {
+                Text(
+                    label,
+                    modifier = Modifier.fillMaxWidth().testTag("album-detail-count").albumDetailEnter(),
+                    style = countStyle.scaledForSummary(textScale),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                )
+            }.single().measure(textConstraints)
+        }
 
         val textHeight = titleText.height + (artistText?.let { artistGap + it.height } ?: 0) +
-            countGap + countText.height
+            (countText?.let { countGap + it.height } ?: 0)
         // In a scrolling single-pane page, the artist and count may continue below the viewport.
         // The cover and title should still fit above the mini player on the first frame.
         val reservedTextHeight = if (twoPane ||
@@ -2239,7 +2285,7 @@ private fun AlbumDetailSummary(
                 it.placeRelative(0, y)
                 y += it.height
             }
-            countText.placeRelative(0, y + countGap)
+            countText?.placeRelative(0, y + countGap)
         }
     }
 }
@@ -3111,15 +3157,16 @@ internal fun NowPlayingScreen(
     }
     BoxWithConstraints(modifier.fillMaxSize()) {
         val compact = maxHeight < 620.dp
+        val tight = maxHeight < 440.dp
         val wide = maxWidth >= 720.dp
         val canShowSideBySide = shouldShowLyricsBesideArtwork(maxWidth.value, maxHeight.value)
-        val verticalPadding = if (compact) 16.dp else 28.dp
+        val verticalPadding = if (tight) 8.dp else if (compact) 16.dp else 28.dp
         val horizontalPadding = if (wide) 40.dp else 24.dp
         val trackTitleStyle = if (compact) MaterialTheme.typography.titleLarge else MaterialTheme.typography.headlineSmall
         val artistStyle = if (compact) MaterialTheme.typography.bodyLarge else MaterialTheme.typography.titleMedium
         val albumStyle = if (compact) MaterialTheme.typography.bodySmall else MaterialTheme.typography.bodyMedium
-        val primaryControlSize = if (compact) 68.dp else 82.dp
-        val secondaryControlSize = if (compact) 50.dp else 58.dp
+        val primaryControlSize = if (tight) 56.dp else if (compact) 68.dp else 82.dp
+        val secondaryControlSize = if (tight) 44.dp else if (compact) 50.dp else 58.dp
         val controlIconSize = if (compact) 28.dp else 30.dp
         val primaryIconSize = if (compact) 36.dp else 42.dp
 
@@ -3127,12 +3174,14 @@ internal fun NowPlayingScreen(
             modifier = Modifier.fillMaxSize().padding(horizontalPadding, verticalPadding),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Text(
-                stringResource(R.string.nav_now_playing),
-                modifier = Modifier.fillMaxWidth().playerControlsEnter(40),
-                style = MaterialTheme.typography.headlineLarge,
-            )
-            Spacer(Modifier.height(if (compact) 8.dp else 16.dp))
+            if (!tight) {
+                Text(
+                    stringResource(R.string.nav_now_playing),
+                    modifier = Modifier.fillMaxWidth().playerControlsEnter(40),
+                    style = MaterialTheme.typography.headlineLarge,
+                )
+                Spacer(Modifier.height(if (compact) 8.dp else 16.dp))
+            }
             BoxWithConstraints(
                 modifier = Modifier.fillMaxWidth().weight(1f),
                 contentAlignment = Alignment.Center,
@@ -3232,7 +3281,7 @@ internal fun NowPlayingScreen(
                     )
                 }
             }
-            Spacer(Modifier.height(if (compact) 8.dp else 16.dp))
+            Spacer(Modifier.height(if (tight) 4.dp else if (compact) 8.dp else 16.dp))
             Text(
                 track.title,
                 modifier = Modifier.fillMaxWidth().playerControlsEnter(),
@@ -3262,7 +3311,7 @@ internal fun NowPlayingScreen(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            Spacer(Modifier.height(if (compact) 8.dp else 16.dp))
+            Spacer(Modifier.height(if (tight) 4.dp else if (compact) 8.dp else 16.dp))
             PlaybackSlider(
                 positionMs = state.positionMs,
                 durationMs = state.durationMs,
@@ -3277,7 +3326,7 @@ internal fun NowPlayingScreen(
                     style = MaterialTheme.typography.labelMedium,
                 )
             }
-            Spacer(Modifier.height(if (compact) 6.dp else 12.dp))
+            Spacer(Modifier.height(if (tight) 2.dp else if (compact) 6.dp else 12.dp))
             Row(
                 modifier = Modifier.playerControlsEnter(180),
                 verticalAlignment = Alignment.CenterVertically,
@@ -3684,21 +3733,6 @@ internal fun AppIcon(size: Dp) {
         },
         modifier = Modifier.size(size).clip(RoundedCornerShape(percent = 28)),
     )
-}
-
-@Composable
-private fun LoadingPanel(message: String) {
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(28.dp),
-        color = MaterialTheme.colorScheme.surfaceContainer,
-    ) {
-        Row(Modifier.padding(26.dp), verticalAlignment = Alignment.CenterVertically) {
-            CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 3.dp)
-            Spacer(Modifier.width(16.dp))
-            Text(message)
-        }
-    }
 }
 
 // The status center depends only on the large title and the Scaffold's navigation inset.
