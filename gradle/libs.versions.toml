@@ -14,7 +14,7 @@ materialKolor = "5.0.1"
 lifecycle = "2.11.0"
 jupnp = "3.0.5"
 jetty = "9.4.58.v20250814"
-slf4j = "2.0.17"
+slf4j = "2.0.20"
 media3 = "1.10.1"
 coil = "3.6.2"
 
