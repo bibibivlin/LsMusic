@@ -2,6 +2,16 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/)。用户可见的主要变化记录在此文件中。
 
+## [1.6.0] - 2026-11-16
+
+### Changed
+
+- 成功将可播放歌曲加入队列后显示加入数量，明确操作结果。
+- 统一媒体库、专辑、歌词、设备扫描和其他操作的加载指示器，并区分专辑加载失败与空结果。
+- 优化专辑封面加载过渡、正在播放曲目的高亮动画和迷你播放器的阴影。
+- 宽屏下让滚动内容延伸至手势导航区域，同时让播放控件避开系统导航栏。
+- 改进正在播放封面的读屏体验，并更新 Compose、Coil 和构建依赖。
+
 ## [1.5.0] - 2026-11-04
 
 ### Changed
@@ -78,3 +88,4 @@
 [1.3.0]: https://github.com/bibibivlin/LsMusic/releases/tag/v1.3.0
 [1.4.0]: https://github.com/bibibivlin/LsMusic/releases/tag/v1.4.0
 [1.5.0]: https://github.com/bibibivlin/LsMusic/releases/tag/v1.5.0
+[1.6.0]: https://github.com/bibibivlin/LsMusic/releases/tag/v1.6.0
