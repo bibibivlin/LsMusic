@@ -25,7 +25,6 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -95,10 +94,15 @@ internal fun LyricsPanel(
     ) {
         when (loadState) {
             LyricsLoadState.Idle,
-            LyricsLoadState.Loading -> LyricsMessage {
-                CircularProgressIndicator()
-                Spacer(Modifier.height(14.dp))
-                Text(stringResource(R.string.lyrics_loading))
+            LyricsLoadState.Loading -> BoxWithConstraints(
+                Modifier.fillMaxSize().padding(horizontal = 24.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                LoadingPanel(
+                    stringResource(R.string.lyrics_loading),
+                    compact = maxHeight < 48.dp,
+                    showLabel = false,
+                )
             }
             LyricsLoadState.NotFound -> LyricsMessage {
                 Text(

@@ -106,6 +106,19 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                var lastToast: Toast? = null
+                viewModel.queueAddedEvents.collect { count ->
+                    lastToast?.cancel()
+                    lastToast = Toast.makeText(
+                        this@MainActivity,
+                        resources.getQuantityString(R.plurals.tracks_added_to_queue, count, count),
+                        Toast.LENGTH_SHORT,
+                    ).also { it.show() }
+                }
+            }
+        }
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.auto(
                 android.graphics.Color.TRANSPARENT,
