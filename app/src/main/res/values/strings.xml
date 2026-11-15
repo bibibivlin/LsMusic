@@ -56,6 +56,7 @@
     <string name="play_all">Play all</string>
     <string name="shuffle_play">Shuffle play</string>
     <string name="add_to_queue">Add to queue</string>
+    <plurals name="tracks_added_to_queue"><item quantity="one">%1$d track added to queue</item><item quantity="other">%1$d tracks added to queue</item></plurals>
     <string name="album_no_playable_tracks_title">This album has no playable tracks</string>
     <string name="album_no_playable_tracks_body">The media server did not return playable audio.</string>
     <plurals name="track_count"><item quantity="one">%1$d track</item><item quantity="other">%1$d tracks</item></plurals>
