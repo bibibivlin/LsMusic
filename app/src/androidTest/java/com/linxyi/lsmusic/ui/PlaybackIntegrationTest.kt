@@ -13,6 +13,11 @@ import androidx.test.runner.lifecycle.Stage
 import com.linxyi.lsmusic.MainActivity
 import com.linxyi.lsmusic.dlna.MediaEntry
 import com.linxyi.lsmusic.dlna.RemotePlaybackState
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import org.junit.Assert.*
 import org.junit.Assume.assumeTrue
 import org.junit.Before
@@ -21,6 +26,7 @@ import org.junit.Test
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.concurrent.CopyOnWriteArrayList
 
 /** Real Media3 and AlarmManager tests, restricted to a separate app with no user accounts. */
 class PlaybackIntegrationTest {
@@ -93,6 +99,79 @@ class PlaybackIntegrationTest {
         waitFor { vm.uiState.value.positionMs > 150L }
         assertEquals(1, vm.uiState.value.queue.size)
         assertEquals("replacement", vm.uiState.value.currentTrack?.id)
+    }
+
+    @Test
+    fun queueFeedback_countsPlayableAdditionsAndExcludesImmediatePlayback() = withPlayback { scenario, vm, track ->
+        val counts = CopyOnWriteArrayList<Int>()
+        val scope = CoroutineScope(Dispatchers.Main.immediate)
+        try {
+            scenario.onActivity {
+                scope.launch(start = CoroutineStart.UNDISPATCHED) { vm.queueAddedEvents.collect { counts.add(it) } }
+                vm.setEnqueueWhilePlaying(false)
+                vm.setClearQueueOnPlay(true)
+                vm.clearQueue()
+                vm.addToQueue(track)
+            }
+            waitFor { counts.size == 1 }
+            assertEquals(listOf(1), counts.toList())
+            assertEquals(1, vm.uiState.value.queue.size)
+            captureQueueFeedback("single")
+
+            scenario.onActivity {
+                vm.addAllToQueue(listOf(track, track.copy(id = "second"), track.copy(resourceUri = null), track.copy(isContainer = true)))
+            }
+            waitFor { counts.size == 2 }
+            assertEquals(listOf(1, 2), counts.toList())
+            assertEquals(3, vm.uiState.value.queue.size)
+            captureQueueFeedback("multiple")
+
+            scenario.onActivity {
+                vm.addAllToQueue(listOf(track.copy(resourceUri = ""), track.copy(isContainer = true)))
+                vm.playNow(track)
+            }
+            waitFor { vm.uiState.value.positionMs > 150L }
+            assertEquals(listOf(1, 2), counts.toList())
+            val playingId = vm.uiState.value.currentQueueItem?.queueId
+            val generation = vm.uiState.value.playbackGeneration
+
+            scenario.onActivity {
+                vm.setEnqueueWhilePlaying(true)
+                vm.playNow(track)
+            }
+            waitFor { counts.size == 3 }
+            assertEquals(listOf(1, 2, 1), counts.toList())
+            assertEquals(playingId, vm.uiState.value.currentQueueItem?.queueId)
+            assertEquals(generation, vm.uiState.value.playbackGeneration)
+
+            scenario.onActivity {
+                vm.playAll(listOf(track, track.copy(id = "third"), track.copy(resourceUri = null)))
+            }
+            waitFor { counts.size == 4 }
+            assertEquals(listOf(1, 2, 1, 2), counts.toList())
+
+            scenario.onActivity { vm.shufflePlay(listOf(track, track.copy(id = "fourth"))) }
+            waitFor { counts.size == 5 }
+            assertEquals(listOf(1, 2, 1, 2, 2), counts.toList())
+
+            scenario.onActivity {
+                vm.setEnqueueWhilePlaying(false)
+                vm.setClearQueueOnPlay(false)
+                vm.playNow(track)
+            }
+            waitFor { vm.uiState.value.playbackGeneration > generation }
+            instrumentation.waitForIdleSync()
+            assertEquals(listOf(1, 2, 1, 2, 2), counts.toList())
+
+            scenario.onActivity {
+                vm.setClearQueueOnPlay(true)
+                vm.playNow(track)
+            }
+            instrumentation.waitForIdleSync()
+            assertEquals(listOf(1, 2, 1, 2, 2), counts.toList())
+        } finally {
+            scope.cancel()
+        }
     }
 
     @Test
@@ -197,6 +276,19 @@ class PlaybackIntegrationTest {
 
     private fun shell(command: String) {
         ParcelFileDescriptor.AutoCloseInputStream(instrumentation.uiAutomation.executeShellCommand(command)).use { it.readBytes() }
+    }
+
+    private fun captureQueueFeedback(name: String) {
+        if (InstrumentationRegistry.getArguments().getString("queueFeedbackScreenshots") != "true") return
+        SystemClock.sleep(900L)
+        val screenshot = requireNotNull(instrumentation.uiAutomation.takeScreenshot())
+        try {
+            File(context.getExternalFilesDir(null), "queue-feedback-$name.png").outputStream().use {
+                screenshot.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it)
+            }
+        } finally {
+            screenshot.recycle()
+        }
     }
 
     private fun createSilentWave(): File {

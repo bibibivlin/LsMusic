@@ -79,10 +79,13 @@ import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.debounce
@@ -297,6 +300,11 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         ),
     )
     val uiState: StateFlow<LsMusicUiState> = _uiState.asStateFlow()
+    private val _queueAddedEvents = MutableSharedFlow<Int>(
+        extraBufferCapacity = 1,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
+    val queueAddedEvents = _queueAddedEvents.asSharedFlow()
     private val controllerFuture = MediaController.Builder(
         application,
         SessionToken(application, ComponentName(application, LocalPlaybackService::class.java)),
@@ -1134,6 +1142,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         if (_uiState.value.selectedRendererId == LOCAL_RENDERER_ID) {
             localController?.takeIf { it.mediaItemCount > 0 }?.addMediaItems(items.map { it.toMediaItem() })
         }
+        _queueAddedEvents.tryEmit(items.size)
     }
 
     fun playQueueItem(queueId: String) {

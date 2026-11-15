@@ -53,6 +53,7 @@
     <string name="play_all">播放全部</string>
     <string name="shuffle_play">随机播放</string>
     <string name="add_to_queue">加入队列</string>
+    <plurals name="tracks_added_to_queue"><item quantity="other">已将 %1$d 首歌曲加入播放列表</item></plurals>
     <string name="album_no_playable_tracks_title">这张专辑没有可播放的曲目</string>
     <string name="album_no_playable_tracks_body">媒体服务器没有返回可播放的音频内容。</string>
     <plurals name="track_count"><item quantity="other">%1$d 首歌曲</item></plurals>
