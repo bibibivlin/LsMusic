@@ -3195,7 +3195,10 @@ internal fun NowPlayingScreen(
                                     Modifier
                                 },
                             ),
-                    ) { PlaybackArtwork(track, artworkSize, expanded = true) }
+                    ) {
+                        // The enclosing element owns the artwork description and optional action.
+                        PlaybackArtwork(track, artworkSize, expanded = true, contentDescription = null)
+                    }
                 }
                 transition.AnimatedVisibility(
                     visible = { it },
