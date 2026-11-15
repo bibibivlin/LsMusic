@@ -21,7 +21,6 @@ import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -110,10 +109,8 @@ internal fun PendingListensScreen(
                         modifier = Modifier.weight(1f),
                     ) {
                         if (isUploading) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.padding(end = 8.dp).size(18.dp),
-                                strokeWidth = 2.dp,
-                            )
+                            AppLoadingIndicator(size = 20.dp, color = androidx.compose.material3.LocalContentColor.current)
+                            Spacer(Modifier.size(8.dp))
                             Text(stringResource(R.string.uploading))
                         } else {
                             Icon(Icons.Rounded.Refresh, null)

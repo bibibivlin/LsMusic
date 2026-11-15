@@ -33,7 +33,6 @@ import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.DragHandle
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
@@ -168,7 +167,11 @@ internal fun SettingsScreen(
                     )
                     Spacer(Modifier.height(12.dp))
                     FilledTonalButton(onClick = onRefresh, modifier = Modifier.fillMaxWidth()) {
-                        Icon(Icons.Rounded.Refresh, null)
+                        if (state.isSearching) {
+                            AppLoadingIndicator(size = 20.dp, color = androidx.compose.material3.LocalContentColor.current)
+                        } else {
+                            Icon(Icons.Rounded.Refresh, null)
+                        }
                         Spacer(Modifier.width(8.dp))
                         Text(stringResource(R.string.scan_local_network))
                     }
@@ -403,7 +406,7 @@ internal fun SettingsScreen(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     if (isCheckingToken) {
-                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                        AppLoadingIndicator(size = 20.dp)
                         Spacer(Modifier.width(8.dp))
                     }
                     Text(
@@ -932,17 +935,14 @@ internal fun ExitProgressDialog(status: ExitStatus, error: UiText?, onRetry: () 
     val resources = LocalResources.current
     AlertDialog(
         onDismissRequest = {},
+        modifier = Modifier.testTag("exit-progress-dialog"),
         properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false),
         title = { Text(if (status == ExitStatus.SAVE_FAILED) stringResource(R.string.exit_save_failed_title) else stringResource(R.string.exiting)) },
         text = {
             if (status == ExitStatus.SAVE_FAILED) {
                 Text((error ?: UiText.Resource(R.string.exit_save_failed_body)).resolve(resources))
             } else {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
-                    Spacer(Modifier.width(16.dp))
-                    Text(stringResource(R.string.exit_stopping_body))
-                }
+                LoadingPanel(stringResource(R.string.exit_stopping_body))
             }
         },
         confirmButton = {
