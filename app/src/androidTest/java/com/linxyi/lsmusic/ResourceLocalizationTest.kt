@@ -30,6 +30,10 @@ class ResourceLocalizationTest {
             english.getString(R.string.pending_listens_title),
             chinese.getString(R.string.pending_listens_title),
         )
+        assertEquals("1 track added to queue", english.resources.getQuantityString(R.plurals.tracks_added_to_queue, 1, 1))
+        assertEquals("2 tracks added to queue", english.resources.getQuantityString(R.plurals.tracks_added_to_queue, 2, 2))
+        assertEquals("已将 1 首歌曲加入播放列表", chinese.resources.getQuantityString(R.plurals.tracks_added_to_queue, 1, 1))
+        assertEquals("已将 2 首歌曲加入播放列表", chinese.resources.getQuantityString(R.plurals.tracks_added_to_queue, 2, 2))
     }
 
     @Test

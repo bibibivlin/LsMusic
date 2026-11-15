@@ -186,7 +186,12 @@ private fun rememberPlaybackArtworkPainter(track: MediaEntry): Painter {
 }
 
 @Composable
-internal fun PlaybackArtwork(track: MediaEntry, size: Dp, expanded: Boolean) {
+internal fun PlaybackArtwork(
+    track: MediaEntry,
+    size: Dp,
+    expanded: Boolean,
+    contentDescription: String? = stringResource(R.string.album_cover, track.title),
+) {
     val motion = LocalPlayerPageMotion.current
     val artworkKey = track.playbackArtworkKey()
     val painter = LocalPlaybackArtworkPainter.current?.takeIf { it.key == artworkKey }?.painter
@@ -228,7 +233,7 @@ internal fun PlaybackArtwork(track: MediaEntry, size: Dp, expanded: Boolean) {
         }
         Image(
             painter = painter,
-            contentDescription = stringResource(R.string.album_cover, track.title),
+            contentDescription = contentDescription,
             contentScale = ContentScale.Crop,
             modifier = Modifier.fillMaxSize(),
         )

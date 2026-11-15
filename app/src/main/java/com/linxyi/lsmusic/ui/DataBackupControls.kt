@@ -22,7 +22,6 @@ import androidx.compose.material.icons.rounded.FileDownload
 import androidx.compose.material.icons.rounded.FileUpload
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -196,18 +195,17 @@ internal fun DataBackupDialogs(
     )
     if (state.isBusy) AlertDialog(
         onDismissRequest = {},
+        modifier = Modifier.testTag("backup-progress-dialog"),
         properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false),
         title = { Text(stringResource(R.string.settings_about)) },
         text = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
-                Spacer(Modifier.width(16.dp))
-                Text(stringResource(when (state.phase) {
+            LoadingPanel(
+                stringResource(when (state.phase) {
                     DataBackupPhase.EXPORTING -> R.string.backup_exporting
                     DataBackupPhase.READING -> R.string.backup_reading
                     else -> R.string.backup_importing
-                }))
-            }
+                }),
+            )
         },
         confirmButton = {},
     )
