@@ -5,8 +5,10 @@ import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.requiredSize
+import androidx.compose.material3.ScaffoldDefaults
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -29,6 +31,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import com.linxyi.lsmusic.dlna.MediaEntry
@@ -62,7 +65,8 @@ class MiniPlayerTransitionUiTest {
 
     @Test
     fun startingAnAlbumTrackMovesThePlayerAndWideLayoutTogether() {
-        render(DpSize(920.dp, 650.dp), trackCount = 3)
+        val bottomInset = 24.dp
+        render(DpSize(1000.dp, 650.dp), trackCount = 3, bottomInset = bottomInset)
         val actionsBefore = bounds("album-detail-floating-actions")
         val trackBefore = textBounds("Track 2")
 
@@ -75,6 +79,7 @@ class MiniPlayerTransitionUiTest {
         val earlyTrack = textBounds("Track 2")
         compose.mainClock.advanceTimeBy(96)
         val middleActions = bounds("album-detail-floating-actions")
+        val middlePlayer = bounds("mini-player")
         compose.mainClock.advanceTimeBy(600)
         val finalActions = bounds("album-detail-floating-actions")
         val finalPlayer = bounds("mini-player")
@@ -86,11 +91,20 @@ class MiniPlayerTransitionUiTest {
         assertTrue("actions: $actionsBefore -> $earlyActions -> $middleActions -> $finalActions", middleActions.bottom > finalActions.bottom)
         val middleFraction = (actionsBefore.bottom - middleActions.bottom) / distance
         assertTrue("The motion should ease out: $middleFraction", middleFraction > .6f && middleFraction < 1f)
+        // The player also travels through the system inset; compare animation progress,
+        // not pixel distances, so both elements still have to use the same timing curve.
+        val playerDistance = (80.dp + bottomInset).value * density
         assertEquals(
-            "The player and floating actions should move in step",
-            earlyActions.bottom - finalActions.bottom,
-            earlyPlayer.top - finalPlayer.top,
-            4f,
+            "The player and floating actions should move in step early in the animation",
+            (earlyActions.bottom - finalActions.bottom) / distance,
+            (earlyPlayer.top - finalPlayer.top) / playerDistance,
+            .04f,
+        )
+        assertEquals(
+            "The player and floating actions should move in step midway through the animation",
+            (middleActions.bottom - finalActions.bottom) / distance,
+            (middlePlayer.top - finalPlayer.top) / playerDistance,
+            .04f,
         )
         assertTrue("tracks: $trackBefore -> $earlyTrack -> $finalTrack", trackBefore.top > earlyTrack.top && earlyTrack.top > finalTrack.top)
         assertEquals("track-1", state.currentTrack?.id)
@@ -316,6 +330,7 @@ class MiniPlayerTransitionUiTest {
         trackCount: Int,
         miniPlayerEnabled: Boolean = true,
         initiallyPlaying: Boolean = false,
+        bottomInset: Dp? = null,
     ) {
         val tracks = List(trackCount) { index ->
             MediaEntry(
@@ -347,6 +362,8 @@ class MiniPlayerTransitionUiTest {
                     LsMusicContent(
                         state = state,
                         snackbar = remember { SnackbarHostState() },
+                        contentWindowInsets = bottomInset?.let { WindowInsets(top = 24.dp, bottom = it) }
+                            ?: ScaffoldDefaults.contentWindowInsets,
                         onDestination = {}, onOpenNowPlayingFromMiniPlayer = {}, onRefresh = {},
                         onSelectServer = {}, onSelectRenderer = {}, onOpen = {}, onNavigateTo = {},
                         onPlay = { track ->
