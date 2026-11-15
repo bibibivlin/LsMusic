@@ -281,7 +281,8 @@ internal fun TopEdgeProtection(
                         return@drawWithContent
                     }
                     val activeFadeHeight = if (regions.any { it.strength > 0f }) fadeHeight else coverFadeHeight
-                    val stripHeight = (safeTop + activeFadeHeight).coerceAtMost(size.height)
+                    // Include the last pixel of the fade before switching back to the original content.
+                    val stripHeight = ceil(safeTop + activeFadeHeight).coerceAtMost(size.height)
                     if (stripHeight <= 0f || size.width <= 0f) {
                         drawContent()
                         return@drawWithContent
@@ -321,11 +322,12 @@ internal fun TopEdgeProtection(
                                 // transparency then behaves the same for text and opaque covers.
                                 canvas.saveLayer(bounds, addPaint)
                                 drawLayer(if (level == 0) captured else blurLayers[level - 1])
-                                drawRect(masks.levels[level], size = Size(size.width, stripHeight), blendMode = BlendMode.DstIn)
+                                // Fill the clip so a mask edge cannot leave part of the last row unmasked.
+                                drawRect(masks.levels[level], blendMode = BlendMode.DstIn)
                                 canvas.restore()
                             }
                             canvas.restore()
-                            drawRect(brush = masks.scrim, size = Size(size.width, stripHeight))
+                            drawRect(brush = masks.scrim)
                         }
                     }
                 },
