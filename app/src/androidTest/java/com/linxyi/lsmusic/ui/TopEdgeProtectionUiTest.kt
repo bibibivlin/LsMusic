@@ -49,6 +49,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import kotlin.math.abs
@@ -58,6 +59,16 @@ class TopEdgeProtectionUiTest {
     @get:Rule
     val compose = createAndroidComposeRule<ThemeTestActivity>()
 
+    @Before
+    fun keepFixtureVisible() {
+        compose.activityRule.scenario.onActivity {
+            it.setShowWhenLocked(true)
+            it.setTurnScreenOn(true)
+            it.window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+        compose.waitUntil(5_000) { compose.activity.hasWindowFocus() }
+    }
+
     @Test
     fun restoredGridProtectsLightStatusIconsOnItsFirstFrame() {
         assertRestoredGrid(darkTheme = true)
@@ -66,6 +77,16 @@ class TopEdgeProtectionUiTest {
     @Test
     fun restoredGridProtectsDarkStatusIconsOnItsFirstFrame() {
         assertRestoredGrid(darkTheme = false)
+    }
+
+    @Test
+    fun fractionalFadeEndBlendsIntoLightThemeContentWithoutALine() {
+        assertSeamlessFadeEnd(darkTheme = false)
+    }
+
+    @Test
+    fun fractionalFadeEndBlendsIntoDarkThemeContentWithoutALine() {
+        assertSeamlessFadeEnd(darkTheme = true)
     }
 
     @Test
@@ -394,6 +415,49 @@ class TopEdgeProtectionUiTest {
         compose.runOnIdle { scope.launch { list.scrollToItem(0) } }
         compose.waitForIdle()
         assertImagesEqual(initial, screenshot())
+    }
+
+    private fun assertSeamlessFadeEnd(darkTheme: Boolean) {
+        var fraction by mutableStateOf<Float?>(null)
+        compose.setContent {
+            LsMusicTheme(darkTheme = darkTheme, dynamicColor = false) {
+                // Force the lower edge of the fade to fall inside a pixel at any screen density.
+                val topInset = with(LocalDensity.current) {
+                    fraction?.let { (88.dp.roundToPx() + it - 64.dp.toPx()).toDp() } ?: 0.dp
+                }
+                val offset = with(LocalDensity.current) { 60.dp.roundToPx() }
+                val list = rememberLazyListState(initialFirstVisibleItemIndex = 1, initialFirstVisibleItemScrollOffset = offset)
+                val rowColor = if (darkTheme) Color.Black.copy(alpha = .5f) else Color(0xFF202020)
+                val backdrop = if (darkTheme) Color(0xFF424242) else MaterialTheme.colorScheme.background
+                Box(Modifier.fillMaxSize().background(backdrop).testTag("edge-root")) {
+                    TopEdgeProtection(topInset) {
+                        LazyColumn(
+                            state = list,
+                            modifier = Modifier.fillMaxSize().protectTopEdge(list),
+                            contentPadding = PaddingValues(top = 48.dp),
+                        ) {
+                            items(20) { Box(Modifier.fillMaxWidth().height(180.dp).background(rowColor)) }
+                        }
+                    }
+                }
+            }
+        }
+        val raw = screenshot()
+        val fadeEnd = with(compose.density) { 88.dp.roundToPx() }
+        val tintY = with(compose.density) { 32.dp.roundToPx() }
+        val x = raw.width / 2
+        for (subpixelOffset in listOf(.25f, .75f)) {
+            compose.runOnIdle { fraction = subpixelOffset }
+            val protected = screenshot()
+            val tintDifference = android.graphics.Color.red(protected.getPixel(x, tintY)) -
+                android.graphics.Color.red(raw.getPixel(x, tintY))
+            assertTrue("The fixture should show the tint inside the fade: $tintDifference", abs(tintDifference) > 3)
+            val differences = (fadeEnd - 2..fadeEnd + 2).map { y ->
+                android.graphics.Color.red(protected.getPixel(x, y)) - android.graphics.Color.red(raw.getPixel(x, y))
+            }
+            assertTrue("The fade should match the source near its lower edge ($subpixelOffset): $differences",
+                differences.all { abs(it) <= 4 })
+        }
     }
 
     private fun assertRestoredGrid(darkTheme: Boolean) {
