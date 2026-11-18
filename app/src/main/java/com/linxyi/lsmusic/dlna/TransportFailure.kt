@@ -3,6 +3,10 @@ package com.linxyi.lsmusic.dlna
 import com.linxyi.lsmusic.R
 import com.linxyi.lsmusic.ui.UiText
 
+/** jUPnP also reports a null operation for local XML and URL errors. */
+internal fun isMissingUpnpResponse(message: String): Boolean =
+    message.trim() == "Error:" || message.contains("Connection error or no response received", ignoreCase = true)
+
 /** Only a renderer rejection warrants changing Pause to Stop; connection failures do not. */
 internal fun isPauseRejected(error: UiText): Boolean = when (error) {
     is UiText.Resource -> error.id == R.string.error_unsupported_action || error.args.any {

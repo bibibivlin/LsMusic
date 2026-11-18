@@ -90,6 +90,17 @@ data class DlnaSnapshot(
     val renderers: List<DlnaDevice> = emptyList(),
     val isSearching: Boolean = false,
     val error: UiText? = null,
+    val serverLocations: Map<String, String> = emptyMap(),
+    val recoveryGeneration: Long = 0L,
+)
+
+internal class DlnaRequestException(val error: UiText, val connectionLost: Boolean) : Exception()
+
+internal data class DlnaPlaybackStatus(
+    val transportState: String,
+    val position: String?,
+    val duration: String?,
+    val trackUri: String?,
 )
 
 private val albumYearPattern = Regex("(?<!\\d)[12]\\d{3}(?!\\d)")

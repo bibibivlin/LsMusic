@@ -1,6 +1,7 @@
 package com.linxyi.lsmusic
 
 import com.linxyi.lsmusic.dlna.AvTransportSoap
+import com.linxyi.lsmusic.dlna.isMissingUpnpResponse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -80,5 +81,21 @@ class AvTransportSoapTest {
         """.trimIndent()
 
         assertEquals("PLAYING", AvTransportSoap.responseValue(response, "CurrentTransportState"))
+    }
+
+    @Test
+    fun responseValue_decodesTrackUriForComparisonWithNormalSoap() {
+        val response = "<TrackURI>http://media.example/track?a=1&amp;b=2</TrackURI>"
+
+        assertEquals("http://media.example/track?a=1&b=2", AvTransportSoap.responseValue(response, "TrackURI"))
+    }
+
+    @Test
+    fun missingResponse_doesNotMistakeLocalParsingAndDeviceFaultsForDisconnection() {
+        assertTrue(isMissingUpnpResponse("Error: "))
+        assertTrue(isMissingUpnpResponse("Error: Connection error or no response received"))
+        assertFalse(isMissingUpnpResponse("Error: Can't parse DIDL XML response: invalid XML"))
+        assertFalse(isMissingUpnpResponse("bad control URL: invalid URL"))
+        assertFalse(isMissingUpnpResponse("Error: Transition not available"))
     }
 }

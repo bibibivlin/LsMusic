@@ -274,8 +274,6 @@
     <string name="error_stop_before_track_change">Unable to stop playback before changing tracks: %1$s</string>
     <string name="error_renderer_unavailable">The selected player is no longer available.</string>
     <string name="error_renderer_no_avtransport">The player does not support AVTransport.</string>
-    <string name="error_renderer_no_progress">The player does not support progress queries.</string>
-    <string name="error_renderer_no_state">The player does not support state queries.</string>
     <string name="error_unsupported_service">The player does not support %1$s.</string>
     <string name="error_unsupported_action">The player does not support %1$s.</string>
     <string name="error_create_playback_command">Unable to create the playback command: %1$s</string>
