@@ -65,6 +65,36 @@ class LibraryBrowseStoreTest {
     }
 
     @Test
+    fun libraryContentStatus_keepsLoadedContentVisibleWhileItsServerReconnects() {
+        assertEquals(
+            LibraryContentStatus.CONTENT,
+            resolveLibraryContentStatus(
+                browseLoadStatus = BrowseLoadStatus.LOADED,
+                isSearching = true,
+                hasSelectedServer = true,
+                selectedServerAvailable = false,
+                visibleEntriesEmpty = false,
+            ),
+        )
+    }
+
+    @Test
+    fun browseStore_discardsOldAddressesAndRequestsWhileKeepingSavedViewState() {
+        val store = LibraryBrowseStore()
+        val key = BrowsePageKey("same-server", "album")
+        val view = BrowseViewState(query = "jazz", useGrid = false, fallbackItemIndex = 10, scrollOffset = 42)
+        store.storeEntries(key, listOf(track("old-track", "album")))
+        store.storeViewState(key, view)
+        val oldRequest = store.beginRequest(key)
+
+        store.invalidateEntries()
+
+        assertEquals(view, store.page(key)?.viewState)
+        assertNull(store.page(key)?.entries)
+        assertFalse(store.isLatestRequest(key, oldRequest))
+    }
+
+    @Test
     fun libraryContentStatus_distinguishesUnavailableServerAndBrowseFailure() {
         assertEquals(
             LibraryContentStatus.SERVER_UNAVAILABLE,
@@ -201,11 +231,12 @@ class LibraryBrowseStoreTest {
     }
 
     @Test
-    fun albumArtworkRetryDelay_stopsAfterTwoFailures() {
+    fun albumArtworkRetryDelay_limitsAttemptsBetweenNetworkChanges() {
         assertEquals(350L, albumArtworkRetryDelayMillis(1))
         assertEquals(1_000L, albumArtworkRetryDelayMillis(2))
         assertEquals(null, albumArtworkRetryDelayMillis(0))
-        assertEquals(null, albumArtworkRetryDelayMillis(3))
+        assertEquals(3_000L, albumArtworkRetryDelayMillis(3))
+        assertEquals(null, albumArtworkRetryDelayMillis(4))
     }
 
     @Test

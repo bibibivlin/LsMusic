@@ -266,8 +266,6 @@
     <string name="error_stop_before_track_change">切换曲目前停止播放失败：%1$s</string>
     <string name="error_renderer_unavailable">所选播放设备不再可用</string>
     <string name="error_renderer_no_avtransport">播放设备不支持 AVTransport</string>
-    <string name="error_renderer_no_progress">播放设备不支持进度查询</string>
-    <string name="error_renderer_no_state">播放设备不支持状态查询</string>
     <string name="error_unsupported_service">播放设备不支持 %1$s</string>
     <string name="error_unsupported_action">播放设备不支持 %1$s</string>
     <string name="error_create_playback_command">无法创建播放命令：%1$s</string>

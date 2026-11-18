@@ -8,6 +8,7 @@ internal object AvTransportSoap {
         "<(?:[A-Za-z][\\w.-]*:)?errorCode>\\s*(\\d+)\\s*</(?:[A-Za-z][\\w.-]*:)?errorCode>",
         RegexOption.IGNORE_CASE,
     )
+    private val xmlEntity = Regex("&(amp|lt|gt|quot|apos|#[0-9]+|#x[0-9a-fA-F]+);")
 
     fun isRequestSerializationFailure(message: String): Boolean =
         message.contains("Error writing request message", ignoreCase = true) &&
@@ -39,7 +40,31 @@ internal object AvTransportSoap {
     fun responseValue(response: String, name: String): String? = Regex(
         "<(?:[A-Za-z][\\w.-]*:)?$name>(.*?)</(?:[A-Za-z][\\w.-]*:)?$name>",
         setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL),
-    ).find(response)?.groupValues?.getOrNull(1)?.trim()?.takeIf { it.isNotEmpty() }
+    ).find(response)?.groupValues?.getOrNull(1)?.trim()?.takeIf { it.isNotEmpty() }?.let(::decodeXmlText)
+
+    private fun decodeXmlText(value: String): String {
+        if (value.startsWith("<![CDATA[") && value.endsWith("]]>")) {
+            return value.substring(9, value.length - 3)
+        }
+        return xmlEntity.replace(value) { match ->
+            when (val entity = match.groupValues[1]) {
+                "amp" -> "&"
+                "lt" -> "<"
+                "gt" -> ">"
+                "quot" -> "\""
+                "apos" -> "'"
+                else -> {
+                    val codePoint = if (entity.startsWith("#x")) entity.substring(2).toIntOrNull(16)
+                    else entity.substring(1).toIntOrNull()
+                    if (codePoint != null && Character.isValidCodePoint(codePoint)) {
+                        String(Character.toChars(codePoint))
+                    } else {
+                        match.value
+                    }
+                }
+            }
+        }
+    }
 
     private fun xmlEscape(value: String): String = buildString(value.length) {
         value.forEach { char ->

@@ -39,6 +39,7 @@ import com.linxyi.lsmusic.R
 import com.linxyi.lsmusic.dlna.DlnaController
 import com.linxyi.lsmusic.dlna.DlnaDevice
 import com.linxyi.lsmusic.dlna.DlnaDeviceKind
+import com.linxyi.lsmusic.dlna.DlnaRequestException
 import com.linxyi.lsmusic.dlna.ArtworkCandidate
 import com.linxyi.lsmusic.dlna.MediaEntry
 import com.linxyi.lsmusic.dlna.RemotePlaybackState
@@ -88,6 +89,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
@@ -225,6 +227,7 @@ data class LsMusicUiState(
     val miniPlayerReturnDestination: AppDestination? = null,
     val isSearching: Boolean = true,
     val browseLoadStatus: BrowseLoadStatus = BrowseLoadStatus.WAITING_FOR_DEVICE,
+    val artworkRecoveryGeneration: Long = 0L,
     val albumArtwork: AlbumArtworkUiState? = null,
     val error: UiText? = null,
     val exitStatus: ExitStatus = ExitStatus.IDLE,
@@ -278,6 +281,10 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     )
     private val listenBrainzSubmissions = Channel<ListenBrainzSubmission>(Channel.BUFFERED)
     private val libraryBrowseStore = LibraryBrowseStore()
+    private var browseJob: Job? = null
+    private var browseNeedsConnection = false
+    private var selectedServerLocation: String? = null
+    private var lastDlnaRecoveryGeneration = 0L
     private var rememberedServer = preferenceStore.lastServer()
     private var rememberedRenderer = preferenceStore.lastRenderer()?.let {
         if (it.id == LOCAL_RENDERER_ID) LOCAL_RENDERER else it
@@ -322,10 +329,10 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     private var userSelectedServer = false
     private var userSelectedRenderer = false
     private var remoteSessionServiceStarted = false
-    private var remotePlaybackObservedPlaying = false
-    private var remotePlaybackObservedProgress = false
-    private var remoteLastObservedPositionMs: Long? = null
-    private var remoteTrackCommandedAtMs = 0L
+    private var remotePlaybackMonitor = RemotePlaybackMonitor()
+    private var remotePollJob: Job? = null
+    private var pendingRemoteCommand: (() -> Boolean)? = null
+    private var remoteTrackRequestedAtMs = 0L
     private var listenBrainzTokenValidationJob: Job? = null
     private var pendingListenUploadJob: Job? = null
     private var lyricsJob: Job? = null
@@ -360,6 +367,8 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     )
     private var albumArtworkGeneration = 0L
     private var albumArtworkRequestIdentity: String? = null
+    private var albumArtworkRequestRecoveryGeneration = 0L
+    private var albumArtworkResolved = false
 
     private val remoteMediaCommandReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -499,13 +508,34 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
                 val liveServer = snapshot.servers.firstOrNull { it.id == serverId }
                 val liveRenderer = renderers.firstOrNull { it.id == rendererId }
                 val serverWasAvailable = old.servers.any { it.id == serverId }
-                val serverIsAvailable = liveServer != null
                 val serverChanged = serverId != old.selectedServerId
-                val serverAvailabilityChanged = serverWasAvailable != serverIsAvailable
-                val shouldBrowseRoot = (serverChanged || !serverWasAvailable) && liveServer != null
-                if (serverChanged || serverAvailabilityChanged) {
+                val location = snapshot.serverLocations[serverId]
+                val locationChanged = !serverChanged && location != null &&
+                    selectedServerLocation?.let { it != location } == true
+                if (serverChanged || location != null) selectedServerLocation = location
+                val recovered = snapshot.recoveryGeneration != lastDlnaRecoveryGeneration
+                lastDlnaRecoveryGeneration = snapshot.recoveryGeneration
+                val serverReturned = liveServer != null && !serverWasAvailable
+                val keepVisible = !serverChanged && old.browseLoadStatus == BrowseLoadStatus.LOADED
+                val pageKey = serverId?.let {
+                    old.browsePageKey?.takeUnless { serverChanged } ?: BrowsePageKey(it, ROOT_OBJECT_ID)
+                }
+                val shouldBrowse = liveServer != null && pageKey != null && (
+                    serverChanged || locationChanged || old.browseLoadStatus == BrowseLoadStatus.WAITING_FOR_DEVICE ||
+                        (browseNeedsConnection && browseJob?.isActive != true && (serverReturned || recovered))
+                    )
+                if (serverChanged) {
+                    browseJob?.cancel()
                     libraryBrowseStore.clear()
                     cancelAlbumArtworkResolution()
+                } else if (locationChanged) {
+                    browseJob?.cancel()
+                    libraryBrowseStore.invalidateEntries()
+                    cancelAlbumArtworkResolution()
+                }
+                if (rendererId != LOCAL_RENDERER_ID && liveRenderer == null && old.renderers.any { it.id == rendererId }) {
+                    remotePollJob?.cancel()
+                    remotePlaybackMonitor.connectionInterrupted()
                 }
                 if (liveServer != null && liveServer != old.rememberedServer) {
                     preferenceStore.saveLastServer(liveServer)
@@ -521,32 +551,26 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
                         selectedRendererId = rendererId,
                         rememberedServer = liveServer ?: it.rememberedServer,
                         rememberedRenderer = liveRenderer ?: it.rememberedRenderer,
-                        entries = if (serverChanged || !serverIsAvailable) emptyList() else it.entries,
+                        entries = if (serverChanged) emptyList() else it.entries,
                         albumSort = if (serverChanged) {
                             preferenceStore.albumSort(serverId)
                         } else {
                             it.albumSort
                         },
-                        path = if (serverChanged || !serverIsAvailable) {
+                        path = if (serverChanged) {
                             listOf(BrowseLocation(ROOT_OBJECT_ID))
                         } else {
                             it.path
                         },
-                        browsePageKey = if (serverChanged || serverAvailabilityChanged) {
-                            serverId?.let { BrowsePageKey(it, ROOT_OBJECT_ID) }
-                        } else {
-                            it.browsePageKey
-                        },
-                        browseViewState = if (serverChanged || serverAvailabilityChanged) {
-                            BrowseViewState()
-                        } else {
-                            it.browseViewState
-                        },
+                        browsePageKey = pageKey,
+                        browseViewState = if (serverChanged) BrowseViewState() else it.browseViewState,
                         browseLoadStatus = when {
-                            shouldBrowseRoot -> BrowseLoadStatus.LOADING
-                            serverChanged || serverAvailabilityChanged -> BrowseLoadStatus.WAITING_FOR_DEVICE
+                            shouldBrowse && !keepVisible -> BrowseLoadStatus.LOADING
+                            serverChanged -> BrowseLoadStatus.WAITING_FOR_DEVICE
                             else -> it.browseLoadStatus
                         },
+                        artworkRecoveryGeneration = it.artworkRecoveryGeneration +
+                            if (serverReturned || recovered) 1 else 0,
                         isSearching = snapshot.isSearching,
                         error = snapshot.error ?: it.error,
                     )
@@ -555,8 +579,8 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
                     initialServerSelectionResolved = true
                     initialRendererSelectionResolved = true
                 }
-                if (shouldBrowseRoot) {
-                    browse(liveServer.id, ROOT_OBJECT_ID)
+                if (shouldBrowse) {
+                    browse(pageKey, keepVisible = keepVisible)
                 }
             }
         }
@@ -775,6 +799,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
                 cancelNowPlayingRequest()
                 nowPlayingRequestJob?.join()
                 playbackCommandGeneration++
+                remotePollJob?.cancel()
                 pendingLocalPlayback = null
                 localPlaybackReadyQueueId = null
                 val before = _uiState.value
@@ -797,6 +822,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
                 localController?.clearMediaItems()
                 cancelLyricsLoadAndReset()
                 cancelAlbumArtworkResolution()
+                browseJob?.cancel()
                 libraryBrowseStore.clear()
                 finishPlaybackForImport(
                     tracker = listenBrainzPlaybackTracker,
@@ -858,9 +884,9 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         initialRendererSelectionResolved = false
         userSelectedServer = false
         userSelectedRenderer = false
-        remotePlaybackObservedPlaying = false
-        remotePlaybackObservedProgress = false
-        remoteLastObservedPositionMs = null
+        resetRemotePlayback()
+        browseNeedsConnection = false
+        selectedServerLocation = null
         val preferences = preferenceStore.load()
         _uiState.update { old -> LsMusicUiState(
             selectedServerId = rememberedServer?.id,
@@ -926,16 +952,25 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun refreshDevices() {
-        if (!exiting && !restoringData) dlna.refresh()
+        if (exiting || restoringData) return
+        dlna.refresh()
+        retryCurrentBrowse()
     }
 
     fun selectServer(id: String) {
         if (exiting || restoringData) return
-        val device = _uiState.value.servers.firstOrNull { it.id == id } ?: return
+        val state = _uiState.value
+        val device = state.servers.firstOrNull { it.id == id } ?: return
         userSelectedServer = true
         preferenceStore.saveLastServer(device)
+        if (state.selectedServerId == id) {
+            retryCurrentBrowse()
+            return
+        }
+        browseJob?.cancel()
         libraryBrowseStore.clear()
         cancelAlbumArtworkResolution()
+        selectedServerLocation = dlna.snapshot.value.serverLocations[id]
         _uiState.update {
             it.copy(
                 selectedServerId = id,
@@ -948,7 +983,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
                 browseLoadStatus = BrowseLoadStatus.LOADING,
             )
         }
-        browse(id, ROOT_OBJECT_ID)
+        browse(BrowsePageKey(id, ROOT_OBJECT_ID))
     }
 
     fun selectRenderer(id: String) {
@@ -959,9 +994,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         cancelFinishingSleepTimer()
         playbackCommandGeneration++
         userSelectedRenderer = true
-        remotePlaybackObservedPlaying = false
-        remotePlaybackObservedProgress = false
-        remoteLastObservedPositionMs = null
+        resetRemotePlayback()
         preferenceStore.saveLastRenderer(device)
         if (state.playbackState != RemotePlaybackState.STOPPED) stopRenderer(state.selectedRendererId)
         _uiState.update {
@@ -980,7 +1013,6 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         if (!entry.isContainer) return playNow(entry)
         val state = _uiState.value
         val serverId = state.selectedServerId ?: return
-        cacheCurrentBrowsePage(state)
         showBrowsePage(
             key = BrowsePageKey(serverId, entry.id),
             path = state.path + BrowseLocation(
@@ -1000,7 +1032,6 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         if (locationIndex == state.path.lastIndex) return
         val location = state.path.getOrNull(locationIndex) ?: return
         val serverId = state.selectedServerId ?: return
-        cacheCurrentBrowsePage(state)
         showBrowsePage(
             key = BrowsePageKey(serverId, location.id),
             path = state.path.take(locationIndex + 1),
@@ -1042,9 +1073,13 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
             candidates.forEach { append('|').append(it.uri).append('#').append(it.profileId) }
             tracks.forEach { append('|').append(it.resourceUri).append('#').append(it.resourceSize) }
         }
-        if (identity == albumArtworkRequestIdentity) return
+        if (identity == albumArtworkRequestIdentity &&
+            (albumArtworkResolved || albumArtworkRequestRecoveryGeneration == state.artworkRecoveryGeneration)
+        ) return
 
         albumArtworkRequestIdentity = identity
+        albumArtworkRequestRecoveryGeneration = state.artworkRecoveryGeneration
+        albumArtworkResolved = false
         albumArtworkJob?.cancel()
         val generation = ++albumArtworkGeneration
         val currentDisplayUri = state.albumArtwork
@@ -1088,6 +1123,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
                 ) {
                     latest
                 } else {
+                    albumArtworkResolved = resolved != null
                     latest.copy(
                         albumArtwork = AlbumArtworkUiState(
                             pageKey = pageKey,
@@ -1178,14 +1214,8 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
             return
         }
         when (state.playbackState) {
-            RemotePlaybackState.PLAYING -> {
-                _uiState.update { it.copy(playbackState = RemotePlaybackState.PAUSED) }
-                dlna.pause(rendererId, onError = ::showError, isCurrent = beginPlaybackCommand())
-            }
-            RemotePlaybackState.PAUSED -> {
-                _uiState.update { it.copy(playbackState = RemotePlaybackState.PLAYING) }
-                dlna.play(rendererId, onError = ::showError, isCurrent = beginPlaybackCommand())
-            }
+            RemotePlaybackState.PLAYING -> setRemotePlaying(rendererId, play = false)
+            RemotePlaybackState.PAUSED -> setRemotePlaying(rendererId, play = true)
             RemotePlaybackState.STOPPED -> playAt(state.currentQueueIndex)
         }
     }
@@ -1360,7 +1390,17 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         when (val rendererId = state.selectedRendererId) {
             null -> Unit
             LOCAL_RENDERER_ID -> localController?.seekTo(target)
-            else -> dlna.seek(rendererId, formatDlnaTime(target), onError = ::showError)
+            else -> {
+                val identity = playbackCommandIdentity()
+                remotePollJob?.cancel()
+                remotePlaybackMonitor.seek()
+                dlna.seek(
+                    rendererId,
+                    formatDlnaTime(target),
+                    onError = ::showError,
+                    isCurrent = { !exiting && !restoringData && playbackCommandIdentity() == identity },
+                )
+            }
         }
     }
 
@@ -1618,7 +1658,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         sleepTimerDeadlineJob?.cancel()
         // Expiry must also invalidate a controller startup or a renderer's delayed Play.
         val playbackWasPending = pendingLocalPlayback != null ||
-            (state.selectedRendererId != LOCAL_RENDERER_ID && !remotePlaybackObservedPlaying)
+            (state.selectedRendererId != LOCAL_RENDERER_ID && !remotePlaybackMonitor.observedPlaying)
         pendingLocalPlayback = null
         playbackCommandGeneration++
         when (action) {
@@ -1950,6 +1990,8 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun showBrowsePage(key: BrowsePageKey, path: List<BrowseLocation>) {
+        browseJob?.cancel()
+        browseNeedsConnection = false
         cancelAlbumArtworkResolution()
         val cachedPage = libraryBrowseStore.page(key)
         val cachedEntries = cachedPage?.entries
@@ -1968,7 +2010,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
             )
         }
         trimBrowseCache(resolvedPath, key.serverId)
-        if (cachedEntries == null) browse(key.serverId, key.objectId)
+        if (cachedEntries == null) browse(key)
     }
 
     private fun List<BrowseLocation>.withResolvedLastLocation(
@@ -1979,64 +2021,71 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         return if (pageKind == location.pageKind) this else dropLast(1) + location.copy(pageKind = pageKind)
     }
 
-    private fun cacheCurrentBrowsePage(state: LsMusicUiState) {
-        val key = state.browsePageKey ?: return
-        if (state.browseLoadStatus == BrowseLoadStatus.LOADED) {
-            libraryBrowseStore.storeEntries(key, state.entries)
-        }
-    }
-
     private fun trimBrowseCache(path: List<BrowseLocation>, serverId: String) {
         libraryBrowseStore.trim(path.mapTo(mutableSetOf()) { BrowsePageKey(serverId, it.id) })
     }
 
-    private fun browse(serverId: String, objectId: String) {
-        val key = BrowsePageKey(serverId, objectId)
+    private fun retryCurrentBrowse() {
+        val state = _uiState.value
+        if (state.browseLoadStatus == BrowseLoadStatus.FAILED || browseNeedsConnection) {
+            state.browsePageKey?.let { browse(it, keepVisible = state.browseLoadStatus == BrowseLoadStatus.LOADED) }
+        }
+    }
+
+    private fun browse(key: BrowsePageKey, keepVisible: Boolean = false) {
+        browseJob?.cancel()
+        browseNeedsConnection = false
         val generation = libraryBrowseStore.beginRequest(key)
-        _uiState.update {
-            if (it.browsePageKey == key) {
-                it.copy(browseLoadStatus = BrowseLoadStatus.LOADING)
-            } else {
-                it
+        if (!keepVisible) {
+            _uiState.update { if (it.browsePageKey == key) it.copy(browseLoadStatus = BrowseLoadStatus.LOADING) else it }
+        }
+        browseJob = viewModelScope.launch {
+            try {
+                val entries = loadBrowsePage(key)
+                if (!libraryBrowseStore.isLatestRequest(key, generation) || _uiState.value.browsePageKey != key) return@launch
+                libraryBrowseStore.storeEntries(key, entries)
+                _uiState.update {
+                    it.copy(
+                        path = it.path.withResolvedLastLocation(entries),
+                        entries = entries,
+                        browseLoadStatus = BrowseLoadStatus.LOADED,
+                    )
+                }
+            } catch (failure: DlnaRequestException) {
+                if (!libraryBrowseStore.isLatestRequest(key, generation) || _uiState.value.browsePageKey != key) return@launch
+                browseNeedsConnection = failure.connectionLost
+                if (!keepVisible) {
+                    _uiState.update {
+                        it.copy(
+                            path = it.path.withResolvedLastLocation(emptyList()),
+                            browseLoadStatus = BrowseLoadStatus.FAILED,
+                            error = failure.error,
+                        )
+                    }
+                }
             }
         }
-        dlna.browse(
-            serverId = serverId,
-            objectId = objectId,
-            onResult = { entries ->
-                viewModelScope.launch {
-                    if (!libraryBrowseStore.isLatestRequest(key, generation)) return@launch
-                    libraryBrowseStore.storeEntries(key, entries)
-                    _uiState.update {
-                        if (it.browsePageKey == key) {
-                            it.copy(
-                                path = it.path.withResolvedLastLocation(entries),
-                                entries = entries,
-                                browseLoadStatus = BrowseLoadStatus.LOADED,
-                            )
-                        } else {
-                            it
-                        }
+    }
+
+    private suspend fun loadBrowsePage(key: BrowsePageKey): List<MediaEntry> {
+        for (retryDelay in BROWSE_RETRY_DELAYS_MS) {
+            val recoveryGeneration = dlna.snapshot.value.recoveryGeneration
+            try {
+                return dlna.browse(key.serverId, key.objectId)
+            } catch (failure: DlnaRequestException) {
+                if (!failure.connectionLost) throw failure
+                if (dlna.snapshot.value.servers.any { it.id == key.serverId }) {
+                    withTimeoutOrNull(retryDelay) {
+                        dlna.snapshot.first { it.recoveryGeneration != recoveryGeneration }
                     }
+                } else {
+                    withTimeoutOrNull(DEVICE_RETURN_TIMEOUT_MS) {
+                        dlna.snapshot.first { snapshot -> snapshot.servers.any { it.id == key.serverId } }
+                    } ?: throw failure
                 }
-            },
-            onError = { message ->
-                viewModelScope.launch {
-                    if (!libraryBrowseStore.isLatestRequest(key, generation)) return@launch
-                    _uiState.update {
-                        if (it.browsePageKey == key) {
-                            it.copy(
-                                path = it.path.withResolvedLastLocation(emptyList()),
-                                browseLoadStatus = BrowseLoadStatus.FAILED,
-                                error = message,
-                            )
-                        } else {
-                            it
-                        }
-                    }
-                }
-            },
-        )
+            }
+        }
+        return dlna.browse(key.serverId, key.objectId)
     }
 
     private fun showError(message: UiText) = _uiState.update { it.copy(error = message) }
@@ -2108,8 +2157,20 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
 
     private fun beginPlaybackCommand(): () -> Boolean {
         playbackCommandGeneration++
+        remotePollJob?.cancel()
+        remotePlaybackMonitor.clearStoppedSamples()
         val requested = playbackCommandIdentity()
         return { !exiting && !restoringData && playbackCommandIdentity() == requested }
+    }
+
+    private fun resetRemotePlayback(track: MediaEntry? = null) {
+        remotePollJob?.cancel()
+        pendingRemoteCommand = null
+        val uri = track?.resourceUri
+        val previousUri = remotePlaybackMonitor.observedTrackUri
+            ?.takeIf { uri != null && remotePlaybackMonitor.requestedTrackUri != uri }
+        remotePlaybackMonitor = RemotePlaybackMonitor(uri, previousUri)
+        remoteTrackRequestedAtMs = SystemClock.elapsedRealtime()
     }
 
     private fun playOnRenderer(rendererId: String, track: MediaEntry) {
@@ -2124,18 +2185,18 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
                 playLocally(controller, state.queue, state.currentQueueIndex)
             }
         } else {
-            remotePlaybackObservedPlaying = false
-            remotePlaybackObservedProgress = false
-            remoteLastObservedPositionMs = null
-            remoteTrackCommandedAtMs = SystemClock.elapsedRealtime()
+            resetRemotePlayback(track)
+            pendingRemoteCommand = isCurrent
             dlna.setTrack(
                 rendererId,
                 track,
                 playImmediately = true,
                 isCurrent = isCurrent,
+                onComplete = { viewModelScope.launch { if (isCurrent()) pendingRemoteCommand = null } },
                 onError = { message ->
                     viewModelScope.launch {
                         if (isCurrent()) {
+                            pendingRemoteCommand = null
                             _uiState.update { it.copy(playbackState = RemotePlaybackState.STOPPED) }
                             showError(message)
                         }
@@ -2147,9 +2208,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
 
     private fun stopRenderer(rendererId: String?) {
         playbackCommandGeneration++
-        remotePlaybackObservedPlaying = false
-        remotePlaybackObservedProgress = false
-        remoteLastObservedPositionMs = null
+        resetRemotePlayback()
         when (rendererId) {
             null -> Unit
             LOCAL_RENDERER_ID -> {
@@ -2162,6 +2221,27 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    private fun setRemotePlaying(rendererId: String, play: Boolean) {
+        val isCurrent = beginPlaybackCommand()
+        pendingRemoteCommand = isCurrent
+        _uiState.update {
+            it.copy(playbackState = if (play) RemotePlaybackState.PLAYING else RemotePlaybackState.PAUSED)
+        }
+        val complete: () -> Unit = {
+            viewModelScope.launch { if (isCurrent()) pendingRemoteCommand = null }
+        }
+        val fail: (UiText) -> Unit = { message ->
+            viewModelScope.launch {
+                if (isCurrent()) {
+                    pendingRemoteCommand = null
+                    showError(message)
+                }
+            }
+        }
+        if (play) dlna.play(rendererId, onComplete = complete, onError = fail, isCurrent = isCurrent)
+        else dlna.pause(rendererId, onComplete = complete, onError = fail, isCurrent = isCurrent)
+    }
+
     private fun handleRemoteMediaCommand(command: String?, positionMs: Long) {
         if (exiting || restoringData) return
         val state = _uiState.value
@@ -2172,21 +2252,15 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
             RemotePlaybackService.COMMAND_PLAY -> when (state.playbackState) {
                 RemotePlaybackState.STOPPED -> playAt(state.currentQueueIndex)
                 RemotePlaybackState.PLAYING -> Unit
-                RemotePlaybackState.PAUSED -> {
-                    _uiState.update { it.copy(playbackState = RemotePlaybackState.PLAYING) }
-                    dlna.play(rendererId, onError = ::showError, isCurrent = beginPlaybackCommand())
-                }
+                RemotePlaybackState.PAUSED -> setRemotePlaying(rendererId, play = true)
             }
             RemotePlaybackService.COMMAND_PAUSE -> if (state.playbackState == RemotePlaybackState.PLAYING) {
                 cancelFinishingSleepTimer()
-                _uiState.update { it.copy(playbackState = RemotePlaybackState.PAUSED) }
-                dlna.pause(rendererId, onError = ::showError, isCurrent = beginPlaybackCommand())
+                setRemotePlaying(rendererId, play = false)
             }
             RemotePlaybackService.COMMAND_STOP -> {
                 cancelFinishingSleepTimer()
-                remotePlaybackObservedPlaying = false
-                remotePlaybackObservedProgress = false
-                remoteLastObservedPositionMs = null
+                resetRemotePlayback()
                 _uiState.update { it.copy(playbackState = RemotePlaybackState.STOPPED, positionMs = 0L) }
                 dlna.stop(rendererId, onError = ::showError, isCurrent = beginPlaybackCommand())
             }
@@ -2294,48 +2368,56 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         val rendererId = state.selectedRendererId ?: return
         if (rendererId == LOCAL_RENDERER_ID) {
             localController?.let(::refreshLocalProgress)
-        } else {
-            val requestedIdentity = playbackCommandIdentity()
-            if (state.currentQueueItem == null || state.playbackState == RemotePlaybackState.STOPPED) return
-            dlna.getPositionInfo(rendererId, onResult = { position, duration ->
-                viewModelScope.launch {
-                    val positionMs = parseTimeMs(position)
-                    _uiState.update {
-                        if (!exiting && !restoringData && playbackCommandIdentity() == requestedIdentity) {
-                            remoteLastObservedPositionMs?.let { previousPositionMs ->
-                                if (positionMs > previousPositionMs) remotePlaybackObservedProgress = true
-                            }
-                            remoteLastObservedPositionMs = positionMs
-                            it.copy(
-                                positionMs = positionMs,
-                                durationMs = parseTimeMs(duration).takeIf { value -> value > 0L } ?: it.durationMs,
-                            )
+            return
+        }
+        if (state.currentQueueItem == null || state.playbackState == RemotePlaybackState.STOPPED ||
+            state.sleepTimer.phase == SleepTimerPhase.APPLYING || pendingRemoteCommand?.invoke() == true ||
+            remotePollJob?.isActive == true
+        ) return
+        val requestedIdentity = playbackCommandIdentity()
+        remotePollJob = viewModelScope.launch {
+            val sample = dlna.readPlaybackStatus(rendererId)
+            if (exiting || restoringData || playbackCommandIdentity() != requestedIdentity) return@launch
+            if (sample == null) {
+                remotePlaybackMonitor.connectionInterrupted()
+                return@launch
+            }
+            val current = _uiState.value
+            val positionMs = sample.position
+                ?.takeUnless { it.isBlank() || it.equals("NOT_IMPLEMENTED", ignoreCase = true) }
+                ?.let(::parseTimeMs)
+            val readingDurationMs = parseTimeMs(sample.duration)
+            val durationMs = current.durationMs.takeIf { it > 0L }
+                ?: readingDurationMs
+            val nowMs = SystemClock.elapsedRealtime()
+            val observation = remotePlaybackMonitor.observe(
+                transportState = sample.transportState,
+                positionMs = positionMs,
+                durationMs = durationMs,
+                reportedTrackUri = sample.trackUri,
+                nowMs = nowMs,
+                playRequested = current.playbackState == RemotePlaybackState.PLAYING,
+            )
+            when (observation) {
+                RemotePlaybackObservation.ENDED -> if (nowMs - remoteTrackRequestedAtMs >= REMOTE_END_GUARD_MS) {
+                    handleAutomaticTrackEnd()
+                }
+                RemotePlaybackObservation.STOPPED -> _uiState.update { it.copy(playbackState = RemotePlaybackState.STOPPED) }
+                RemotePlaybackObservation.PLAYING, RemotePlaybackObservation.PAUSED -> _uiState.update {
+                    it.copy(
+                        playbackState = if (observation == RemotePlaybackObservation.PLAYING) {
+                            RemotePlaybackState.PLAYING
                         } else {
-                            it
-                        }
-                    }
+                            RemotePlaybackState.PAUSED
+                        },
+                        positionMs = positionMs ?: it.positionMs,
+                        durationMs = readingDurationMs.takeIf { value -> value > 0L } ?: it.durationMs,
+                    )
                 }
-            })
-            dlna.getTransportInfo(rendererId, onResult = { transportState ->
-                viewModelScope.launch {
-                    val current = _uiState.value
-                    if (
-                        exiting || restoringData || playbackCommandIdentity() != requestedIdentity
-                    ) return@launch
-                    when (transportState?.uppercase()) {
-                        "PLAYING" -> remotePlaybackObservedPlaying = true
-                        "STOPPED", "NO_MEDIA_PRESENT" -> if (
-                            remotePlaybackObservedPlaying &&
-                            remotePlaybackObservedProgress &&
-                            current.playbackState == RemotePlaybackState.PLAYING &&
-                            SystemClock.elapsedRealtime() - remoteTrackCommandedAtMs >= REMOTE_END_GUARD_MS
-                        ) {
-                            remotePlaybackObservedPlaying = false
-                            handleAutomaticTrackEnd()
-                        }
-                    }
+                RemotePlaybackObservation.NONE -> if (sample.transportState.isBlank() && positionMs != null) {
+                    _uiState.update { it.copy(positionMs = positionMs, durationMs = durationMs) }
                 }
-            })
+            }
         }
     }
 
@@ -2392,6 +2474,8 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         ListenBrainzUploadScheduler.cancel(getApplication())
         discoveryJob?.cancel()
         playbackProgressJob?.cancel()
+        remotePollJob?.cancel()
+        browseJob?.cancel()
         remoteSessionJob?.cancel()
         lyricsJob?.cancel()
         albumArtworkJob?.cancel()
@@ -2518,6 +2602,8 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
     companion object {
         private const val TAG = "LsMusicViewModel"
         private const val ROOT_OBJECT_ID = "0"
+        private val BROWSE_RETRY_DELAYS_MS = longArrayOf(400L, 1_400L, 3_000L)
+        private const val DEVICE_RETURN_TIMEOUT_MS = 7_000L
         private const val REMOTE_END_GUARD_MS = 3_000L
         const val LOCAL_RENDERER_ID = "local-renderer"
         private val LOCAL_RENDERER = DlnaDevice(

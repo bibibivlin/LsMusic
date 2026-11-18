@@ -289,6 +289,7 @@ internal data class LibraryUiState(
     val albumArtwork: AlbumArtworkUiState?,
     val currentTrackId: String?,
     val playbackState: RemotePlaybackState,
+    val artworkRecoveryGeneration: Long = 0L,
 ) {
     val isBrowsing: Boolean
         get() = browseLoadStatus == BrowseLoadStatus.LOADING
@@ -690,6 +691,7 @@ internal fun LsMusicContent(
         state.selectedServerId,
         state.browseLoadStatus,
         state.albumArtwork,
+        state.artworkRecoveryGeneration,
         state.currentTrack?.id,
         state.playbackState,
     ) {
@@ -707,6 +709,7 @@ internal fun LsMusicContent(
             albumArtwork = state.albumArtwork,
             currentTrackId = state.currentTrack?.id,
             playbackState = state.playbackState,
+            artworkRecoveryGeneration = state.artworkRecoveryGeneration,
         )
     }
     BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -1368,6 +1371,7 @@ internal fun LibraryDirectoryScreen(
                         entry = entry,
                         gallerySize = state.preferences.gallerySize,
                         artworkRequestSizePx = artworkRequestSizePx,
+                        artworkRecoveryGeneration = state.artworkRecoveryGeneration,
                         onOpen = { openEntry(entry) },
                         onQueue = { onQueue(entry) },
                         albumTransitionKey = if (entry.isContainer) BrowsePageKey(pageKey.serverId, entry.id) else null,
@@ -1376,6 +1380,7 @@ internal fun LibraryDirectoryScreen(
                     MediaEntryRow(
                         entry = entry,
                         emphasized = index % 5 == 0,
+                        artworkRecoveryGeneration = state.artworkRecoveryGeneration,
                         onOpen = { openEntry(entry) },
                         onPlay = { onPlay(entry) },
                         onQueue = { onQueue(entry) },
@@ -1908,6 +1913,7 @@ internal fun AlbumDetailScreen(
                 trackCount = trackCount,
                 entries = state.entries,
                 browseLoadStatus = state.browseLoadStatus,
+                artworkRecoveryGeneration = state.artworkRecoveryGeneration,
                 placeholderArtworkUri = currentLocation?.let { location ->
                     selectThumbnailArtworkUri(location.artworkCandidates, location.artworkUri)
                 } ?: representativeTrack?.thumbnailArtworkUri,
@@ -2103,6 +2109,7 @@ private fun AlbumDetailSummary(
     trackCount: Int,
     entries: List<MediaEntry>,
     browseLoadStatus: BrowseLoadStatus,
+    artworkRecoveryGeneration: Long,
     placeholderArtworkUri: String?,
     availableHeight: Dp,
     twoPane: Boolean,
@@ -2237,7 +2244,7 @@ private fun AlbumDetailSummary(
                     delay(ALBUM_ARTWORK_RESIZE_SETTLE_MILLIS)
                     requestSizePx = artworkSizePx
                 }
-                LaunchedEffect(pageKey, requestSizePx, entries, browseLoadStatus, artworkCanResolve) {
+                LaunchedEffect(pageKey, requestSizePx, entries, browseLoadStatus, artworkCanResolve, artworkRecoveryGeneration) {
                     // Keep the original thumbnail through the flight, then resolve the large cover.
                     if (artworkCanResolve && browseLoadStatus == BrowseLoadStatus.LOADED) {
                         onResolveAlbumArtwork(pageKey, requestSizePx)
@@ -2265,6 +2272,7 @@ private fun AlbumDetailSummary(
                     useCachedAlbumThumbnailAsPlaceholder = true,
                     preferThumbnailSource = false,
                     placeholderArtworkUri = placeholderArtworkUri,
+                    recoveryGeneration = artworkRecoveryGeneration,
                     filterQuality = FilterQuality.High,
                     albumTransitionKey = pageKey,
                     useCachedThumbnailDuringFlight = motion?.navigation?.opening == true &&
@@ -2701,6 +2709,7 @@ private fun MediaGridCard(
     entry: MediaEntry,
     gallerySize: GallerySize,
     artworkRequestSizePx: Int,
+    artworkRecoveryGeneration: Long,
     onOpen: () -> Unit,
     onQueue: () -> Unit,
     albumTransitionKey: BrowsePageKey? = null,
@@ -2765,7 +2774,7 @@ private fun MediaGridCard(
             entry = entry,
             size = null,
             requestSizePx = artworkRequestSizePx,
-            retryTransientFailures = true,
+            recoveryGeneration = artworkRecoveryGeneration,
             cornerRadius = artworkCornerRadius,
             modifier = Modifier.fillMaxWidth().aspectRatio(1f).testTag("library-cover:${entry.id}"),
             albumTransitionKey = albumTransitionKey,
@@ -2816,6 +2825,7 @@ private fun MediaGridCard(
 private fun MediaEntryRow(
     entry: MediaEntry,
     emphasized: Boolean,
+    artworkRecoveryGeneration: Long,
     onOpen: () -> Unit,
     onPlay: () -> Unit,
     onQueue: () -> Unit,
@@ -2842,6 +2852,7 @@ private fun MediaEntryRow(
                 entry = entry,
                 size = artworkSize,
                 requestSizePx = with(LocalDensity.current) { artworkSize.roundToPx() },
+                recoveryGeneration = artworkRecoveryGeneration,
                 modifier = Modifier.testTag("library-cover:${entry.id}"),
                 albumTransitionKey = albumTransitionKey,
             )
@@ -3517,7 +3528,7 @@ private fun ArtworkTile(
     useCachedAlbumThumbnailAsPlaceholder: Boolean = false,
     preferThumbnailSource: Boolean = true,
     placeholderArtworkUri: String? = null,
-    retryTransientFailures: Boolean = false,
+    recoveryGeneration: Long? = null,
     filterQuality: FilterQuality = FilterQuality.Low,
     cornerRadius: Dp? = null,
     albumTransitionKey: BrowsePageKey? = null,
@@ -3557,13 +3568,38 @@ private fun ArtworkTile(
         imageIdentity,
         selectedArtworkUri,
         requestSizePx,
-    ) { mutableStateOf<Int?>(null) }
-    LaunchedEffect(retryTransientFailures, artworkFailureCount) {
-        if (!retryTransientFailures) return@LaunchedEffect
-        val retryDelayMillis = albumArtworkRetryDelayMillis(artworkFailureCount)
-            ?: return@LaunchedEffect
+    ) { mutableIntStateOf(-1) }
+    var lastTriedRecovery by remember(imageIdentity, selectedArtworkUri, requestSizePx) {
+        mutableStateOf(recoveryGeneration)
+    }
+    var artworkLoaded by remember(imageIdentity, selectedArtworkUri, requestSizePx) { mutableStateOf(false) }
+    LaunchedEffect(
+        imageIdentity, selectedArtworkUri, requestSizePx, recoveryGeneration, artworkFailureCount, useCachedThumbnailDuringFlight,
+    ) {
+        if (recoveryGeneration == null || selectedArtworkUri.isNullOrBlank() || artworkLoaded ||
+            useCachedThumbnailDuringFlight
+        ) return@LaunchedEffect
+        val reconnected = lastTriedRecovery != recoveryGeneration
+        val retryDelayMillis = if (reconnected) 250L else {
+            albumArtworkRetryDelayMillis(artworkFailureCount) ?: return@LaunchedEffect
+        }
         delay(retryDelayMillis)
+        if (artworkLoaded) return@LaunchedEffect
+        if (reconnected) artworkFailureCount = 0
+        lastTriedRecovery = recoveryGeneration
         artworkRequestGeneration += 1
+    }
+    val requestGeneration = artworkRequestGeneration
+    fun artworkResult(success: Boolean) {
+        if (recoveryGeneration == null || requestGeneration != artworkRequestGeneration) return
+        if (success) {
+            artworkLoaded = true
+            artworkFailureCount = 0
+        } else if (lastFailedGeneration != requestGeneration) {
+            artworkLoaded = false
+            lastFailedGeneration = requestGeneration
+            artworkFailureCount += 1
+        }
     }
     val artworkModel = remember(
         context,
@@ -3626,6 +3662,8 @@ private fun ArtworkTile(
                     useCachedThumbnailDuringFlight = useCachedThumbnailDuringFlight,
                     contentDescription = stringResource(R.string.album_cover, entry.title),
                     filterQuality = filterQuality,
+                    requestGeneration = requestGeneration,
+                    onLoadResult = ::artworkResult,
                 )
             }
         } else if (artworkModel != null) {
@@ -3642,19 +3680,8 @@ private fun ArtworkTile(
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop,
                     filterQuality = filterQuality,
-                    onSuccess = {
-                        artworkFailureCount = 0
-                        lastFailedGeneration = null
-                    },
-                    onError = {
-                        if (
-                            retryTransientFailures &&
-                            lastFailedGeneration != artworkRequestGeneration
-                        ) {
-                            lastFailedGeneration = artworkRequestGeneration
-                            artworkFailureCount += 1
-                        }
-                    },
+                    onSuccess = { artworkResult(true) },
+                    onError = { artworkResult(false) },
                 )
             }
         }
@@ -3672,6 +3699,8 @@ private fun AlbumDetailArtworkImage(
     useCachedThumbnailDuringFlight: Boolean,
     contentDescription: String,
     filterQuality: FilterQuality,
+    requestGeneration: Int,
+    onLoadResult: (Boolean) -> Unit,
 ) {
     // Keep the last successfully displayed image while another source or size loads. The
     // thumbnail and previous result belong only to this album and its original artwork URI.
@@ -3688,7 +3717,7 @@ private fun AlbumDetailArtworkImage(
         }
     } else {
         if (model != null) {
-            val requestPainter = key(imageIdentity, artworkUri, requestSizePx) {
+            val requestPainter = key(imageIdentity, artworkUri, requestSizePx, requestGeneration) {
                 rememberAsyncImagePainter(
                     model = model,
                     contentScale = ContentScale.Crop,
@@ -3700,8 +3729,13 @@ private fun AlbumDetailArtworkImage(
             val loadedPainter = remember(loadedImage, filterQuality) {
                 loadedImage?.asPainter(model.context, filterQuality)
             }
-            LaunchedEffect(requestPainter, loadedPainter) {
-                if (loadedPainter != null) displayedPainter = loadedPainter
+            LaunchedEffect(requestPainter, requestState) {
+                if (loadedPainter != null) {
+                    displayedPainter = loadedPainter
+                    onLoadResult(true)
+                } else if (requestState is AsyncImagePainter.State.Error) {
+                    onLoadResult(false)
+                }
             }
         }
         AnimatedContent(

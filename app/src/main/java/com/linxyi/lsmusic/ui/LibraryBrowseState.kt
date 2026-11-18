@@ -37,6 +37,9 @@ internal fun resolveLibraryContentStatus(
     selectedServerAvailable: Boolean,
     visibleEntriesEmpty: Boolean,
 ): LibraryContentStatus {
+    if (browseLoadStatus == BrowseLoadStatus.LOADED) {
+        return if (visibleEntriesEmpty) LibraryContentStatus.EMPTY else LibraryContentStatus.CONTENT
+    }
     if (browseLoadStatus == BrowseLoadStatus.LOADING) return LibraryContentStatus.LOADING
     if (!hasSelectedServer) {
         return if (isSearching) LibraryContentStatus.LOADING else LibraryContentStatus.NO_SERVER
@@ -44,14 +47,7 @@ internal fun resolveLibraryContentStatus(
     if (!selectedServerAvailable) {
         return if (isSearching) LibraryContentStatus.LOADING else LibraryContentStatus.SERVER_UNAVAILABLE
     }
-    return when (browseLoadStatus) {
-        BrowseLoadStatus.WAITING_FOR_DEVICE,
-        BrowseLoadStatus.LOADING -> LibraryContentStatus.LOADING
-        BrowseLoadStatus.FAILED -> LibraryContentStatus.LOAD_FAILED
-        BrowseLoadStatus.LOADED -> {
-            if (visibleEntriesEmpty) LibraryContentStatus.EMPTY else LibraryContentStatus.CONTENT
-        }
-    }
+    return if (browseLoadStatus == BrowseLoadStatus.FAILED) LibraryContentStatus.LOAD_FAILED else LibraryContentStatus.LOADING
 }
 
 internal fun resolveLibraryPageKind(
@@ -160,6 +156,7 @@ internal fun directionalPrefetchIndices(
 internal fun albumArtworkRetryDelayMillis(failureCount: Int): Long? = when (failureCount) {
     1 -> 350L
     2 -> 1_000L
+    3 -> 3_000L
     else -> null
 }
 
@@ -221,6 +218,12 @@ internal class LibraryBrowseStore(
 
     fun isLatestRequest(key: BrowsePageKey, generation: Long): Boolean =
         latestRequests[key] == generation
+
+    /** Addresses embedded in entries can expire independently of a directory's view state. */
+    fun invalidateEntries() {
+        pages.replaceAll { _, page -> page.copy(entries = null) }
+        latestRequests.clear()
+    }
 
     fun trim(pinnedKeys: Set<BrowsePageKey>) {
         var unpinnedCount = pages.keys.count { it !in pinnedKeys }
