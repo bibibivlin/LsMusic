@@ -1,6 +1,7 @@
 package com.linxyi.lsmusic.ui
 
 import android.graphics.Bitmap
+import android.view.WindowManager
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -27,6 +28,7 @@ import androidx.compose.ui.unit.dp
 import com.linxyi.lsmusic.dlna.RemotePlaybackState
 import com.linxyi.lsmusic.ui.theme.LsMusicTheme
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import kotlin.math.abs
@@ -35,6 +37,16 @@ import kotlin.math.roundToInt
 class TopEdgeNavigationUiTest {
     @get:Rule
     val compose = createAndroidComposeRule<ThemeTestActivity>()
+
+    @Before
+    fun keepFixtureVisible() {
+        compose.activityRule.scenario.onActivity {
+            it.setShowWhenLocked(true)
+            it.setTurnScreenOn(true)
+            it.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+        compose.waitUntil(5_000) { compose.activity.hasWindowFocus() }
+    }
 
     @Test
     fun openingAnAlbumFadesTheOutgoingPagesBlurWithoutAJump() {
@@ -100,7 +112,7 @@ class TopEdgeNavigationUiTest {
             elapsed = time
             val frame = screenshot()
             val y = with(compose.density) { 64.dp.roundToPx() }
-            val referenceY = with(compose.density) { 100.dp.roundToPx() }
+            val referenceY = with(compose.density) { 120.dp.roundToPx() }
             val start = with(compose.density) { 30.dp.roundToPx() }
             val end = with(compose.density) { 120.dp.roundToPx() }.coerceAtMost(frame.width - 1)
             val referenceRange = contrastRange(frame, referenceY, start, end)
@@ -120,7 +132,7 @@ class TopEdgeNavigationUiTest {
             val frame = screenshot()
             val start = with(compose.density) { 30.dp.roundToPx() }
             val end = with(compose.density) { 120.dp.roundToPx() }.coerceAtMost(frame.width - 1)
-            val referenceRange = contrastRange(frame, with(compose.density) { 100.dp.roundToPx() }, start, end)
+            val referenceRange = contrastRange(frame, with(compose.density) { 120.dp.roundToPx() }, start, end)
             if (referenceRange > 30) {
                 returningRatios += contrastRange(frame, with(compose.density) { 64.dp.roundToPx() }, start, end).toFloat() / referenceRange
             }

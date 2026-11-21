@@ -25,16 +25,21 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.captureToImage
@@ -53,6 +58,7 @@ import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import kotlin.math.abs
+import kotlin.math.pow
 import kotlin.math.roundToInt
 
 class TopEdgeProtectionUiTest {
@@ -70,12 +76,12 @@ class TopEdgeProtectionUiTest {
     }
 
     @Test
-    fun restoredGridProtectsLightStatusIconsOnItsFirstFrame() {
+    fun restoredGridBlursTheStatusAreaOnItsFirstFrameInDarkTheme() {
         assertRestoredGrid(darkTheme = true)
     }
 
     @Test
-    fun restoredGridProtectsDarkStatusIconsOnItsFirstFrame() {
+    fun restoredGridBlursTheStatusAreaOnItsFirstFrameInLightTheme() {
         assertRestoredGrid(darkTheme = false)
     }
 
@@ -87,6 +93,132 @@ class TopEdgeProtectionUiTest {
     @Test
     fun fractionalFadeEndBlendsIntoDarkThemeContentWithoutALine() {
         assertSeamlessFadeEnd(darkTheme = true)
+    }
+
+    @Test
+    fun lightThemeProtectsIconsWithABackgroundColorFade() {
+        assertStatusBarScrim(darkTheme = false)
+    }
+
+    @Test
+    fun darkThemeProtectsIconsWithABackgroundColorFade() {
+        assertStatusBarScrim(darkTheme = true)
+    }
+
+    private fun assertStatusBarScrim(darkTheme: Boolean) {
+        val coverColor = if (darkTheme) android.graphics.Color.WHITE else android.graphics.Color.BLACK
+        val themeBackground = if (darkTheme) Color(0xFF1A192E) else Color(0xFFFCDBF2)
+        val colorScheme = if (darkTheme) darkColorScheme(background = themeBackground)
+        else lightColorScheme(background = themeBackground)
+        compose.setContent {
+            MaterialTheme(colorScheme = colorScheme) {
+                val offset = with(LocalDensity.current) { 60.dp.roundToPx() }
+                val list = rememberLazyListState(initialFirstVisibleItemIndex = 1, initialFirstVisibleItemScrollOffset = offset)
+                val background = if (darkTheme) Color(0xFF110D13) else Color(0xFFFFF1EF)
+                Box(Modifier.fillMaxSize().background(background).testTag("edge-root")) {
+                    TopEdgeProtection(24.dp) {
+                        LazyColumn(state = list, modifier = Modifier.fillMaxSize().protectTopEdge(list)) {
+                            items(20) {
+                                Canvas(Modifier.fillMaxWidth().height(240.dp)) {
+                                    val coverHeight = offset + 96.dp.toPx()
+                                    drawRect(Color.Black, size = Size(size.width / 2f, coverHeight))
+                                    drawRect(
+                                        Color.White,
+                                        topLeft = Offset(size.width / 2f, 0f),
+                                        size = Size(size.width / 2f, coverHeight),
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        val frame = screenshot()
+        assertBlurFadesThroughTheStatusBar(frame)
+        val left = frame.width / 4
+        val right = frame.width * 3 / 4
+        val statusPixels = listOf(8, 16, 22).flatMap { position ->
+            val y = with(compose.density) { position.dp.roundToPx() }
+            listOf(left, right).map { x -> Color(frame.getPixel(x, y)) }
+        }
+        val contrasts = statusPixels.map { pixel ->
+            val luminance = pixel.luminance() + .05f
+            if (darkTheme) 1.05f / luminance else luminance / .05f
+        }
+        assertTrue(
+            "Icons should be readable over both extremes across the status bar: $contrasts",
+            contrasts.all { it >= 4.5f },
+        )
+        val worstCover = if (darkTheme) right else left
+        val sampleY = with(compose.density) { 8.dp.roundToPx() }
+        val tintedCover = Color(frame.getPixel(worstCover, sampleY))
+        val originalCover = Color(coverColor)
+        val opacity = (tintedCover.red - originalCover.red) / (themeBackground.red - originalCover.red)
+        val expectedTint = themeBackground.copy(alpha = opacity.coerceIn(0f, 1f)).compositeOver(originalCover)
+        assertTrue("The scrim should use the theme background color: $tintedCover",
+            colorDifference(expectedTint.toArgb(), tintedCover.toArgb()) <= 2)
+        // These midtone samples lie in the cube-root portion of the CIE L* curve.
+        val lightness = listOf(2, 10, 12, 20).map { position ->
+            val y = with(compose.density) { position.dp.roundToPx() }
+            Color(frame.getPixel(worstCover, y)).luminance().pow(1f / 3f)
+        }
+        val firstChange = abs(lightness[1] - lightness[0])
+        val laterChange = abs(lightness[3] - lightness[2])
+        assertTrue(
+            "Perceived lightness should change more strongly near the screen top: $firstChange vs $laterChange",
+            firstChange > laterChange * 1.25f,
+        )
+        val tint = (0..66).map { position ->
+            val y = with(compose.density) { position.dp.roundToPx() }
+            colorDifference(coverColor, frame.getPixel(worstCover, y))
+        }
+        assertTrue(
+            "Tint should fade from the screen top through 40 dp below the status bar: $tint",
+            tint[2] > tint[18] + 12 && tint[56] > 3 && tint.last() <= 3 &&
+                tint.zipWithNext().all { (a, b) -> a >= b - 2 },
+        )
+    }
+
+    @Test
+    fun coverFlightTintExtendsBeyondTheShorterBlur() {
+        compose.setContent {
+            LsMusicTheme(darkTheme = false, dynamicColor = false) {
+                TopEdgeProtection(24.dp) {
+                    ProtectTopEdgeDuringCoverFlight(active = true)
+                    Canvas(Modifier.fillMaxSize().testTag("edge-root")) {
+                        drawRect(Color.White)
+                        drawRect(Color.Black, size = Size(size.width / 2f, size.height))
+                    }
+                }
+            }
+        }
+        val frame = screenshot()
+        assertBlurFadesThroughTheStatusBar(frame)
+        val x = frame.width / 4
+        val tint = listOf(47, 49, 56, 66).map { position ->
+            val y = with(compose.density) { position.dp.roundToPx() }
+            android.graphics.Color.red(frame.getPixel(x, y))
+        }
+        assertTrue("Tint should cross the cover blur boundary smoothly: $tint",
+            tint[0] - tint[1] in 0..12 && tint[2] > 3 && tint[3] <= 3)
+    }
+
+    private fun assertBlurFadesThroughTheStatusBar(frame: Bitmap) {
+        val center = frame.width / 2
+        val nearEdge = with(compose.density) { 8.dp.roundToPx() }
+        val farFromEdge = frame.width / 4
+        val sharpness = listOf(2, 8, 20).map { position ->
+            val y = with(compose.density) { position.dp.roundToPx() }
+            val edgeContrast = contrastRange(frame, y, center - nearEdge, center + nearEdge)
+            val fullContrast = contrastRange(frame, y, center - farFromEdge, center + farFromEdge)
+            // Dividing the two ranges cancels the tint shared by pixels on the same row.
+            edgeContrast.toFloat() / fullContrast
+        }
+        assertTrue(
+            "The edge should sharpen from the top through the status bar: $sharpness",
+            sharpness[1] > sharpness[0] + .015f && sharpness[2] > sharpness[1] + .03f,
+        )
     }
 
     @Test
@@ -155,13 +287,24 @@ class TopEdgeProtectionUiTest {
         val protectedRange = contrastRange(protected, gradientY, startX, endX)
         assertTrue("The longer transition should still soften content at 64 dp: $rawRange -> $protectedRange",
             protectedRange < rawRange * .8f)
-        val samples = listOf(34f, 48f, 64f, 80f, 100f).map { y ->
+        val tailY = (86f * density).roundToInt()
+        val rawTailRange = contrastRange(raw, tailY, startX, endX)
+        val protectedTailRange = contrastRange(protected, tailY, startX, endX)
+        assertTrue(
+            "Fine detail should still be lightly softened at 86 dp: $rawTailRange -> $protectedTailRange",
+            protectedTailRange < rawTailRange * .95f && protectedTailRange > rawTailRange * .7f,
+        )
+        val samples = listOf(34f, 48f, 64f, 80f, 86f, 94f, 104f).map { y ->
             contrastRange(protected, (y * density).roundToInt(), startX, endX)
         }
         assertTrue("Contrast should gradually return below the status bar: $samples",
             samples.zipWithNext().all { (above, below) -> above <= below + 5 })
-        val normalY = (100f * density).roundToInt()
-        assertEquals("Content below the gradient should remain unchanged", raw.getPixel(startX, normalY), protected.getPixel(startX, normalY))
+        val normalY = (104f * density).roundToInt()
+        assertEquals(
+            "Content below the gradient should be sharp",
+            contrastRange(raw, normalY, startX, endX),
+            contrastRange(protected, normalY, startX, endX),
+        )
     }
 
     @Test
@@ -357,28 +500,26 @@ class TopEdgeProtectionUiTest {
                 list = rememberLazyListState()
                 scope = rememberCoroutineScope()
                 Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).testTag("edge-root")) {
-                    CompositionLocalProvider(LocalContentTopInset provides 24.dp) {
-                        TopEdgeProtection(if (enabled) 24.dp else 0.dp) {
-                            LazyColumn(
-                                state = list,
-                                modifier = Modifier.fillMaxSize().protectTopEdge(list),
-                                contentPadding = PaddingValues(top = 48.dp),
-                            ) {
-                                item { Box(Modifier.fillMaxWidth().height(70.dp)) }
-                                items(20) {
-                                    Canvas(Modifier.fillMaxWidth().height(140.dp)) {
-                                        val stripeWidth = 4.dp.toPx()
-                                        var left = 0f
-                                        var dark = false
-                                        while (left < size.width) {
-                                            drawRect(
-                                                color = if (dark) Color.Black else Color.White,
-                                                topLeft = androidx.compose.ui.geometry.Offset(left, 0f),
-                                                size = androidx.compose.ui.geometry.Size(stripeWidth, size.height),
-                                            )
-                                            left += stripeWidth
-                                            dark = !dark
-                                        }
+                    TopEdgeProtection(if (enabled) 24.dp else 0.dp) {
+                        LazyColumn(
+                            state = list,
+                            modifier = Modifier.fillMaxSize().protectTopEdge(list),
+                            contentPadding = PaddingValues(top = 48.dp),
+                        ) {
+                            item { Box(Modifier.fillMaxWidth().height(70.dp)) }
+                            items(20) {
+                                Canvas(Modifier.fillMaxWidth().height(140.dp)) {
+                                    val stripeWidth = 4.dp.toPx()
+                                    var left = 0f
+                                    var dark = false
+                                    while (left < size.width) {
+                                        drawRect(
+                                            color = if (dark) Color.Black else Color.White,
+                                            topLeft = Offset(left, 0f),
+                                            size = Size(stripeWidth, size.height),
+                                        )
+                                        left += stripeWidth
+                                        dark = !dark
                                     }
                                 }
                             }
@@ -400,16 +541,13 @@ class TopEdgeProtectionUiTest {
         val protected = screenshot()
         val density = compose.density.density
         val statusY = (8f * density).roundToInt()
-        val normalY = (90f * density).roundToInt().coerceAtMost(raw.height - 1)
+        val normalY = (120f * density).roundToInt().coerceAtMost(raw.height - 1)
         val startX = (30f * density).roundToInt()
         val endX = (120f * density).roundToInt().coerceAtMost(raw.width - 1)
         assertTrue("The fixture must show scrolling content behind the status bar", contrastRange(raw, statusY, startX, endX) > 100)
         val rawRange = contrastRange(raw, statusY, startX, endX)
         val protectedRange = contrastRange(protected, statusY, startX, endX)
-        val background = Color(initial.getPixel(startX, statusY))
-        val tintOnlyRange = rawRange * (1f - topEdgeScrimAlpha(background, useDarkStatusBarIcons(background)))
-        assertTrue("Blur should soften the artwork beyond the tint alone: $rawRange -> $protectedRange (tint alone: $tintOnlyRange)",
-            protectedRange < tintOnlyRange * .8f)
+        assertTrue("Blur should soften the artwork: $rawRange -> $protectedRange", protectedRange < rawRange * .5f)
         assertEquals("Content below the top effect should stay unchanged", raw.getPixel(startX, normalY), protected.getPixel(startX, normalY))
 
         compose.runOnIdle { scope.launch { list.scrollToItem(0) } }
@@ -419,11 +557,13 @@ class TopEdgeProtectionUiTest {
 
     private fun assertSeamlessFadeEnd(darkTheme: Boolean) {
         var fraction by mutableStateOf<Float?>(null)
+        val fadeHeight = 76.dp
+        val fadeEnd = with(compose.density) { (24.dp + fadeHeight).roundToPx() }
         compose.setContent {
             LsMusicTheme(darkTheme = darkTheme, dynamicColor = false) {
                 // Force the lower edge of the fade to fall inside a pixel at any screen density.
                 val topInset = with(LocalDensity.current) {
-                    fraction?.let { (88.dp.roundToPx() + it - 64.dp.toPx()).toDp() } ?: 0.dp
+                    fraction?.let { (fadeEnd + it - fadeHeight.toPx()).toDp() } ?: 0.dp
                 }
                 val offset = with(LocalDensity.current) { 60.dp.roundToPx() }
                 val list = rememberLazyListState(initialFirstVisibleItemIndex = 1, initialFirstVisibleItemScrollOffset = offset)
@@ -436,27 +576,33 @@ class TopEdgeProtectionUiTest {
                             modifier = Modifier.fillMaxSize().protectTopEdge(list),
                             contentPadding = PaddingValues(top = 48.dp),
                         ) {
-                            items(20) { Box(Modifier.fillMaxWidth().height(180.dp).background(rowColor)) }
+                            items(20) {
+                                Canvas(Modifier.fillMaxWidth().height(180.dp)) {
+                                    drawRect(rowColor)
+                                    drawRect(Color.White, size = Size(size.width / 4f, size.height))
+                                }
+                            }
                         }
                     }
                 }
             }
         }
         val raw = screenshot()
-        val fadeEnd = with(compose.density) { 88.dp.roundToPx() }
-        val tintY = with(compose.density) { 32.dp.roundToPx() }
+        val sampleY = with(compose.density) { 68.dp.roundToPx() }
+        val edgeX = raw.width / 4 + with(compose.density) { 2.dp.roundToPx() }
         val x = raw.width / 2
         for (subpixelOffset in listOf(.25f, .75f)) {
             compose.runOnIdle { fraction = subpixelOffset }
             val protected = screenshot()
-            val tintDifference = android.graphics.Color.red(protected.getPixel(x, tintY)) -
-                android.graphics.Color.red(raw.getPixel(x, tintY))
-            assertTrue("The fixture should show the tint inside the fade: $tintDifference", abs(tintDifference) > 3)
+            val edgeDifference = colorDifference(raw.getPixel(edgeX, sampleY), protected.getPixel(edgeX, sampleY))
+            assertTrue("The fixture should show a blurred edge: $edgeDifference", edgeDifference > 10)
+            val flatDifference = colorDifference(raw.getPixel(x, sampleY), protected.getPixel(x, sampleY))
+            assertTrue("Flat content below the tint should keep its color: $flatDifference", flatDifference <= 2)
             val differences = (fadeEnd - 2..fadeEnd + 2).map { y ->
-                android.graphics.Color.red(protected.getPixel(x, y)) - android.graphics.Color.red(raw.getPixel(x, y))
+                colorDifference(raw.getPixel(x, y), protected.getPixel(x, y))
             }
             assertTrue("The fade should match the source near its lower edge ($subpixelOffset): $differences",
-                differences.all { abs(it) <= 4 })
+                differences.all { it <= 4 })
         }
     }
 
@@ -501,11 +647,6 @@ class TopEdgeProtectionUiTest {
         val startX = (30f * density).roundToInt()
         val endX = (120f * density).roundToInt().coerceAtMost(raw.width - 1)
         assertTrue("The restored grid should already be protected", contrastRange(firstFrame, y, startX, endX) < contrastRange(raw, y, startX, endX) / 2)
-        for (x in startX..endX) {
-            val luminance = Color(firstFrame.getPixel(x, y)).luminance()
-            val contrast = if (darkTheme) 1.05f / (luminance + .05f) else (luminance + .05f) / .05f
-            assertTrue("Status icon contrast was $contrast at $x", contrast >= 4.5f)
-        }
     }
 
     private fun screenshot(): Bitmap = compose.onNodeWithTag("edge-root").captureToImage().asAndroidBitmap()
@@ -515,6 +656,12 @@ class TopEdgeProtectionUiTest {
         return values.max() - values.min()
     }
 
+    private fun colorDifference(a: Int, b: Int): Int = maxOf(
+        abs(android.graphics.Color.red(a) - android.graphics.Color.red(b)),
+        abs(android.graphics.Color.green(a) - android.graphics.Color.green(b)),
+        abs(android.graphics.Color.blue(a) - android.graphics.Color.blue(b)),
+    )
+
     private fun assertImagesEqual(expected: Bitmap, actual: Bitmap) {
         assertEquals(expected.width, actual.width)
         assertEquals(expected.height, actual.height)
@@ -523,10 +670,7 @@ class TopEdgeProtectionUiTest {
             for (x in 0 until expected.width) {
                 val a = expected.getPixel(x, y)
                 val b = actual.getPixel(x, y)
-                if (abs(android.graphics.Color.red(a) - android.graphics.Color.red(b)) > 1 ||
-                    abs(android.graphics.Color.green(a) - android.graphics.Color.green(b)) > 1 ||
-                    abs(android.graphics.Color.blue(a) - android.graphics.Color.blue(b)) > 1
-                ) changed++
+                if (colorDifference(a, b) > 1) changed++
             }
         }
         assertTrue("Expected identical frames, but $changed pixels changed", changed == 0)

@@ -46,7 +46,7 @@ Double-tap an album cover on its detail page to view it full-screen against a bl
 
 Pressing an album gently shrinks the whole card, including its cover and information. Releasing it expands the cover into the detail page with a slight bounce as it settles, while album information, playback buttons, and tracks appear. Returning brings the cover back to its card and restores your browsing position. Both grid and list layouts are supported; dragging to scroll cancels the tap, and animations follow the system animation duration setting.
 
-As you scroll the library, album tracks, queue, or settings, content extends behind the status bar with a soft blur that keeps system icons readable. Returning to the top restores the original spacing.
+As you scroll the library, album tracks, queue, or settings, content extends behind the status bar. Blur and a theme-colored overlay fade down from the top edge to help keep the icons readable. Returning to the top restores the original spacing.
 
 On sufficiently wide screens, album details show the cover and information beside the track list, with playback and queue buttons at the bottom right.
 
