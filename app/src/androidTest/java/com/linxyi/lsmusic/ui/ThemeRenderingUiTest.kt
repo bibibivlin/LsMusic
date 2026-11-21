@@ -44,7 +44,13 @@ class ThemeRenderingUiTest {
 
     @Test
     fun statusIconColorFollowsTheAppThemeInsteadOfTheDeviceTheme() {
-        compose.activityRule.scenario.onActivity { it.enableEdgeToEdge() }
+        compose.activityRule.scenario.onActivity {
+            it.enableEdgeToEdge()
+            it.setShowWhenLocked(true)
+            it.setTurnScreenOn(true)
+            it.window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+        compose.waitUntil(5_000) { compose.activity.hasWindowFocus() }
         var darkTheme by mutableStateOf(false)
         compose.setContent {
             LsMusicTheme(darkTheme = darkTheme, dynamicColor = false) { SystemBarAppearance() }

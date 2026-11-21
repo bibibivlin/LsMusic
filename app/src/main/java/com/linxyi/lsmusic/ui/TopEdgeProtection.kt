@@ -10,7 +10,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.State
-import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateSetOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -40,24 +40,28 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import kotlin.math.abs
 import kotlin.math.ceil
+import kotlin.math.pow
 import kotlin.math.roundToInt
 
 internal val LocalContentTopInset = staticCompositionLocalOf { 0.dp }
 internal val LocalTopEdgeVisibility = staticCompositionLocalOf<State<Float>?> { null }
 private val LocalTopEdgeProtection = staticCompositionLocalOf<TopEdgeProtectionState?> { null }
-private val TopEdgeFadeHeight = 64.dp
+private val TopEdgeBlurFadeHeight = 76.dp
+private val TopEdgeActivationHeight = 64.dp
+private val StatusBarScrimFadeHeight = 40.dp
 private val CoverStatusFadeHeight = 24.dp
 private val TopEdgeBlurRadius = 12.dp
 private const val TopEdgeBlurSteps = 4
 private const val TopEdgeStrengthSteps = 64
+private const val TopEdgeGradientSteps = 32
 
 private class TopEdgeSource(val strength: (Float, Float, Float) -> Float) {
     val bounds = mutableStateOf(Rect.Zero)
 }
 
 private class TopEdgeProtectionState {
-    val sources = mutableStateMapOf<Any, TopEdgeSource>()
-    val coverFlights = mutableStateMapOf<Any, State<Boolean>>()
+    val sources = mutableStateSetOf<TopEdgeSource>()
+    val coverFlights = mutableStateSetOf<State<Boolean>>()
     val origin = mutableStateOf(Offset.Zero)
 }
 
@@ -65,111 +69,81 @@ internal data class TopEdgeRegion(
     val left: Float,
     val right: Float,
     val strength: Float,
-    val coverStrength: Float = 0f,
 )
 
 /** Adjacent blur radii are mixed, so sharp content never shows through a much blurrier copy. */
-internal fun topEdgeBlurLayerWeight(level: Int, strength: Float, progress: Float): Float {
-    val radius = TopEdgeBlurSteps * strength.coerceIn(0f, 1f) * (1f - progress.coerceIn(0f, 1f))
-    return topEdgeBlurWeightForRadius(level, radius)
-}
-
-private fun topEdgeBlurWeightForRadius(level: Int, radius: Float): Float =
+internal fun topEdgeBlurLayerWeight(level: Int, radius: Float): Float =
     (1f - abs(radius - level)).coerceIn(0f, 1f)
 
+/** [progress] runs from the screen's top edge to the end of the list blur. */
 internal fun topEdgeVisualBlurStrength(
     strength: Float,
-    coverStrength: Float,
+    coverFlight: Boolean,
     progress: Float,
     coverFraction: Float,
 ): Float {
     val position = progress.coerceIn(0f, 1f)
-    val coverFade = coverFraction.coerceIn(.001f, 1f)
-    return maxOf(
-        strength.coerceIn(0f, 1f) * (1f - position),
-        coverStrength.coerceIn(0f, 1f) * (1f - position / coverFade).coerceAtLeast(0f),
-    )
+    val remaining = 1f - position
+    // Ease out to zero radius so fine detail returns gradually at the end of the strip.
+    val listFade = remaining * remaining * (1f + position)
+    val coverFade = if (coverFlight) (1f - position / coverFraction).coerceAtLeast(0f) else 0f
+    return maxOf(strength.coerceIn(0f, 1f) * listFade, coverFade)
 }
 
-private data class TopEdgeMasks(val levels: List<Brush>, val scrim: Brush)
+private class TopEdgeMaskCache(
+    private val listBlurHeight: Float,
+    coverBlurHeight: Float,
+) {
+    private val coverFraction = coverBlurHeight / listBlurHeight
+    private val blurSegments = ((0..TopEdgeGradientSteps).map { it.toFloat() / TopEdgeGradientSteps } + coverFraction)
+        .distinct().sorted().zipWithNext()
+    private val scrollMasks = mutableMapOf<Int, List<Brush>>()
+    private val coverFlightMasks = mutableMapOf<Int, List<Brush>>()
 
-private class TopEdgeMaskCache(private val background: Color, private val scrimAlpha: Float) {
-    private var previousSafeTop = -1f
-    private var previousFadeHeight = -1f
-    private var previousCoverFadeHeight = -1f
-    private val masks = mutableMapOf<Int, TopEdgeMasks>()
-
-    fun masks(
-        safeTop: Float,
-        fadeHeight: Float,
-        coverFadeHeight: Float,
-        strength: Float,
-        coverStrength: Float,
-    ): TopEdgeMasks {
-        if (previousSafeTop != safeTop || previousFadeHeight != fadeHeight || previousCoverFadeHeight != coverFadeHeight) {
-            masks.clear()
-            previousSafeTop = safeTop
-            previousFadeHeight = fadeHeight
-            previousCoverFadeHeight = coverFadeHeight
-        }
+    fun masks(strength: Float, coverFlight: Boolean): List<Brush> {
         val strengthStep = (strength * TopEdgeStrengthSteps).roundToInt().coerceIn(0, TopEdgeStrengthSteps)
-        val coverStep = (coverStrength * TopEdgeStrengthSteps).roundToInt().coerceIn(0, TopEdgeStrengthSteps)
-        val key = strengthStep * (TopEdgeStrengthSteps + 1) + coverStep
-        return masks.getOrPut(key) {
+        val cache = if (coverFlight) coverFlightMasks else scrollMasks
+        return cache.getOrPut(strengthStep) {
             val effectiveStrength = strengthStep.toFloat() / TopEdgeStrengthSteps
-            val effectiveCover = coverStep.toFloat() / TopEdgeStrengthSteps
-            val coverFraction = (coverFadeHeight / fadeHeight).coerceIn(.001f, 1f)
             fun radiusAt(progress: Float): Float = TopEdgeBlurSteps *
-                topEdgeVisualBlurStrength(effectiveStrength, effectiveCover, progress, coverFraction)
-            val fullHeight = safeTop + fadeHeight
-            val crossing = if (effectiveCover > effectiveStrength && coverFraction < 1f) {
-                (effectiveCover - effectiveStrength) / (effectiveCover / coverFraction - effectiveStrength)
-            } else 0f
-            val segments = buildList {
-                add(0f)
-                if (crossing > 0f && crossing < 1f) add(crossing)
-                add(1f)
-            }
+                topEdgeVisualBlurStrength(effectiveStrength, coverFlight, progress, coverFraction)
+
+            val peakRadius = radiusAt(0f)
+            val lastLevel = ceil(peakRadius).toInt()
             val stops = buildList {
-                add(0f)
-                add(safeTop / fullHeight)
-                segments.zipWithNext().forEach { (start, end) ->
-                    val startRadius = radiusAt(start)
+                var startRadius = peakRadius
+                add(0f to startRadius)
+                blurSegments.forEach { (start, end) ->
                     val endRadius = radiusAt(end)
-                    for (level in TopEdgeBlurSteps - 1 downTo 1) {
+                    // Split at every radius boundary so each interval mixes at most two layers.
+                    for (level in lastLevel - 1 downTo 1) {
                         if (level < startRadius && level > endRadius) {
                             val progress = start + (end - start) * (startRadius - level) / (startRadius - endRadius)
-                            add((safeTop + fadeHeight * progress) / fullHeight)
+                            add(progress to level.toFloat())
                         }
                     }
-                    add((safeTop + fadeHeight * end) / fullHeight)
+                    add(end to endRadius)
+                    startRadius = endRadius
                 }
             }
-            val levels = (0..TopEdgeBlurSteps).map { level ->
-                val colors = stops.map { stop ->
-                    val progress = ((stop * fullHeight - safeTop) / fadeHeight).coerceIn(0f, 1f)
-                    stop to Color.White.copy(alpha = topEdgeBlurWeightForRadius(level, radiusAt(progress)))
+            (0..lastLevel).map { level ->
+                val colors = stops.map { (stop, radius) ->
+                    stop to Color.White.copy(alpha = topEdgeBlurLayerWeight(level, radius))
                 }.toTypedArray()
-                Brush.verticalGradient(*colors, startY = 0f, endY = fullHeight)
+                Brush.verticalGradient(*colors, startY = 0f, endY = listBlurHeight)
             }
-            val tint = stops.map { stop ->
-                val progress = ((stop * fullHeight - safeTop) / fadeHeight).coerceIn(0f, 1f)
-                stop to background.copy(alpha = scrimAlpha * radiusAt(progress) / TopEdgeBlurSteps)
-            }.toTypedArray()
-            TopEdgeMasks(levels, Brush.verticalGradient(*tint, startY = 0f, endY = fullHeight))
         }
     }
 }
 
-/** Overlapping pages must not apply the same tint twice during a navigation transition. */
+/** Overlapping pages share a single blur region during a navigation transition. */
 internal fun mergeTopEdgeRegions(regions: List<TopEdgeRegion>): List<TopEdgeRegion> {
     val boundaries = regions.flatMap { listOf(it.left, it.right) }.distinct().sorted()
     return boundaries.zipWithNext().mapNotNull { (left, right) ->
-        val overlaps = regions.asSequence()
+        val strength = regions.asSequence()
             .filter { it.left < right && it.right > left }
-            .toList()
-        if (overlaps.isEmpty()) return@mapNotNull null
-        TopEdgeRegion(left, right, overlaps.maxOf { it.strength }, overlaps.maxOf { it.coverStrength })
+            .maxOfOrNull { it.strength } ?: return@mapNotNull null
+        TopEdgeRegion(left, right, strength)
     }
 }
 
@@ -179,8 +153,8 @@ internal fun ProtectTopEdgeDuringCoverFlight(active: Boolean) {
     val protection = LocalTopEdgeProtection.current ?: return
     val current = rememberUpdatedState(active)
     DisposableEffect(protection, current) {
-        protection.coverFlights[current] = current
-        onDispose { protection.coverFlights.remove(current) }
+        protection.coverFlights += current
+        onDispose { protection.coverFlights -= current }
     }
 }
 
@@ -206,20 +180,54 @@ internal fun topEdgeListStrength(
 
 internal fun useDarkStatusBarIcons(background: Color): Boolean = background.luminance() >= 0.179f
 
-/** Pick enough tint to keep either system icon color legible over even black or white artwork. */
-internal fun topEdgeScrimAlpha(background: Color, darkIcons: Boolean): Float {
-    val worstBackground = if (darkIcons) Color.Black else Color.White
-    fun contrast(alpha: Float): Float {
-        val luminance = background.copy(alpha = alpha).compositeOver(worstBackground).luminance()
-        return if (darkIcons) (luminance + .05f) / .05f else 1.05f / (luminance + .05f)
+// CIE L* scaled to 0..1. The input is relative luminance in linear light.
+private fun perceivedLightness(luminance: Float): Float =
+    if (luminance <= .008856f) 9.033f * luminance else 1.16f * luminance.pow(1f / 3f) - .16f
+
+private fun topEdgeScrimBrush(background: Color, safeTop: Float, fadeHeight: Float): Brush {
+    val darkIcons = useDarkStatusBarIcons(background)
+    val worstBackdrop = if (darkIcons) Color.Black else Color.White
+    val backdropLightness = perceivedLightness(worstBackdrop.luminance())
+    fun lightnessChange(luminance: Float): Float = abs(perceivedLightness(luminance) - backdropLightness)
+    fun changeAtOpacity(opacity: Float): Float =
+        lightnessChange(background.copy(alpha = opacity).compositeOver(worstBackdrop).luminance())
+
+    fun opacityForChange(change: Float): Float {
+        if (change <= 0f) return 0f
+        var low = 0f
+        var high = 1f
+        repeat(16) {
+            val middle = (low + high) / 2f
+            if (changeAtOpacity(middle) >= change) high = middle else low = middle
+        }
+        return high
     }
-    var low = 0f
-    var high = 1f
-    repeat(16) {
-        val middle = (low + high) / 2f
-        if (contrast(middle) >= 4.5f) high = middle else low = middle
+
+    // Solve for 4.5:1 contrast at the status bar bottom, with a margin for pixel rounding.
+    val contrastLuminance = if (darkIcons) 4.5f * .05f - .05f else 1.05f / 4.5f - .05f
+    val statusOpacity = (opacityForChange(lightnessChange(contrastLuminance)) + .03f).coerceAtMost(1f)
+    val peakOpacity = (statusOpacity + .20f * safeTop / maxOf(safeTop, fadeHeight)).coerceAtMost(1f)
+    val statusChange = changeAtOpacity(statusOpacity)
+    val topChange = changeAtOpacity(peakOpacity) - statusChange
+    val statusHeight = safeTop.coerceAtLeast(1f)
+    val tailSlope = (.5f * topChange * fadeHeight / statusHeight).coerceIn(0f, 2f * statusChange)
+    val totalHeight = safeTop + fadeHeight
+    val stops = Array(TopEdgeGradientSteps + 1) { step ->
+        val position = step.toFloat() / TopEdgeGradientSteps
+        val y = position * totalHeight
+        val change = if (y <= safeTop) {
+            // The linear term keeps the slope from flattening before the two curves meet.
+            val remaining = (safeTop - y) / statusHeight
+            statusChange + topChange * remaining * (.5f + .5f * remaining)
+        } else {
+            // Match the slope at the status bar bottom, then ease to zero.
+            val progress = ((y - safeTop) / fadeHeight).coerceIn(0f, 1f)
+            val remaining = 1f - progress
+            remaining * remaining * (statusChange + (2f * statusChange - tailSlope) * progress)
+        }
+        position to background.copy(alpha = opacityForChange(change))
     }
-    return (high + .03f).coerceAtMost(1f)
+    return Brush.verticalGradient(*stops, startY = 0f, endY = totalHeight)
 }
 
 /**
@@ -234,18 +242,24 @@ internal fun TopEdgeProtection(
 ) {
     val state = remember { TopEdgeProtectionState() }
     val captured = rememberGraphicsLayer()
-    val blurLayers = listOf(
-        rememberGraphicsLayer(),
-        rememberGraphicsLayer(),
-        rememberGraphicsLayer(),
-        rememberGraphicsLayer(),
-    )
+    val blurLayers = List(TopEdgeBlurSteps) { rememberGraphicsLayer() }
     val layerPaint = remember { Paint() }
     val addPaint = remember { Paint().apply { blendMode = BlendMode.Plus } }
+    val density = LocalDensity.current
+    val safeTop = with(density) { topInset.toPx() }
+    val listBlurHeight = safeTop + with(density) { TopEdgeBlurFadeHeight.toPx() }
+    val activationHeight = with(density) { TopEdgeActivationHeight.toPx() }
+    val coverBlurHeight = safeTop + with(density) { CoverStatusFadeHeight.toPx() }
+    val scrimFadeHeight = with(density) { StatusBarScrimFadeHeight.toPx() }
+    val scrimHeight = safeTop + scrimFadeHeight
     val background = MaterialTheme.colorScheme.background
-    val scrimAlpha = remember(background) { topEdgeScrimAlpha(background, useDarkStatusBarIcons(background)) }
-    val maskCache = remember(background, scrimAlpha) { TopEdgeMaskCache(background, scrimAlpha) }
-    val blurRadius = with(LocalDensity.current) { TopEdgeBlurRadius.toPx() }
+    val scrim = remember(safeTop, scrimFadeHeight, background) {
+        topEdgeScrimBrush(background, safeTop, scrimFadeHeight)
+    }
+    val maskCache = remember(listBlurHeight, coverBlurHeight) {
+        TopEdgeMaskCache(listBlurHeight, coverBlurHeight)
+    }
+    val blurRadius = with(density) { TopEdgeBlurRadius.toPx() }
     val blurEffects = remember(blurRadius) {
         (1..TopEdgeBlurSteps).map { level ->
             val radius = blurRadius * level / TopEdgeBlurSteps
@@ -258,31 +272,29 @@ internal fun TopEdgeProtection(
             modifier.fillMaxSize()
                 .onGloballyPositioned { state.origin.value = it.positionInRoot() }
                 .drawWithContent {
-                    val safeTop = topInset.toPx()
-                    val fadeHeight = TopEdgeFadeHeight.toPx()
-                    val coverFadeHeight = CoverStatusFadeHeight.toPx().coerceAtMost(fadeHeight)
                     if (safeTop <= 0f) {
                         drawContent()
                         return@drawWithContent
                     }
-                    val sources = state.sources.values.mapNotNull { source ->
+                    val sources = state.sources.mapNotNull { source ->
                         val bounds = source.bounds.value.translate(-state.origin.value)
-                        val strength = source.strength(safeTop, fadeHeight, bounds.top)
+                        val strength = source.strength(safeTop, activationHeight, bounds.top)
                         val left = bounds.left.coerceIn(0f, size.width)
                         val right = bounds.right.coerceIn(0f, size.width)
                         if (strength > 0f && right > left) TopEdgeRegion(left, right, strength) else null
                     }
-                    val coverFlight = state.coverFlights.values.any { it.value }
+                    val coverFlight = state.coverFlights.any { it.value }
+                    // The flight spans the entire viewport, including gaps between scroll sources.
                     val regions = mergeTopEdgeRegions(
-                        if (coverFlight) sources + TopEdgeRegion(0f, size.width, 0f, coverStrength = 1f) else sources,
+                        if (coverFlight) sources + TopEdgeRegion(0f, size.width, 0f) else sources,
                     )
                     if (regions.isEmpty()) {
                         drawContent()
                         return@drawWithContent
                     }
-                    val activeFadeHeight = if (regions.any { it.strength > 0f }) fadeHeight else coverFadeHeight
+                    val activeBlurHeight = if (sources.isNotEmpty()) listBlurHeight else coverBlurHeight
                     // Include the last pixel of the fade before switching back to the original content.
-                    val stripHeight = ceil(safeTop + activeFadeHeight).coerceAtMost(size.height)
+                    val stripHeight = ceil(activeBlurHeight).coerceAtMost(size.height)
                     if (stripHeight <= 0f || size.width <= 0f) {
                         drawContent()
                         return@drawWithContent
@@ -292,9 +304,8 @@ internal fun TopEdgeProtection(
                     captured.record(size = captureSize) {
                         this@drawWithContent.drawContent()
                     }
-                    val maximumLevel = ceil(regions.maxOf { maxOf(it.strength, it.coverStrength) } * TopEdgeBlurSteps).toInt()
-                        .coerceIn(0, TopEdgeBlurSteps)
-                    repeat(maximumLevel) { index ->
+                    val regionMasks = regions.map { it to maskCache.masks(it.strength, coverFlight) }
+                    repeat(regionMasks.maxOf { (_, masks) -> masks.lastIndex }) { index ->
                         blurLayers[index].renderEffect = blurEffects[index]
                         blurLayers[index].record(size = captureSize) { drawLayer(captured) }
                     }
@@ -308,26 +319,27 @@ internal fun TopEdgeProtection(
                     drawContent()
                     canvas.restore()
 
-                    regions.forEach { region ->
+                    regionMasks.forEach { (region, masks) ->
                         clipRect(left = region.left, right = region.right, bottom = stripHeight) {
                             val bounds = Rect(region.left, 0f, region.right, stripHeight)
-                            val masks = maskCache.masks(
-                                safeTop, fadeHeight, coverFadeHeight, region.strength, region.coverStrength,
-                            )
-                            val regionLevel = ceil(maxOf(region.strength, region.coverStrength) * TopEdgeBlurSteps).toInt()
-                                .coerceIn(0, maximumLevel)
                             canvas.saveLayer(bounds, layerPaint)
-                            for (level in 0..regionLevel) {
+                            for (level in masks.indices) {
                                 // Add premultiplied neighboring radii rather than stacking them:
                                 // transparency then behaves the same for text and opaque covers.
                                 canvas.saveLayer(bounds, addPaint)
                                 drawLayer(if (level == 0) captured else blurLayers[level - 1])
                                 // Fill the clip so a mask edge cannot leave part of the last row unmasked.
-                                drawRect(masks.levels[level], blendMode = BlendMode.DstIn)
+                                drawRect(masks[level], blendMode = BlendMode.DstIn)
                                 canvas.restore()
                             }
                             canvas.restore()
-                            drawRect(brush = masks.scrim)
+                        }
+                        clipRect(left = region.left, right = region.right) {
+                            drawRect(
+                                scrim,
+                                size = Size(size.width, scrimHeight.coerceAtMost(size.height)),
+                                alpha = if (coverFlight) 1f else region.strength,
+                            )
                         }
                     }
                 },
@@ -346,8 +358,8 @@ private fun Modifier.topEdgeSource(strength: (Float, Float, Float) -> Float): Mo
         }
     }
     DisposableEffect(protection, source) {
-        protection.sources[source] = source
-        onDispose { protection.sources.remove(source) }
+        protection.sources += source
+        onDispose { protection.sources -= source }
     }
     onGloballyPositioned { coordinates ->
         val position = coordinates.positionInRoot()
