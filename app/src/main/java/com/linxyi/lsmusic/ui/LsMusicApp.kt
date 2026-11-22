@@ -21,6 +21,7 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.updateTransition
+import androidx.compose.animation.core.withInfiniteAnimationFrameNanos
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
@@ -153,6 +154,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -264,6 +266,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -3323,20 +3326,17 @@ internal fun NowPlayingScreen(
                 overflow = TextOverflow.Ellipsis,
             )
             Spacer(Modifier.height(if (tight) 4.dp else if (compact) 8.dp else 16.dp))
-            PlaybackSlider(
+            PlaybackProgress(
                 positionMs = state.positionMs,
                 durationMs = state.durationMs,
                 isPlaying = state.playbackState == RemotePlaybackState.PLAYING,
+                playbackGeneration = state.playbackGeneration,
+                seekGeneration = state.seekGeneration,
+                queueId = state.currentQueueItem?.queueId,
+                rendererId = state.selectedRendererId,
+                durationFallback = track.duration ?: "--:--",
                 onSeek = onSeek,
-                modifier = Modifier.playerControlsEnter(160),
             )
-            Row(Modifier.fillMaxWidth().playerControlsEnter(160), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text(formatPlaybackTime(state.positionMs), style = MaterialTheme.typography.labelMedium)
-                Text(
-                    if (state.durationMs > 0L) formatPlaybackTime(state.durationMs) else track.duration ?: "--:--",
-                    style = MaterialTheme.typography.labelMedium,
-                )
-            }
             Spacer(Modifier.height(if (tight) 2.dp else if (compact) 6.dp else 12.dp))
             Row(
                 modifier = Modifier.playerControlsEnter(180),
@@ -3408,8 +3408,68 @@ internal fun NowPlayingScreen(
 }
 
 @Composable
-private fun PlaybackSlider(
+private fun PlaybackProgress(
     positionMs: Long,
+    durationMs: Long,
+    isPlaying: Boolean,
+    playbackGeneration: Long,
+    seekGeneration: Long,
+    queueId: String?,
+    rendererId: String?,
+    durationFallback: String,
+    onSeek: (Long) -> Unit,
+) {
+    val interpolator = remember(playbackGeneration, queueId, rendererId) {
+        PlaybackProgressInterpolator(positionMs, seekGeneration)
+    }
+    val displayedPosition = remember(interpolator) { mutableLongStateOf(positionMs) }
+    LaunchedEffect(interpolator, positionMs, durationMs, isPlaying, seekGeneration) {
+        if (!isPlaying) {
+            displayedPosition.longValue = interpolator.pause(positionMs, durationMs, seekGeneration)
+            return@LaunchedEffect
+        }
+        while (isActive) {
+            withInfiniteAnimationFrameNanos { frameNanos ->
+                displayedPosition.longValue = interpolator.frame(
+                    reportedPositionMs = positionMs,
+                    durationMs = durationMs,
+                    seekGeneration = seekGeneration,
+                    coarsePosition = rendererId != null && rendererId != LsMusicViewModel.LOCAL_RENDERER_ID,
+                    frameNanos = frameNanos,
+                )
+            }
+        }
+    }
+    key(interpolator) {
+        PlaybackSlider(
+            positionMs = displayedPosition,
+            durationMs = durationMs,
+            isPlaying = isPlaying,
+            onSeek = { target ->
+                displayedPosition.longValue = interpolator.seekImmediately(target, durationMs)
+                onSeek(target)
+            },
+            modifier = Modifier.playerControlsEnter(160),
+        )
+    }
+    PlaybackTimeLabels(displayedPosition, durationMs, durationFallback)
+}
+
+@Composable
+private fun PlaybackTimeLabels(positionMs: State<Long>, durationMs: Long, durationFallback: String) {
+    val elapsedSeconds by remember(positionMs) { derivedStateOf { positionMs.value / 1_000L } }
+    Row(Modifier.fillMaxWidth().playerControlsEnter(160), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text(formatPlaybackTime(elapsedSeconds * 1_000L), style = MaterialTheme.typography.labelMedium)
+        Text(
+            if (durationMs > 0L) formatPlaybackTime(durationMs) else durationFallback,
+            style = MaterialTheme.typography.labelMedium,
+        )
+    }
+}
+
+@Composable
+private fun PlaybackSlider(
+    positionMs: State<Long>,
     durationMs: Long,
     isPlaying: Boolean,
     onSeek: (Long) -> Unit,
@@ -3417,7 +3477,7 @@ private fun PlaybackSlider(
 ) {
     var draggedFraction by remember { mutableStateOf<Float?>(null) }
     val liveFraction = if (durationMs > 0L) {
-        positionMs.toFloat().div(durationMs).coerceIn(0f, 1f)
+        positionMs.value.toFloat().div(durationMs).coerceIn(0f, 1f)
     } else {
         0f
     }

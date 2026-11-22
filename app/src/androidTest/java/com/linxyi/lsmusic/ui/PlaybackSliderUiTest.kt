@@ -12,6 +12,7 @@ import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTouchInput
 import com.linxyi.lsmusic.dlna.MediaEntry
+import com.linxyi.lsmusic.dlna.RemotePlaybackState
 import com.linxyi.lsmusic.ui.theme.LsMusicTheme
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -72,6 +73,72 @@ class PlaybackSliderUiTest {
         state = state.copy(durationMs = 0L)
         render()
         slider().assertIsNotEnabled()
+    }
+
+    @Test
+    fun playingProgressMovesBetweenUpdatesAndStopsWhenPaused() {
+        state = state.copy(
+            playbackState = RemotePlaybackState.PLAYING,
+            selectedRendererId = LsMusicViewModel.LOCAL_RENDERER_ID,
+        )
+        compose.mainClock.autoAdvance = false
+        render()
+        compose.mainClock.advanceTimeByFrame()
+        val start = progress()
+        compose.mainClock.advanceTimeBy(250L)
+        val moving = progress()
+        assertTrue(moving > start + .001f)
+
+        compose.runOnIdle { state = state.copy(playbackState = RemotePlaybackState.PAUSED) }
+        compose.mainClock.advanceTimeByFrame()
+        val paused = progress()
+        compose.mainClock.advanceTimeBy(500L)
+        assertEquals(paused, progress(), .0001f)
+
+        compose.runOnIdle { state = state.copy(positionMs = 60_000L, seekGeneration = 1L) }
+        compose.mainClock.advanceTimeBy(80L)
+        assertEquals(.6f, progress(), .001f)
+    }
+
+    @Test
+    fun remoteWholeSecondUpdatesKeepProgressMovingContinuously() {
+        state = state.copy(playbackState = RemotePlaybackState.PLAYING, selectedRendererId = "remote")
+        compose.mainClock.autoAdvance = false
+        render()
+        compose.mainClock.advanceTimeByFrame()
+        compose.mainClock.advanceTimeBy(900L)
+        val beforeUpdate = progress()
+
+        compose.runOnIdle { state = state.copy(positionMs = 21_000L) }
+        compose.mainClock.advanceTimeBy(64L)
+        val afterUpdate = progress()
+        assertTrue(afterUpdate > beforeUpdate)
+        assertTrue(afterUpdate - beforeUpdate < .002f)
+    }
+
+    @Test
+    fun seekWhilePlayingIsImmediateAndTrackRestartResetsProgress() {
+        state = state.copy(playbackState = RemotePlaybackState.PLAYING)
+        compose.mainClock.autoAdvance = false
+        render()
+        compose.mainClock.advanceTimeByFrame()
+        compose.mainClock.advanceTimeBy(200L)
+
+        slider().performSemanticsAction(SemanticsActions.SetProgress) { action ->
+            assertTrue(action(.75f))
+        }
+        compose.mainClock.advanceTimeBy(64L)
+        assertEquals(.75f, progress(), .001f)
+        compose.runOnIdle {
+            assertEquals(listOf(75_000L), seeks)
+            state = state.copy(positionMs = 75_000L, seekGeneration = 1L)
+        }
+        compose.mainClock.advanceTimeBy(64L)
+        assertEquals(.75f, progress(), .001f)
+
+        compose.runOnIdle { state = state.copy(positionMs = 0L, playbackGeneration = 1L) }
+        compose.mainClock.advanceTimeBy(80L)
+        assertTrue(progress() < .002f)
     }
 
     private fun slider() = compose.onNode(SemanticsMatcher.keyIsDefined(SemanticsActions.SetProgress))

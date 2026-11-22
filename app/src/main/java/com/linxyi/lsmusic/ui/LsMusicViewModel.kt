@@ -208,6 +208,7 @@ data class LsMusicUiState(
     val playbackGeneration: Long = 0L,
     val playbackState: RemotePlaybackState = RemotePlaybackState.STOPPED,
     val positionMs: Long = 0L,
+    val seekGeneration: Long = 0L,
     val durationMs: Long = 0L,
     val bufferedPositionMs: Long = 0L,
     val lyricsLoadState: LyricsLoadState = LyricsLoadState.Idle,
@@ -395,6 +396,21 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         override fun onIsPlayingChanged(isPlaying: Boolean) = updateLocalPlaybackState()
 
         override fun onPlaybackStateChanged(playbackState: Int) = updateLocalPlaybackState()
+
+        override fun onPositionDiscontinuity(
+            oldPosition: Player.PositionInfo,
+            newPosition: Player.PositionInfo,
+            reason: Int,
+        ) {
+            if (reason != Player.DISCONTINUITY_REASON_SEEK && reason != Player.DISCONTINUITY_REASON_SEEK_ADJUSTMENT) return
+            val currentQueueId = _uiState.value.currentQueueItem?.queueId ?: return
+            if (exiting || restoringData || _uiState.value.selectedRendererId != LOCAL_RENDERER_ID ||
+                localController?.currentMediaItem?.mediaId != currentQueueId
+            ) return
+            _uiState.update {
+                it.copy(positionMs = newPosition.positionMs.coerceAtLeast(0L), seekGeneration = it.seekGeneration + 1L)
+            }
+        }
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             if (exiting || restoringData || _uiState.value.selectedRendererId != LOCAL_RENDERER_ID) return
@@ -1386,7 +1402,7 @@ class LsMusicViewModel(application: Application) : AndroidViewModel(application)
         if (exiting || restoringData) return
         val state = _uiState.value
         val target = positionMs.coerceIn(0L, state.durationMs.coerceAtLeast(0L))
-        _uiState.update { it.copy(positionMs = target) }
+        _uiState.update { it.copy(positionMs = target, seekGeneration = it.seekGeneration + 1L) }
         when (val rendererId = state.selectedRendererId) {
             null -> Unit
             LOCAL_RENDERER_ID -> localController?.seekTo(target)

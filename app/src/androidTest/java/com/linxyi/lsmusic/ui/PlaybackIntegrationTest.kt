@@ -58,6 +58,32 @@ class PlaybackIntegrationTest {
     }
 
     @Test
+    fun localSeekKeepsItsPositionThroughPauseAndResume() = withPlayback { scenario, vm, track ->
+        scenario.onActivity {
+            vm.setClearQueueOnPlay(true)
+            vm.setEnqueueWhilePlaying(false)
+            vm.playNow(track)
+        }
+        waitFor { vm.uiState.value.positionMs > 150L && vm.uiState.value.playbackState == RemotePlaybackState.PLAYING }
+        val playbackGeneration = vm.uiState.value.playbackGeneration
+        val seekGeneration = vm.uiState.value.seekGeneration
+
+        scenario.onActivity { vm.seekTo(15_000L) }
+        waitFor { vm.uiState.value.positionMs in 15_000L..18_000L && vm.uiState.value.seekGeneration > seekGeneration }
+        SystemClock.sleep(1_000L)
+        assertTrue(vm.uiState.value.positionMs in 15_000L..19_000L)
+        assertEquals(playbackGeneration, vm.uiState.value.playbackGeneration)
+
+        scenario.onActivity { vm.togglePlayback() }
+        waitFor { vm.uiState.value.playbackState == RemotePlaybackState.PAUSED }
+        val pausedPosition = vm.uiState.value.positionMs
+        SystemClock.sleep(700L)
+        assertTrue(kotlin.math.abs(vm.uiState.value.positionMs - pausedPosition) < 1_000L)
+        scenario.onActivity { vm.togglePlayback() }
+        waitFor { vm.uiState.value.playbackState == RemotePlaybackState.PLAYING && vm.uiState.value.positionMs > pausedPosition + 150L }
+    }
+
+    @Test
     fun duplicateQueueActionsPreservePlaybackAndSelectTheRequestedOccurrence() = withPlayback { scenario, vm, track ->
         scenario.onActivity {
             vm.setClearQueueOnPlay(true)
